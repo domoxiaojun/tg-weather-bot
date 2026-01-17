@@ -43,4 +43,11 @@ class Settings(BaseSettings):
     gemini_api_base: Optional[str] = Field(None, description="Google Gemini API Base URL")
     llm_streaming: bool = True
 
+    # Webhook Configuration
+    bot_mode: str = Field("polling", description="Bot运行模式: 'polling' 或 'webhook'")
+    webhook_url: Optional[str] = Field(None, description="Webhook URL (e.g. https://yourdomain.com)")
+    webhook_port: int = Field(8443, description="Webhook 监听端口")
+    webhook_path: str = Field("/webhook", description="Webhook 路径")
+    webhook_secret: Optional[str] = Field(None, description="Webhook Secret Token (可选，增强安全性)")
+
 settings = Settings()

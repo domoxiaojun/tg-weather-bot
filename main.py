@@ -45,8 +45,30 @@ def main():
         app.post_init = post_init
         
         from telegram import Update
-        logger.info(f"Bot is polling... (User: {settings.super_admin_id or 'Unknown'})")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        
+        # Choose mode based on configuration
+        if settings.bot_mode.lower() == "webhook":
+            # Webhook Mode (Production)
+            if not settings.webhook_url:
+                logger.error("Webhook模式需要配置 WEBHOOK_URL")
+                return
+                
+            logger.info(f"Bot is starting in WEBHOOK mode...")
+            logger.info(f"Webhook URL: {settings.webhook_url}{settings.webhook_path}")
+            logger.info(f"Listening on port: {settings.webhook_port}")
+            
+            app.run_webhook(
+                listen="0.0.0.0",
+                port=settings.webhook_port,
+                url_path=settings.webhook_path,
+                webhook_url=f"{settings.webhook_url}{settings.webhook_path}",
+                secret_token=settings.webhook_secret,
+                allowed_updates=Update.ALL_TYPES
+            )
+        else:
+            # Polling Mode (Development/Default)
+            logger.info(f"Bot is starting in POLLING mode... (User: {settings.super_admin_id or 'Unknown'})")
+            app.run_polling(allowed_updates=Update.ALL_TYPES)
         
     except Exception as e:
         logger.critical(f"Fatal Error: {e}")
