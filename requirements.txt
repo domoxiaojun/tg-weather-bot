@@ -1,0 +1,15 @@
+python-telegram-bot[job-queue,rate-limiter]==21.10
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+httpx[http2,brotli]>=0.28.0
+matplotlib>=3.10.0
+pillow>=11.1.0
+redis>=5.2.0
+loguru>=0.7.3
+tenacity>=9.0.0
+python-dotenv>=1.0.1
+fake-useragent>=2.0.3
+scipy>=1.13.0
+openai>=1.0.0
+google-generativeai
+

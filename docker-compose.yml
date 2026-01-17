@@ -1,0 +1,39 @@
+version: "3.8"
+
+services:
+  bot:
+    build: .
+    container_name: weather_bot
+    restart: always
+    env_file:
+      - .env
+    environment:
+      # Override Redis URL to point to the local service in this compose
+      - REDIS_URL=redis://redis:6379/0
+      # Ensure Timezone
+      - TZ=Asia/Shanghai
+    volumes:
+      # Map logs for debugging
+      - ./logs:/app/logs
+      # Map data directory for persistence (bot_data.pickle)
+      - ./data:/app/data
+    depends_on:
+      - redis
+    networks:
+      - weather_net
+
+  redis:
+    image: redis:alpine
+    container_name: weather_redis
+    restart: always
+    volumes:
+      - redis_data:/data
+    networks:
+      - weather_net
+
+volumes:
+  redis_data:
+
+networks:
+  weather_net:
+    driver: bridge

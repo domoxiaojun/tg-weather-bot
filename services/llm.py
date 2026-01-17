@@ -1,0 +1,331 @@
+from typing import Optional, AsyncIterator
+from abc import ABC, abstractmethod
+import json
+import asyncio
+from loguru import logger
+
+try:
+    import openai
+    HAS_OPENAI = True
+except ImportError:
+    HAS_OPENAI = False
+    logger.warning("Failed to import 'openai'. OpenAI features disabled.")
+
+import httpx
+
+# Gemini now uses httpx (no SDK required)
+HAS_GEMINI = True
+
+from core.config import settings
+from domain.models import WeatherData
+
+class LLMProvider(ABC):
+    @abstractmethod
+    async def generate_report(self, system_prompt: str, user_prompt: str) -> str:
+        """Generate a complete response from the LLM"""
+        pass
+
+    @abstractmethod
+    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
+        """Generate a streaming response from the LLM"""
+        pass
+
+class OpenAIProvider(LLMProvider):
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gpt-5"):
+        self.client = openai.AsyncClient(api_key=api_key, base_url=base_url)
+        self.model = model
+
+    async def generate_report(self, system_prompt: str, user_prompt: str) -> str:
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"OpenAI API Error: {e}")
+            raise
+
+    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
+        try:
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=0.7,
+                stream=True
+            )
+            async for chunk in stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    yield chunk.choices[0].delta.content
+        except Exception as e:
+            logger.error(f"OpenAI Stream Error: {e}")
+            yield f"\n[Error: {e}]"
+
+class GeminiProvider(LLMProvider):
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gemini-2.5-flash"):
+        self.api_key = api_key
+        # Ensure base_url is set, defaulting to Google's official if None
+        self.base_url = (base_url or "https://generativelanguage.googleapis.com").rstrip("/")
+        self.model = model
+        self.client = httpx.AsyncClient(timeout=30.0)
+
+    async def generate_report(self, system_prompt: str, user_prompt: str) -> str:
+        url = f"{self.base_url}/v1beta/models/{self.model}:generateContent"
+        payload = self._build_payload(system_prompt, user_prompt)
+        params = {"key": self.api_key}
+        headers = {"Content-Type": "application/json"}
+
+        try:
+            response = await self.client.post(url, json=payload, params=params, headers=headers)
+            if response.status_code != 200:
+                logger.error(f"Gemini API Error {response.status_code}: {response.text}")
+                raise Exception(f"HTTP {response.status_code} - {response.text[:100]}")
+            
+            data = response.json()
+            return self._extract_text(data)
+        except Exception as e:
+            logger.error(f"Gemini Request Failed: {e}")
+            raise
+
+    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
+        url = f"{self.base_url}/v1beta/models/{self.model}:streamGenerateContent"
+        payload = self._build_payload(system_prompt, user_prompt)
+        params = {"key": self.api_key}
+        headers = {"Content-Type": "application/json"}
+
+        try:
+            logger.debug(f"Starting Gemini stream request to {url}")
+            async with self.client.stream("POST", url, json=payload, params=params, headers=headers) as response:
+                logger.debug(f"Gemini Stream Status: {response.status_code}")
+                if response.status_code != 200:
+                    error_text = await response.read()
+                    logger.error(f"Gemini Stream Error {response.status_code}: {error_text}")
+                    yield f"Error: {response.status_code}"
+                    return
+
+                logger.debug(f"Response Headers: {response.headers}")
+                
+                buffer = ""
+                decoder = json.JSONDecoder()
+                
+                async for chunk in response.aiter_lines():
+                    chunk = chunk.strip()
+                    if not chunk: continue
+                    
+                    buffer += chunk
+                    
+                    # Clean SSE (Proxy)
+                    if buffer.startswith("data:"):
+                        buffer = buffer[5:].strip()
+                        if buffer == "[DONE]": 
+                            buffer = ""
+                            continue
+
+                    # Attempt to parse one or more objects from buffer
+                    while buffer:
+                        # 1. Skip Delimiters / Wrappers
+                        buffer = buffer.lstrip().lstrip(",").lstrip("[").lstrip()
+                        
+                        if not buffer: break
+                        
+                        # 2. Try Raw Decode
+                        try:
+                            # raw_decode parses ONE object and returns the index where it ends
+                            data, idx = decoder.raw_decode(buffer)
+                            
+                            # Success! Move buffer pointer
+                            buffer = buffer[idx:]
+                            
+                            # Handle List Wrapper
+                            if isinstance(data, list):
+                                data = data[0]
+
+                            text = self._extract_text(data)
+                            if text:
+                                yield text
+                            
+                            # Continue loop to see if more objects are in buffer
+                            
+                        except json.JSONDecodeError:
+                            # Incomplete JSON. Wait for more chunks to complete the object.
+                            
+                            # Special handling for closing ']' of the main array
+                            if buffer.strip() == "]": 
+                                buffer = ""
+                            
+                            # Otherwise, break and wait for next chunk
+                            break 
+                            
+                        except Exception as e:
+                            logger.error(f"Stream Parse Error: {e}")
+                            break # Safety break
+                
+                logger.debug("Gemini Stream Finished Loop")
+                        
+        except Exception as e:
+            logger.error(f"Gemini Stream Exception: {e}")
+            yield f"\n[Network Error: {e}]"
+
+    def _build_payload(self, system_prompt: str, user_prompt: str) -> dict:
+        return {
+            "contents": [{
+                "parts": [{"text": f"{system_prompt}\n\nUser Data:\n{user_prompt}"}]
+            }]
+        }
+
+    def _extract_text(self, data: dict) -> str:
+        try:
+            # 1. Google Gemini Format
+            if "candidates" in data:
+                return data["candidates"][0]["content"]["parts"][0]["text"]
+            
+            # 2. OpenAI Format (Proxy Adaptation)
+            if "choices" in data:
+                choice = data["choices"][0]
+                # Stream delta
+                if "delta" in choice:
+                     ct = choice["delta"].get("content", "")
+                     return ct if ct else ""
+                # Non-stream message
+                if "message" in choice:
+                     return choice["message"].get("content", "")
+            
+            return ""
+        except (KeyError, IndexError, TypeError):
+            return ""
+
+class LLMService:
+    def __init__(self):
+        self.provider: Optional[LLMProvider] = None
+        self._setup_provider()
+
+    def _setup_provider(self):
+        provider_type = settings.llm_provider.lower()
+        
+        if provider_type == "openai":
+            if not HAS_OPENAI:
+                logger.error("OpenAI library not installed.")
+                return
+            if not settings.openai_api_key:
+                logger.warning("OpenAI API Key is missing. LLM features will be disabled.")
+                return
+            self.provider = OpenAIProvider(
+                api_key=settings.openai_api_key, 
+                base_url=settings.openai_api_base,
+                model=settings.llm_model or "gpt-5"
+            )
+        elif provider_type == "gemini":
+            if not HAS_GEMINI:
+                logger.error("Google GenerativeAI library not installed.")
+                return
+            if not settings.gemini_api_key:
+                logger.warning("Gemini API Key is missing. LLM features will be disabled.")
+                return
+            self.provider = GeminiProvider(
+                api_key=settings.gemini_api_key,
+                base_url=settings.gemini_api_base,
+                model=settings.llm_model or "gemini-2.5-flash"
+            )
+        else:
+            logger.error(f"Unsupported LLM provider: {provider_type}")
+
+    def _format_weather_data(self, data: WeatherData) -> str:
+        """Convert WeatherData to a readable text summary for the LLM"""
+        # Essential Info
+        summary = {
+            "location": data.location_name,
+            "time": data.update_time.strftime("%m月%d日 %H:%M"),
+            "current": {
+                "temp": data.now_temp,
+                "weather": data.now_text,
+                "feels_like": data.now_feels_like,
+                "humidity": data.now_humidity,
+                "wind": f"{data.now_wind_dir} {data.now_wind_scale}级"
+            },
+            "alerts": [a.title for a in data.alerts] if data.alerts else [],
+            "forecast_daily": [
+                f"{d.date}: {d.text_day}/{d.text_night}, {d.temp_min}-{d.temp_max}°C" 
+                for d in data.daily[:3]
+            ],
+            "forecast_hourly_next_6h": [
+                f"{h.time}: {h.temp}°C, {h.text}, Rain Prob {h.pop}%" 
+                for h in data.hourly[:6]
+            ],
+            "indices": {i.name: f"{i.category} ({i.text})" for i in data.indices[:3]} # e.g. Dressing, UV
+        }
+        return json.dumps(summary, ensure_ascii=False, indent=2)
+
+    async def generate_weather_report(self, data: WeatherData) -> str:
+        if not self.provider:
+            return "⚠️ LLM服务未配置或API Key缺失。"
+
+        system_prompt = self._build_system_prompt()
+        user_prompt = self._format_weather_data(data)
+        
+        try:
+            logger.info(f"Generating LLM report for {data.location_name} using {settings.llm_provider}...")
+            text = await asyncio.wait_for(
+                self.provider.generate_report(system_prompt, user_prompt), 
+                timeout=20.0
+            )
+            text += f"\n\n🤖 Generated by {self.provider.model}"
+            return text
+            
+        except asyncio.TimeoutError:
+            logger.error("LLM Generation Timed Out (20s)")
+            return "⏱️ AI 响应超时 (20s)。"
+        except Exception as e:
+            logger.error(f"LLM Generation Failed: {e}")
+            return f"🤖 生成日报失败: {e}"
+
+    async def generate_weather_report_stream(self, data: WeatherData) -> AsyncIterator[str]:
+        """Generate a streaming weather report (Yields text chunks)"""
+        if not self.provider:
+            yield "⚠️ LLM服务未配置。"
+            return
+
+        # Fallback if streaming is disabled in config
+        if not settings.llm_streaming:
+            full_text = await self.generate_weather_report(data)
+            yield full_text
+            return
+
+        system_prompt = self._build_system_prompt()
+        user_prompt = self._format_weather_data(data)
+
+        try:
+            logger.info(f"Stream generating report for {data.location_name}...")
+            
+            # TODO: Add timeout for the Stream?
+            # For now, rely on internal client timeouts
+            stream = self.provider.generate_report_stream(system_prompt, user_prompt)
+            
+            async for chunk in stream:
+                yield chunk
+                
+            yield f"\n\n🤖 Generated by {self.provider.model}"
+            
+        except Exception as e:
+            logger.error(f"Stream Failed: {e}")
+            yield f"\n\n[Generation Error: {e}]"
+
+    def _build_system_prompt(self) -> str:
+        return (
+            "你是一个幽默、风趣且贴心的天气预报员助手。你的名字叫'Domo'。"
+            "请根据提供的 JSON 天气数据，为用户生成一份简短、易读且有趣的天气日报。"
+            "要求："
+            "1. **核心信息及其突出**：标题下方必须包含 **当前时间**（从JSON数据获取）。"
+            "2. **穿衣与出行建议**：根据指数和天气情况给出人性化建议。"
+            "3. **幽默感**：适当调侃天气，或者用可爱的语气，但不要过度啰嗦。"
+            "4. **排版美观**：请使用 Telegram Markdown 格式。注意：**加粗**请使用一对单星号包裹（例如 *重点*），不要使用双星号。斜体使用下划线（_斜体_）。"
+            "5. **长度控制**：控制在 300 字左右，适合手机快速阅读。"
+            "6. 如果有预警信息，必须在最开始使用 *加粗* 强调。"
+            "7. **结尾**：必须包含一句暖心的祝福。"
+        )

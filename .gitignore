@@ -1,0 +1,50 @@
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+.venv/
+venv/
+ENV/
+
+# Distribution / packaging
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Logs
+logs/
+*.log
+
+# Unit test / coverage
+.coverage
+htmlcov/
+.tox/
+.noseids
+.pytest_cache/
+
+# Bot Persistence (Optional: Ignore if you don't want to backup user data)
+# bot_data.pickle
+data/bot_data.pickle
+
+# Docker
+.docker/
+
+# Environment Variables (CRITICAL)
+.env
+.env.local
