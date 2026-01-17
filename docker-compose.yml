@@ -6,16 +6,15 @@ services:
     container_name: weather_bot
     restart: always
     env_file:
-      - .env
+      - .env # 继承所有配置
     environment:
-      # Override Redis URL to point to the local service in this compose
+      # 只覆盖 Docker 内部不同的变量
       - REDIS_URL=redis://redis:6379/0
-      # Ensure Timezone
       - TZ=Asia/Shanghai
     volumes:
-      # Map logs for debugging
+      # 日志目录
       - ./logs:/app/logs
-      # Map data directory for persistence (bot_data.pickle)
+      # 持久化数据
       - ./data:/app/data
     depends_on:
       - redis
