@@ -80,7 +80,16 @@ class QWeatherAdapter(WeatherAdapter):
         return None
 
     async def get_weather(self, location: str) -> Optional[WeatherData]:
-        # 1. Resolve Location
+        from utils.cache import cache
+        
+        # 1. Check Cache (1 hour TTL)
+        cache_key = f"qweather:{location}"
+        cached = cache.get(cache_key)
+        if cached:
+            logger.debug(f"Weather cache hit: {location}")
+            return WeatherData(**cached)
+        
+        # 2. Resolve Location
         loc_info = await self.get_geo_location(location)
         if not loc_info:
             logger.warning(f"Could not resolve location: {location}")
@@ -232,3 +241,9 @@ class QWeatherAdapter(WeatherAdapter):
                 ) for i in indices_data.get("daily", [])
             ] if indices_data else []
         )
+        
+        # Cache weather data for 1 hour (3600s)
+        cache.set(cache_key, weather_obj.dict(), ttl=3600)
+        logger.debug(f"Cached weather for {location} (TTL=1h)")
+        
+        return weather_obj
