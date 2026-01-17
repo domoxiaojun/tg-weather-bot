@@ -388,25 +388,6 @@ class WeatherBot:
                     reply_markup=keyboard
                 )
             
-            # 群聊自动删除（5分钟后）
-            if update.effective_chat.type in ["group", "supergroup"]:
-                async def delete_messages():
-                    try:
-                        await context.bot.delete_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=sent_msg.message_id
-                        )
-                        await context.bot.delete_message(
-                            chat_id=update.effective_chat.id,
-                            message_id=update.message.message_id
-                        )
-                    except Exception as e:
-                        logger.debug(f"消息删除失败: {e}")
-                
-                context.application.job_queue.run_once(
-                    lambda ctx: delete_messages(),
-                    when=300  # 5分钟
-                )
             
         except Exception as e:
             logger.error(f"Reply failed: {e}")

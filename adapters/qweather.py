@@ -99,13 +99,60 @@ class QWeatherAdapter(WeatherAdapter):
         loc_name = f"{loc_info['name']}, {loc_info['adm1']}"
         coords = f"{loc_info['lon']},{loc_info['lat']}"
 
-        # 2. Fetch Data in Parallel (could be improved with asyncio.gather)
-        now_data = await self._request("weather/now", {"location": loc_id})
-        daily_data = await self._request("weather/7d", {"location": loc_id})
-        hourly_data = await self._request("weather/24h", {"location": loc_id})
-        air_data = await self._request("air/now", {"location": loc_id})
-        warning_data = await self._request("warning/now", {"location": loc_id})
-        indices_data = await self._request("indices/1d", {"location": loc_id, "type": "1,2,3,5,9"}) # Sport, CarWash, Dress, UV, Flu
+        # 2. Fetch Data with Intelligent Caching
+        # Different data types have different update frequencies
+        from datetime import datetime, time as dtime
+        from utils.cache import cache as api_cache
+        
+        # Helper: Calculate TTL until midnight for today's data
+        now = datetime.now()
+        midnight = datetime.combine(now.date(), dtime(23, 59, 59))
+        seconds_until_midnight = int((midnight - now).total_seconds())
+        
+        # --- Real-time data (frequent updates) ---
+        now_key = f"qw:now:{loc_id}"
+        now_data = api_cache.get(now_key)
+        if not now_data:
+            now_data = await self._request("weather/now", {"location": loc_id})
+            if now_data:
+                api_cache.set(now_key, now_data, ttl=600)  # 10 min
+        
+        air_key = f"qw:air:{loc_id}"
+        air_data = api_cache.get(air_key)
+        if not air_data:
+            air_data = await self._request("air/now", {"location": loc_id})
+            if air_data:
+                api_cache.set(air_key, air_data, ttl=3600)  # 1 hour
+        
+        warning_key = f"qw:warning:{loc_id}"
+        warning_data = api_cache.get(warning_key)
+        if not warning_data:
+            warning_data = await self._request("warning/now", {"location": loc_id})
+            if warning_data:
+                api_cache.set(warning_key, warning_data, ttl=1800)  # 30 min
+        
+        # --- Forecast data (slower updates) ---
+        daily_key = f"qw:daily:{loc_id}"
+        daily_data = api_cache.get(daily_key)
+        if not daily_data:
+            daily_data = await self._request("weather/7d", {"location": loc_id})
+            if daily_data:
+                api_cache.set(daily_key, daily_data, ttl=43200)  # 12 hours
+        
+        hourly_key = f"qw:hourly:{loc_id}"
+        hourly_data = api_cache.get(hourly_key)
+        if not hourly_data:
+            hourly_data = await self._request("weather/24h", {"location": loc_id})
+            if hourly_data:
+                api_cache.set(hourly_key, hourly_data, ttl=21600)  # 6 hours
+        
+        # --- Daily indices (valid for the entire day) ---
+        indices_key = f"qw:indices:{loc_id}"
+        indices_data = api_cache.get(indices_key)
+        if not indices_data:
+            indices_data = await self._request("indices/1d", {"location": loc_id, "type": "1,2,3,5,9"})
+            if indices_data:
+                api_cache.set(indices_key, indices_data, ttl=seconds_until_midnight)  # Until midnight
 
 
 
