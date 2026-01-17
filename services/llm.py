@@ -25,10 +25,7 @@ class LLMProvider(ABC):
         """Generate a complete response from the LLM"""
         pass
 
-    @abstractmethod
-    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
-        """Generate a streaming response from the LLM"""
-        pass
+
 
 class OpenAIProvider(LLMProvider):
     def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gpt-5"):
@@ -50,23 +47,7 @@ class OpenAIProvider(LLMProvider):
             logger.error(f"OpenAI API Error: {e}")
             raise
 
-    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
-        try:
-            stream = await self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.7,
-                stream=True
-            )
-            async for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
-        except Exception as e:
-            logger.error(f"OpenAI Stream Error: {e}")
-            yield f"\n[Error: {e}]"
+
 
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str, base_url: Optional[str] = None, model: str = "gemini-2.5-flash"):
@@ -94,84 +75,7 @@ class GeminiProvider(LLMProvider):
             logger.error(f"Gemini Request Failed: {e}")
             raise
 
-    async def generate_report_stream(self, system_prompt: str, user_prompt: str) -> AsyncIterator[str]:
-        url = f"{self.base_url}/v1beta/models/{self.model}:streamGenerateContent"
-        payload = self._build_payload(system_prompt, user_prompt)
-        params = {"key": self.api_key}
-        headers = {"Content-Type": "application/json"}
 
-        try:
-            logger.debug(f"Starting Gemini stream request to {url}")
-            async with self.client.stream("POST", url, json=payload, params=params, headers=headers) as response:
-                logger.debug(f"Gemini Stream Status: {response.status_code}")
-                if response.status_code != 200:
-                    error_text = await response.read()
-                    logger.error(f"Gemini Stream Error {response.status_code}: {error_text}")
-                    yield f"Error: {response.status_code}"
-                    return
-
-                logger.debug(f"Response Headers: {response.headers}")
-                
-                buffer = ""
-                decoder = json.JSONDecoder()
-                
-                async for chunk in response.aiter_lines():
-                    chunk = chunk.strip()
-                    if not chunk: continue
-                    
-                    buffer += chunk
-                    
-                    # Clean SSE (Proxy)
-                    if buffer.startswith("data:"):
-                        buffer = buffer[5:].strip()
-                        if buffer == "[DONE]": 
-                            buffer = ""
-                            continue
-
-                    # Attempt to parse one or more objects from buffer
-                    while buffer:
-                        # 1. Skip Delimiters / Wrappers
-                        buffer = buffer.lstrip().lstrip(",").lstrip("[").lstrip()
-                        
-                        if not buffer: break
-                        
-                        # 2. Try Raw Decode
-                        try:
-                            # raw_decode parses ONE object and returns the index where it ends
-                            data, idx = decoder.raw_decode(buffer)
-                            
-                            # Success! Move buffer pointer
-                            buffer = buffer[idx:]
-                            
-                            # Handle List Wrapper
-                            if isinstance(data, list):
-                                data = data[0]
-
-                            text = self._extract_text(data)
-                            if text:
-                                yield text
-                            
-                            # Continue loop to see if more objects are in buffer
-                            
-                        except json.JSONDecodeError:
-                            # Incomplete JSON. Wait for more chunks to complete the object.
-                            
-                            # Special handling for closing ']' of the main array
-                            if buffer.strip() == "]": 
-                                buffer = ""
-                            
-                            # Otherwise, break and wait for next chunk
-                            break 
-                            
-                        except Exception as e:
-                            logger.error(f"Stream Parse Error: {e}")
-                            break # Safety break
-                
-                logger.debug("Gemini Stream Finished Loop")
-                        
-        except Exception as e:
-            logger.error(f"Gemini Stream Exception: {e}")
-            yield f"\n[Network Error: {e}]"
 
     def _build_payload(self, system_prompt: str, user_prompt: str) -> dict:
         return {
@@ -273,48 +177,17 @@ class LLMService:
             logger.info(f"Generating LLM report for {data.location_name} using {settings.llm_provider}...")
             text = await asyncio.wait_for(
                 self.provider.generate_report(system_prompt, user_prompt), 
-                timeout=20.0
+                timeout=30.0
             )
             text += f"\n\n🤖 Generated by {self.provider.model}"
             return text
             
         except asyncio.TimeoutError:
-            logger.error("LLM Generation Timed Out (20s)")
-            return "⏱️ AI 响应超时 (20s)。"
+            logger.error("LLM Generation Timed Out (30s)")
+            return "⏱️ AI 响应超时 (30s)，请稍后重试。"
         except Exception as e:
             logger.error(f"LLM Generation Failed: {e}")
             return f"🤖 生成日报失败: {e}"
-
-    async def generate_weather_report_stream(self, data: WeatherData) -> AsyncIterator[str]:
-        """Generate a streaming weather report (Yields text chunks)"""
-        if not self.provider:
-            yield "⚠️ LLM服务未配置。"
-            return
-
-        # Fallback if streaming is disabled in config
-        if not settings.llm_streaming:
-            full_text = await self.generate_weather_report(data)
-            yield full_text
-            return
-
-        system_prompt = self._build_system_prompt()
-        user_prompt = self._format_weather_data(data)
-
-        try:
-            logger.info(f"Stream generating report for {data.location_name}...")
-            
-            # TODO: Add timeout for the Stream?
-            # For now, rely on internal client timeouts
-            stream = self.provider.generate_report_stream(system_prompt, user_prompt)
-            
-            async for chunk in stream:
-                yield chunk
-                
-            yield f"\n\n🤖 Generated by {self.provider.model}"
-            
-        except Exception as e:
-            logger.error(f"Stream Failed: {e}")
-            yield f"\n\n[Generation Error: {e}]"
 
     def _build_system_prompt(self) -> str:
         return (
