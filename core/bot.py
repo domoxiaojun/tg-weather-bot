@@ -51,6 +51,12 @@ class WeatherBot:
 
         location = context.args[0]
         
+        # React with "read" emoji like tq command
+        try:
+            await update.message.set_reaction("👀")
+        except Exception:
+            pass
+        
         # Check availability first
         # 1. Check availability
         if not self.llm_service.provider:
@@ -85,13 +91,14 @@ class WeatherBot:
             # 4. Final Send (New Message)
             try:
                 await update.message.reply_text(
-                    text=f"📝 **{weather_data.location_name} 天气日报**\n\n{report_text}",
-                    parse_mode=ParseMode.MARKDOWN
+                    text=f"🤖 <b>{weather_data.location_name} 天气日报</b>\n\n{report_text}",
+                    parse_mode=ParseMode.HTML  # 使用HTML格式
                 )
-            except Exception:
-                # Markdown Fallback
+            except Exception as e:
+                # HTML 解析失败时的后备：使用纯文本
+                logger.warning(f"HTML parsing failed, using plain text: {e}")
                 await update.message.reply_text(
-                    text=f"📝 {weather_data.location_name} 天气日报\n\n{report_text}",
+                    text=f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}",
                     parse_mode=None
                 )
 
@@ -400,6 +407,10 @@ class WeatherBot:
         
         data_parts = query.data.split("|")
         action = data_parts[0]
+        
+        # 忽略 "noop" 操作（用于加载状态的占位按钮，如 "⏳ 生成中..."）
+        if action == "noop":
+            return
         
         # 处理图表显示 (chart|location|type)
         if action == "chart":
@@ -936,14 +947,15 @@ class WeatherBot:
             try:
                 await context.bot.edit_message_text(
                     inline_message_id=inline_message_id,
-                    text=f"📝 **{weather_data.location_name} 天气日报**\n\n{report_text}",
-                    parse_mode=ParseMode.MARKDOWN
+                    text=f"🤖 <b>{weather_data.location_name} 天气日报</b>\n\n{report_text}",
+                    parse_mode=ParseMode.HTML  # 使用HTML格式
                 )
             except Exception as e:
-                # Fallback to Plain Text
+                # HTML Fallback to Plain Text
+                logger.warning(f"HTML parsing failed in inline mode, using plain text: {e}")
                 await context.bot.edit_message_text(
                     inline_message_id=inline_message_id,
-                    text=f"📝 {weather_data.location_name} 天气日报\n\n{report_text}",
+                    text=f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}",
                     parse_mode=None
                 )
 
