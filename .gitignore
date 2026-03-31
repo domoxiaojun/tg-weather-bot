@@ -48,3 +48,8 @@ data/bot_data.pickle
 # Environment Variables (CRITICAL)
 .env
 .env.local
+
+# Claude
+.claude/
+.idea/
+CLAUDE.md

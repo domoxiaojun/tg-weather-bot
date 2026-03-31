@@ -26,7 +26,8 @@ class Visualizer:
         plt.style.use('dark_background')
         plt.rcParams.update({
             'font.family': 'sans-serif',
-            'font.sans-serif': ['Microsoft YaHei', 'SimHei', 'Arial'],
+            'font.sans-serif': ['Noto Sans CJK SC', 'Microsoft YaHei', 'SimHei', 'Arial'],
+            'axes.unicode_minus': False,
             'axes.edgecolor': '#333333',
             'text.color': 'white',
             'xtick.color': '#888888',
