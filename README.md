@@ -4,7 +4,7 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 
 ## 🌟 Features
 
-- **Dual Engine Accuracy**: Combines **QWeather** (General data) + **Caiyun** (Minute-level rain forecast).
+- **QWeather-first Accuracy**: Uses QWeather's new full-path APIs for core weather, minutely precipitation, air quality, and alerts. Caiyun can be enabled as an optional minutely-rain enhancer.
 - **Visual Richness**:
   - Generates **Rainfall Trend Charts** (Matplotlib) when rain is detected.
   - Uses **Emoji Reactions** (bot reacts to your messages).
@@ -25,7 +25,8 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 
 1.  **Configure**:
     - Rename `.env.example` to `.env`.
-    - Fill in `BOT_TOKEN`, `QWEATHER_API_KEY`, `CAIYUN_API_TOKEN`.
+    - Fill in `BOT_TOKEN`, `QWEATHER_API_KEY`, and the QWeather root `QWEATHER_API_HOST`.
+    - Optional: set `ENABLE_CAIYUN_API=true` and `CAIYUN_API_TOKEN` to prefer Caiyun for minute-level rain.
 2.  **Run**:
 
     ```bash
@@ -38,6 +39,17 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
     # 3. 启动 Bot
     .venv\Scripts\python main.py
     ```
+
+## 🤖 LLM Configuration
+
+- Select provider with `LLM_PROVIDER=openai` or `LLM_PROVIDER=gemini`.
+- OpenAI model is configured with `OPENAI_MODEL` (default example: `gpt-5.5`).
+- Gemini model is configured with `GEMINI_MODEL`.
+- `LLM_MODEL` is still supported as a legacy fallback when provider-specific model values are not set.
+- For GPT-5.5, tune reasoning with `OPENAI_REASONING_EFFORT=none|minimal|low|medium|high|xhigh` and output length tendency with `OPENAI_VERBOSITY=low|medium|high`.
+- OpenAI defaults to `OPENAI_API_MODE=responses`; set `OPENAI_API_MODE=chat_completions` only for compatible proxies or legacy flows.
+- AI weather report style can be overridden with `LLM_WEATHER_REPORT_PROMPT` or `LLM_WEATHER_REPORT_PROMPT_FILE`; the built-in prompt already asks the LLM to use Telegram HTML, emoji headers, and blank-line sectioning.
+- If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and reduce `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` controls when the bot gives up.
 
 ## 🐳 Docker Deploy (Recommended)
 

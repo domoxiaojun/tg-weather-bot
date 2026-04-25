@@ -11,7 +11,8 @@ class MinutelyPrecipitation(BaseModel):
     """Minute-level precipitation data"""
     time: datetime
     precip: float = Field(..., description="Precipitation in mm")
-    probability: float = Field(0.0, description="Probability of precipitation (0-1)")
+    probability: Optional[float] = Field(None, description="Probability of precipitation (0-1)")
+    precip_type: Optional[str] = Field(None, description="Precipitation type, e.g. rain or snow")
 
 class HourlyForecast(BaseModel):
     """Hourly weather forecast"""

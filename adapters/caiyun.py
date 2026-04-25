@@ -48,11 +48,31 @@ class CaiyunAdapter(WeatherAdapter):
     def _get_skycon_info(self, skycon: str) -> tuple[str, str]:
         return SKYCON_MAP.get(skycon, (skycon, "❓"))
 
+    @staticmethod
+    def _safe_float(value, default: float = 0.0) -> float:
+        try:
+            if value is None or value == "":
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @classmethod
+    def _probability_over(cls, value, threshold: float) -> bool:
+        probability = cls._safe_float(value)
+        if probability > 1:
+            probability = probability / 100
+        return probability > threshold
+
     async def get_weather(self, location: str) -> Optional[WeatherData]:
         """
         Get Caiyun Data.
         Location MUST be 'lon,lat' format for Caiyun.
         """
+        if not self.token:
+            logger.warning("Caiyun API token is missing; skipping Caiyun request.")
+            return None
+
         if "," not in location:
             logger.warning(f"Caiyun requires coordinates (lon,lat), got: {location}")
             return None
@@ -61,6 +81,7 @@ class CaiyunAdapter(WeatherAdapter):
         
         # Request full data: alert, daily(15d), hourly(48h)
         url = f"https://api.caiyunapp.com/v2.6/{self.token}/{clean_location}/weather.json"
+        safe_url = f"https://api.caiyunapp.com/v2.6/***/{clean_location}/weather.json"
         params = {
             "alert": "true",
             "dailysteps": "15",
@@ -74,13 +95,14 @@ class CaiyunAdapter(WeatherAdapter):
             data = response.json()
             
             if data.get("status") != "ok":
-                logger.warning(f"Caiyun API Error: {url} - {data.get('error')}")
+                logger.warning(f"Caiyun API Error: {safe_url} - {data.get('error')}")
                 return None
             else:
                 logger.info("Caiyun API Success")
             
             result = data["result"]
             realtime = result["realtime"]
+            realtime_precip = self._safe_float(realtime.get("precipitation", {}).get("local", {}).get("intensity"))
             
             # --- 1. Realtime Data ---
             skycon = realtime["skycon"]
@@ -96,7 +118,7 @@ class CaiyunAdapter(WeatherAdapter):
             for i, p in enumerate(precips):
                 t = now_dt + timedelta(minutes=i)
                 prob = probs[i] if i < len(probs) else 0.0
-                minutely_list.append(MinutelyPrecipitation(time=t, precip=p, probability=prob))
+                minutely_list.append(MinutelyPrecipitation(time=t, precip=p, probability=prob, precip_type="rain"))
                 
             # --- 3. Alerts ---
             alerts_list = []
@@ -179,6 +201,12 @@ class CaiyunAdapter(WeatherAdapter):
                         wind_dir=w_dir,
                         wind_scale=w_speed, # Caiyun gives speed in km/h usually, distinct from scale
                     ))
+
+            hourly_precip_rain = any(h.precip > 0 for h in hourly_list[:3])
+            hourly_probability_rain = any(
+                self._probability_over(item.get("probability"), 0.3)
+                for item in hourly_data.get("precipitation", [])[:3]
+            )
 
             # --- 6. Daily Forecast ---
             daily_list = []
@@ -276,7 +304,7 @@ class CaiyunAdapter(WeatherAdapter):
                 now_wind_dir=str(realtime["wind"]["direction"]),
                 now_wind_scale=str(realtime["wind"]["speed"]),
                 now_humidity=int(realtime["humidity"] * 100),
-                now_precip=realtime["precipitation"]["local"]["intensity"],
+                now_precip=realtime_precip,
                 summary=result.get("forecast_keypoint", ""),
                 
                 minutely=minutely_list,
@@ -286,9 +314,18 @@ class CaiyunAdapter(WeatherAdapter):
                 air_quality=air_quality,
                 indices=indices_list,
                 
-                is_raining=(minutely_data.get("probability", [0])[0] > 0.3)
+                is_raining=(
+                    realtime_precip > 0
+                    or any(self._safe_float(precip) > 0 for precip in precips[:30])
+                    or any(self._probability_over(prob, 0.3) for prob in probs[:30])
+                    or hourly_precip_rain
+                    or hourly_probability_rain
+                )
             )
 
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Caiyun API Request Failed: HTTP {e.response.status_code} for {safe_url}")
+            return None
         except Exception as e:
-            logger.error(f"Caiyun API Request Failed: {e}", exc_info=True)
+            logger.error(f"Caiyun API Request Failed: {type(e).__name__}: {e}")
             return None

@@ -1,296 +1,449 @@
+import re
+from datetime import datetime, time as dtime
+from typing import Any, Dict, List, Optional
+
 import httpx
-from datetime import datetime
-from typing import Optional, Dict
 from loguru import logger
 
-from core.config import settings
 from adapters.base import WeatherAdapter
+from core.config import settings
 from domain.models import (
-    WeatherData, DailyForecast, HourlyForecast, AirQuality, WarningAlert, LifeIndex
+    AirQuality,
+    DailyForecast,
+    HourlyForecast,
+    LifeIndex,
+    MinutelyPrecipitation,
+    WarningAlert,
+    WeatherData,
 )
 
-class QWeatherAdapter(WeatherAdapter):
-    """Adapter for HeFeng Weather (QWeather)"""
-    
-    GEO_URL = "https://geoapi.qweather.com/v2/"
 
-    
+class QWeatherAdapter(WeatherAdapter):
+    """Adapter for QWeather using full-path endpoints and header auth."""
 
     def __init__(self):
         self.api_key = settings.qweather_api_key
-        self.base_url = settings.qweather_api_host
+        self.base_url = settings.qweather_api_host.rstrip("/")
         self.client = httpx.AsyncClient(timeout=10.0, http2=True)
 
-    async def _request(self, endpoint: str, params: Dict) -> Optional[Dict]:
-        """Internal helper for API requests"""
+    async def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+        """Request QWeather using the new full-path API style."""
+        if not endpoint.startswith("/"):
+            raise ValueError(f"QWeather endpoint must start with '/': {endpoint}")
+
+        request_params = dict(params or {})
+        request_params.setdefault("lang", "zh")
+        headers = {"X-QW-Api-Key": self.api_key}
+        url = f"{self.base_url}{endpoint}"
+
         try:
-            # Dynamic Base URL logic like in reference
-            current_base_url = self.base_url
-            if endpoint.startswith("geo/"): # If looking for location lookup, it uses geoapi
-                # Note: QWeather GEO API is always on geoapi.qweather.com
-                current_base_url = "https://geoapi.qweather.com/v2/"
-                endpoint = endpoint.replace("geo/", "") # Remove prefix
-            
-            url = f"{current_base_url}{endpoint}"
-            
-            params["key"] = self.api_key
-            params["lang"] = "zh"
-            response = await self.client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            if data.get("code") == "200":
-                logger.debug(f"QWeather API Success: {endpoint}")
-                return data
-            else:
-                logger.warning(f"QWeather API Error: {url} - {data.get('code')}")
+            response = await self.client.get(url, params=request_params, headers=headers)
+            try:
+                data = response.json()
+            except ValueError:
+                data = {"raw": response.text}
+
+            if not response.is_success:
+                logger.warning(
+                    "QWeather API HTTP error: {} {} - {}",
+                    response.status_code,
+                    endpoint,
+                    data,
+                )
                 return None
+
+            if endpoint.startswith(("/v7/", "/geo/")):
+                if data.get("code") == "200":
+                    logger.debug(f"QWeather API Success: {endpoint}")
+                    return data
+                logger.warning(f"QWeather API Error: {endpoint} - {data.get('code')} - {data}")
+                return None
+
+            logger.debug(f"QWeather API Success: {endpoint}")
+            return data
         except Exception as e:
-            logger.error(f"QWeather API Request Failed: {e}")
+            logger.error(f"QWeather API Request Failed: {endpoint} - {e}")
             return None
 
+    @staticmethod
+    def _to_float(value: Any, default: float = 0.0) -> float:
+        if value is None or value == "":
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+            return float(match.group(0)) if match else default
 
-    async def get_geo_location(self, location: str) -> Optional[Dict]:
-        """Resolve location string to Location ID and coords (with permanent cache)"""
+    @classmethod
+    def _to_int(cls, value: Any, default: int = 0) -> int:
+        return int(round(cls._to_float(value, float(default))))
+
+    @staticmethod
+    def _as_text(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, dict):
+            for key in ("name", "text", "category", "code"):
+                if value.get(key):
+                    return str(value[key])
+            return ""
+        return str(value)
+
+    @staticmethod
+    def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            logger.debug(f"Failed to parse QWeather datetime: {value}")
+            return None
+
+    @classmethod
+    def _coord_location(cls, lon: Any, lat: Any) -> str:
+        return f"{cls._to_float(lon):.2f},{cls._to_float(lat):.2f}"
+
+    async def get_geo_location(self, location: str) -> Optional[Dict[str, Any]]:
+        """Resolve location string to Location ID and coordinates."""
         from utils.cache import cache
-        
+
         cache_key = f"geo:{location.lower()}"
-        cached = cache.get(cache_key)
+        cached = await cache.get(cache_key)
         if cached:
             logger.debug(f"地理位置缓存命中: {location}")
             return cached
-        
-        url = "geo/city/lookup"
-        data = await self._request(url, {"location": location})
+
+        data = await self._request("/geo/v2/city/lookup", {"location": location})
         if data and data.get("location"):
             loc_data = data["location"][0]
-            cache.set(cache_key, loc_data, ttl=None)  # 永久缓存
+            await cache.set(cache_key, loc_data, ttl=None)
             return loc_data
-            
-        # Retry logic: "Shanghai, Shanghai" -> "Shanghai"
+
         if "," in location:
             simple_loc = location.split(",")[0].strip()
             if simple_loc:
                 logger.debug(f"Retrying geo lookup with simplified name: '{simple_loc}'")
-                data = await self._request(url, {"location": simple_loc})
+                data = await self._request("/geo/v2/city/lookup", {"location": simple_loc})
                 if data and data.get("location"):
                     loc_data = data["location"][0]
-                    cache.set(cache_key, loc_data, ttl=None)
+                    await cache.set(cache_key, loc_data, ttl=None)
                     return loc_data
 
         return None
 
-    async def get_weather(self, location: str) -> Optional[WeatherData]:
-        from utils.cache import cache
-        
-        # 1. Check Cache (1 hour TTL)
-        cache_key = f"qweather:{location}"
-        cached = cache.get(cache_key)
-        if cached:
-            logger.debug(f"Weather cache hit: {location}")
-            return WeatherData(**cached)
-        
-        # 2. Resolve Location
-        loc_info = await self.get_geo_location(location)
-        if not loc_info:
-            logger.warning(f"Could not resolve location: {location}")
-            return None
-        
-        loc_id = loc_info["id"]
-        loc_name = f"{loc_info['name']}, {loc_info['adm1']}"
-        coords = f"{loc_info['lon']},{loc_info['lat']}"
-
-        # 2. Fetch Data with Intelligent Caching
-        # Different data types have different update frequencies
-        from datetime import datetime, time as dtime
-        from utils.cache import cache as api_cache
-        
-        # Helper: Calculate TTL until midnight for today's data
-        now = datetime.now()
-        midnight = datetime.combine(now.date(), dtime(23, 59, 59))
-        seconds_until_midnight = int((midnight - now).total_seconds())
-        
-        # --- Real-time data (frequent updates) ---
-        now_key = f"qw:now:{loc_id}"
-        now_data = api_cache.get(now_key)
-        if not now_data:
-            now_data = await self._request("weather/now", {"location": loc_id})
-            if now_data:
-                api_cache.set(now_key, now_data, ttl=600)  # 10 min
-        
-        air_key = f"qw:air:{loc_id}"
-        air_data = api_cache.get(air_key)
-        if not air_data:
-            air_data = await self._request("air/now", {"location": loc_id})
-            if air_data:
-                api_cache.set(air_key, air_data, ttl=3600)  # 1 hour
-        
-        warning_key = f"qw:warning:{loc_id}"
-        warning_data = api_cache.get(warning_key)
-        if not warning_data:
-            warning_data = await self._request("warning/now", {"location": loc_id})
-            if warning_data:
-                api_cache.set(warning_key, warning_data, ttl=1800)  # 30 min
-        
-        # --- Forecast data (slower updates) ---
-        daily_key = f"qw:daily:{loc_id}"
-        daily_data = api_cache.get(daily_key)
+    def _map_daily(self, daily_data: Optional[Dict[str, Any]]) -> List[DailyForecast]:
+        daily_list: List[DailyForecast] = []
         if not daily_data:
-            daily_data = await self._request("weather/7d", {"location": loc_id})
-            if daily_data:
-                api_cache.set(daily_key, daily_data, ttl=43200)  # 12 hours
-        
-        hourly_key = f"qw:hourly:{loc_id}"
-        hourly_data = api_cache.get(hourly_key)
-        if not hourly_data:
-            hourly_data = await self._request("weather/24h", {"location": loc_id})
-            if hourly_data:
-                api_cache.set(hourly_key, hourly_data, ttl=21600)  # 6 hours
-        
-        # --- Daily indices (valid for the entire day) ---
-        indices_key = f"qw:indices:{loc_id}"
-        indices_data = api_cache.get(indices_key)
-        if not indices_data:
-            indices_data = await self._request("indices/1d", {"location": loc_id, "type": "1,2,3,5,9"})
-            if indices_data:
-                api_cache.set(indices_key, indices_data, ttl=seconds_until_midnight)  # Until midnight
+            return daily_list
 
-
-
-        if not now_data:
-            return None
-
-        # 3. Map to Unified Model
-        now = now_data["now"]
-        
-        # Build Forecast Lists using Pydantic Models
-        daily_list = []
-        if daily_data:
-            for d in daily_data.get("daily", []):
-                daily_list.append(DailyForecast(
+        for d in daily_data.get("daily", []):
+            daily_list.append(
+                DailyForecast(
                     date=datetime.strptime(d["fxDate"], "%Y-%m-%d"),
-                    temp_min=float(d["tempMin"]),
-                    temp_max=float(d["tempMax"]),
-                    text_day=d["textDay"],
-                    icon_day=d["iconDay"],
-                    text_night=d["textNight"],
-                    icon_night=d["iconNight"],
-                    precip=float(d["precip"]),
+                    temp_min=self._to_float(d.get("tempMin")),
+                    temp_max=self._to_float(d.get("tempMax")),
+                    text_day=d.get("textDay", ""),
+                    icon_day=d.get("iconDay", ""),
+                    text_night=d.get("textNight", ""),
+                    icon_night=d.get("iconNight", ""),
+                    precip=self._to_float(d.get("precip")),
                     sunrise=d.get("sunrise"),
                     sunset=d.get("sunset"),
                     moon_phase=d.get("moonPhase"),
-                    humidity=int(d.get("humidity", 0)),
-                    vis=float(d.get("vis", 0)),
+                    moon_rise=d.get("moonrise"),
+                    moon_set=d.get("moonset"),
+                    humidity=self._to_int(d.get("humidity")),
+                    vis=self._to_float(d.get("vis")),
                     uv_index=d.get("uvIndex", "N/A"),
                     wind_dir_day=d.get("windDirDay"),
                     wind_scale_day=d.get("windScaleDay"),
                     wind_dir_night=d.get("windDirNight"),
-                    wind_scale_night=d.get("windScaleNight")
-                ))
+                    wind_scale_night=d.get("windScaleNight"),
+                )
+            )
+        return daily_list
 
-        hourly_list = []
+    def _map_hourly(
+        self,
+        hourly_data: Optional[Dict[str, Any]],
+        now_data: Dict[str, Any],
+    ) -> List[HourlyForecast]:
+        hourly_list: List[HourlyForecast] = []
         if hourly_data:
             for h in hourly_data.get("hourly", []):
-                hourly_list.append(HourlyForecast(
-                    time=datetime.fromisoformat(h["fxTime"].replace("Z", "+00:00")),
-                    temp=float(h["temp"]),
-                    text=h["text"],
-                    icon=h["icon"],
-                    pop=float(h.get("pop", 0)),
-                    precip=float(h.get("precip", 0)),
-                    wind_dir=h.get("windDir"),
-                    wind_scale=h.get("windScale"),
-                    humidity=int(h.get("humidity", 0))
-                ))
-        
-        # 补全当前小时 (如果 API 返回的是下一小时起)
+                hourly_list.append(
+                    HourlyForecast(
+                        time=self._parse_datetime(h.get("fxTime")) or datetime.now(),
+                        temp=self._to_float(h.get("temp")),
+                        text=h.get("text", ""),
+                        icon=h.get("icon", ""),
+                        pop=self._to_float(h.get("pop")) if h.get("pop") not in (None, "") else None,
+                        precip=self._to_float(h.get("precip")),
+                        wind_dir=h.get("windDir", ""),
+                        wind_scale=h.get("windScale", ""),
+                        humidity=self._to_int(h.get("humidity")),
+                        pressure=self._to_float(h.get("pressure")) if h.get("pressure") not in (None, "") else None,
+                        cloud=self._to_int(h.get("cloud")) if h.get("cloud") not in (None, "") else None,
+                        dew=self._to_float(h.get("dew")) if h.get("dew") not in (None, "") else None,
+                    )
+                )
+
         if hourly_list and now_data:
             try:
-                # 获取当前观测时间
-                obs_time_str = now_data["now"]["obsTime"].replace("Z", "+00:00")
-                current_obs_time = datetime.fromisoformat(obs_time_str)
-                # 向下取整到整点 (18:39 -> 18:00)
-                current_hour_time = current_obs_time.replace(minute=0, second=0, microsecond=0)
-                
-                first_hourly_time = hourly_list[0].time
-                
-                # 如果第一个预报时间 晚于 当前整点时间 (说明当前小时缺失)
-                if first_hourly_time > current_hour_time:
-                    now = now_data["now"]
-                    # 估算当前降水概率 POP
-                    # 如果当前降水量 > 0，则 POP=100；否则沿用下一个小时的 POP (平滑过渡)
-                    current_precip = float(now.get("precip", 0))
-                    next_pop = hourly_list[0].pop if hourly_list[0].pop is not None else 0
-                    current_pop = 100.0 if current_precip > 0 else next_pop
-                    
-                    hourly_list.insert(0, HourlyForecast(
-                        time=current_hour_time,
-                        temp=float(now["temp"]),
-                        text=now["text"],
-                        icon=now["icon"],
-                        pop=current_pop,
-                        precip=current_precip,
-                        wind_dir=now.get("windDir", ""),
-                        wind_scale=now.get("windScale", ""),
-                        humidity=int(now.get("humidity", 0))
-                    ))
+                now = now_data["now"]
+                current_obs_time = self._parse_datetime(now.get("obsTime"))
+                if current_obs_time:
+                    current_hour_time = current_obs_time.replace(minute=0, second=0, microsecond=0)
+                    if hourly_list[0].time > current_hour_time:
+                        current_precip = self._to_float(now.get("precip"))
+                        next_pop = hourly_list[0].pop if hourly_list[0].pop is not None else 0
+                        current_pop = 100.0 if current_precip > 0 else next_pop
+                        hourly_list.insert(
+                            0,
+                            HourlyForecast(
+                                time=current_hour_time,
+                                temp=self._to_float(now.get("temp")),
+                                text=now.get("text", ""),
+                                icon=now.get("icon", ""),
+                                pop=current_pop,
+                                precip=current_precip,
+                                wind_dir=now.get("windDir", ""),
+                                wind_scale=now.get("windScale", ""),
+                                humidity=self._to_int(now.get("humidity")),
+                                pressure=self._to_float(now.get("pressure")) if now.get("pressure") else None,
+                                cloud=self._to_int(now.get("cloud")) if now.get("cloud") else None,
+                                dew=self._to_float(now.get("dew")) if now.get("dew") else None,
+                            ),
+                        )
             except Exception as e:
                 logger.warning(f"Failed to prepend current hour data: {e}")
-        
-        # Alerts
-        alerts_list = []
-        if warning_data and "warning" in warning_data:
-            for w in warning_data["warning"]:
-                alerts_list.append(WarningAlert(
-                    title=w["title"],
-                    type=w["typeName"],
-                    level=w["level"],
-                    text=w["text"],
-                    pub_time=datetime.fromisoformat(w["pubTime"].replace("Z", "+00:00")),
-                    source="QWeather"
-                ))
 
-        # Air Quality
-        aqi_obj = None
-        if air_data and "now" in air_data:
-            a = air_data["now"]
-            aqi_obj = AirQuality(
-                aqi=int(a["aqi"]),
-                category=a["category"],
-                primary=a.get("primary", ""),
-                pm2p5=float(a.get("pm2p5", 0))
+        return hourly_list
+
+    def _map_minutely(self, minutely_data: Optional[Dict[str, Any]]) -> List[MinutelyPrecipitation]:
+        minutely_list: List[MinutelyPrecipitation] = []
+        if not minutely_data:
+            return minutely_list
+
+        for item in minutely_data.get("minutely", []):
+            fx_time = self._parse_datetime(item.get("fxTime")) or datetime.now()
+            minutely_list.append(
+                MinutelyPrecipitation(
+                    time=fx_time,
+                    precip=self._to_float(item.get("precip")),
+                    probability=None,
+                    precip_type=item.get("type"),
+                )
             )
+        return minutely_list
 
-        return WeatherData(
+    def _map_alerts(self, warning_data: Optional[Dict[str, Any]]) -> List[WarningAlert]:
+        alerts: List[WarningAlert] = []
+        if not warning_data:
+            return alerts
+
+        for item in warning_data.get("alerts", []):
+            event_type = item.get("eventType") or {}
+            color = item.get("color") or {}
+            description = item.get("description") or ""
+            instruction = item.get("instruction") or ""
+            text = "\n".join(part for part in (description, instruction) if part)
+            alerts.append(
+                WarningAlert(
+                    title=item.get("headline") or item.get("title") or self._as_text(event_type) or "天气预警",
+                    type=self._as_text(event_type),
+                    level=self._as_text(color) or self._as_text(item.get("severity")),
+                    text=text,
+                    pub_time=self._parse_datetime(item.get("issuedTime")) or datetime.now(),
+                    source="QWeather",
+                )
+            )
+        return alerts
+
+    def _map_air_quality(self, air_data: Optional[Dict[str, Any]]) -> Optional[AirQuality]:
+        if not air_data:
+            return None
+
+        indexes = air_data.get("indexes") or []
+        if not indexes:
+            return None
+
+        preferred_codes = {"cn-mee", "cn_mep", "chn", "china", "cn"}
+        selected = next((i for i in indexes if str(i.get("code", "")).lower() in preferred_codes), None)
+        selected = selected or next((i for i in indexes if str(i.get("code", "")).lower() != "qaqi"), None)
+        selected = selected or indexes[0]
+
+        primary = selected.get("primaryPollutant") or {}
+        health = selected.get("health") or {}
+        advice = health.get("advice") or {}
+
+        pm2p5 = 0.0
+        for pollutant in air_data.get("pollutants", []):
+            code = str(pollutant.get("code") or pollutant.get("name") or "").lower().replace(".", "")
+            if code in {"pm25", "pm2p5"}:
+                concentration = pollutant.get("concentration") or {}
+                pm2p5 = self._to_float(concentration.get("value"))
+                break
+
+        return AirQuality(
+            aqi=self._to_int(selected.get("aqi") or selected.get("aqiDisplay")),
+            category=self._as_text(selected.get("category") or selected.get("level")),
+            primary=self._as_text(primary),
+            pm2p5=pm2p5,
+            description=self._as_text(advice.get("generalPopulation") or health.get("effect")),
+        )
+
+    def _map_indices(self, indices_data: Optional[Dict[str, Any]]) -> List[LifeIndex]:
+        if not indices_data:
+            return []
+        return [
+            LifeIndex(
+                type=i["type"],
+                name=i["name"],
+                category=i["category"],
+                text=i.get("text", ""),
+            )
+            for i in indices_data.get("daily", [])
+        ]
+
+    async def get_weather(self, location: str) -> Optional[WeatherData]:
+        from utils.cache import cache
+
+        cache_key = (
+            f"qweather:{location}:"
+            f"{settings.qweather_daily_days}:{settings.qweather_hourly_hours}:"
+            f"{settings.qweather_indices_types}:{settings.qweather_enable_minutely}"
+        )
+        cached = await cache.get(cache_key)
+        if cached:
+            logger.debug(f"Weather cache hit: {location}")
+            return WeatherData(**cached)
+
+        loc_info = await self.get_geo_location(location)
+        if not loc_info:
+            logger.warning(f"Could not resolve location: {location}")
+            return None
+
+        loc_id = loc_info["id"]
+        lon = loc_info["lon"]
+        lat = loc_info["lat"]
+        loc_name = f"{loc_info['name']}, {loc_info['adm1']}"
+        coords = f"{lon},{lat}"
+        coord_location = self._coord_location(lon, lat)
+
+        from utils.cache import cache as api_cache
+
+        now = datetime.now()
+        midnight = datetime.combine(now.date(), dtime(23, 59, 59))
+        seconds_until_midnight = max(60, int((midnight - now).total_seconds()))
+
+        now_key = f"qw:now:{loc_id}"
+        now_data = await api_cache.get(now_key)
+        if not now_data:
+            now_data = await self._request("/v7/weather/now", {"location": loc_id})
+            if now_data:
+                await api_cache.set(now_key, now_data, ttl=600)
+
+        minutely_data = None
+        if settings.qweather_enable_minutely:
+            minutely_key = f"qw:minutely:{coord_location}"
+            minutely_data = await api_cache.get(minutely_key)
+            if not minutely_data:
+                minutely_data = await self._request("/v7/minutely/5m", {"location": coord_location})
+                if minutely_data:
+                    await api_cache.set(minutely_key, minutely_data, ttl=300)
+
+        air_key = f"qw:air:v1:{coord_location}"
+        air_data = await api_cache.get(air_key)
+        if not air_data:
+            air_data = await self._request(f"/airquality/v1/current/{lat}/{lon}")
+            if air_data:
+                await api_cache.set(air_key, air_data, ttl=3600)
+
+        warning_key = f"qw:warning:v1:{coord_location}"
+        warning_data = await api_cache.get(warning_key)
+        if not warning_data:
+            warning_data = await self._request(
+                f"/weatheralert/v1/current/{lat}/{lon}",
+                {"localTime": "true"},
+            )
+            if warning_data:
+                await api_cache.set(warning_key, warning_data, ttl=1800)
+
+        daily_key = f"qw:daily:{settings.qweather_daily_days}:{loc_id}"
+        daily_data = await api_cache.get(daily_key)
+        if not daily_data:
+            daily_data = await self._request(f"/v7/weather/{settings.qweather_daily_days}", {"location": loc_id})
+            if daily_data:
+                await api_cache.set(daily_key, daily_data, ttl=43200)
+
+        hourly_key = f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}"
+        hourly_data = await api_cache.get(hourly_key)
+        if not hourly_data:
+            hourly_data = await self._request(f"/v7/weather/{settings.qweather_hourly_hours}", {"location": loc_id})
+            if hourly_data:
+                await api_cache.set(hourly_key, hourly_data, ttl=21600)
+
+        indices_key = f"qw:indices:{settings.qweather_indices_types}:{loc_id}"
+        indices_data = await api_cache.get(indices_key)
+        if not indices_data:
+            indices_data = await self._request(
+                "/v7/indices/1d",
+                {"location": loc_id, "type": settings.qweather_indices_types},
+            )
+            if indices_data:
+                await api_cache.set(indices_key, indices_data, ttl=seconds_until_midnight)
+
+        if not now_data:
+            return None
+
+        now_weather = now_data["now"]
+        daily_list = self._map_daily(daily_data)
+        hourly_list = self._map_hourly(hourly_data, now_data)
+        minutely_list = self._map_minutely(minutely_data)
+        alerts_list = self._map_alerts(warning_data)
+        aqi_obj = self._map_air_quality(air_data)
+        indices_list = self._map_indices(indices_data)
+
+        now_precip = self._to_float(now_weather.get("precip"))
+        minutely_summary = minutely_data.get("summary") if minutely_data else ""
+        summary = f"当前 {now_weather['text']}，温度 {now_weather['temp']}°C。"
+        if minutely_summary:
+            summary = f"{summary}\n{minutely_summary}"
+
+        is_raining = now_precip > 0 or any(item.precip > 0 for item in minutely_list[:6])
+        update_time = (
+            self._parse_datetime(now_data.get("updateTime"))
+            or self._parse_datetime(now_weather.get("obsTime"))
+            or datetime.now()
+        )
+
+        weather_obj = WeatherData(
             source="qweather",
+            update_time=update_time,
             location_name=loc_name,
             coords=coords,
-            now_temp=float(now["temp"]),
-            now_feels_like=float(now["feelsLike"]),
-            now_text=now["text"],
-            now_icon=now["icon"],
-            now_wind_dir=now.get("windDir"),
-            now_wind_scale=now.get("windScale"),
-            now_humidity=int(now.get("humidity", 0)),
-            now_precip=float(now.get("precip", 0)),
-            now_pressure=int(now.get("pressure", 0)),
-            now_vis=float(now.get("vis", 0)),
-            summary=f"当前 {now['text']}，温度 {now['temp']}°C。",
+            now_temp=self._to_float(now_weather.get("temp")),
+            now_feels_like=self._to_float(now_weather.get("feelsLike")),
+            now_text=now_weather["text"],
+            now_icon=now_weather["icon"],
+            now_wind_dir=now_weather.get("windDir"),
+            now_wind_scale=now_weather.get("windScale"),
+            now_humidity=self._to_int(now_weather.get("humidity")),
+            now_precip=now_precip,
+            now_pressure=self._to_int(now_weather.get("pressure")),
+            now_vis=self._to_float(now_weather.get("vis")),
+            summary=summary,
             daily=daily_list,
             hourly=hourly_list,
+            minutely=minutely_list,
             air_quality=aqi_obj,
             alerts=alerts_list,
-            indices=[
-                LifeIndex(
-                    type=i["type"], 
-                    name=i["name"], 
-                    category=i["category"], 
-                    text=i.get("text", "")
-                ) for i in indices_data.get("daily", [])
-            ] if indices_data else []
+            indices=indices_list,
+            is_raining=is_raining,
         )
-        
-        # Cache weather data for 1 hour (3600s)
-        cache.set(cache_key, weather_obj.dict(), ttl=3600)
-        logger.debug(f"Cached weather for {location} (TTL=1h)")
-        
+
+        await cache.set(cache_key, weather_obj.model_dump(mode="json"), ttl=600)
+        logger.debug(f"Cached weather for {location} (TTL=10m)")
         return weather_obj

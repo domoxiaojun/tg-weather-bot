@@ -247,9 +247,29 @@ def format_minutely_weather(minutely: List[MinutelyPrecipitation], summary: str)
     for m in minutely:
         time_str = escape_v2(m.time.strftime("%H:%M"))
         precip = escape_v2(m.precip)
-        prob = escape_v2(int(m.probability * 100))
-        lines.append(f"⏰ {time_str} \\| 🌧️ {precip}mm \\(概率 {prob}%\\)")
+        precip_type = {"rain": "雨", "snow": "雪"}.get(m.precip_type or "", "降水")
+        if m.probability is None:
+            lines.append(f"⏰ {time_str} \\| 🌧️ {escape_v2(precip_type)} {precip}mm")
+        else:
+            prob = escape_v2(int(m.probability * 100))
+            lines.append(f"⏰ {time_str} \\| 🌧️ {precip}mm \\(概率 {prob}%\\)")
     return "\n".join(result) + "\n" + foldable_text_v2(lines, folding_threshold=5)
+
+def format_rain_weather(data: WeatherData) -> str:
+    if data.minutely:
+        return format_minutely_weather(data.minutely, data.summary)
+
+    if data.hourly:
+        result = [f"📝 {escape_v2(data.summary or '暂无分钟级降水，使用逐小时预报兜底')}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
+        lines = []
+        for h in data.hourly[:6]:
+            time_str = escape_v2(h.time.strftime("%H:%M"))
+            precip = escape_v2(h.precip)
+            pop = escape_v2(int(h.pop)) if h.pop is not None else "N/A"
+            lines.append(f"⏰ {time_str} \\| 降水 {precip}mm \\| 降概 {pop}%")
+        return "\n".join(result) + "\n" + foldable_text_v2(lines, folding_threshold=5)
+
+    return f"📝 {escape_v2(data.summary or '暂无可用降水预报')}"
 
 def format_weather_response(data: WeatherData, view_type: str="default", days: Optional[int]=None, start_day: int=0) -> str:
     header = format_realtime_weather(data)
@@ -266,13 +286,18 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
     elif view_type == "indices":
         body = format_indices_data(data.indices)
     elif view_type == "rain":
-        body = format_minutely_weather(data.minutely, data.summary)
+        body = format_rain_weather(data)
     else:
         # Default: 使用专门的今日详情格式
         if data.daily:
             body = "\n" + format_today_detail(data.daily[0], data.indices, data.hourly)
     
-    return f"{header}\n\n{body}\n\n_数据源: {escape_v2(data.source.title())}_"
+    source_label = {
+        "qweather": "和风天气",
+        "caiyun": "彩云天气",
+        "fusion": "和风天气 & 彩云天气",
+    }.get(data.source, data.source.title())
+    return f"{header}\n\n{body}\n\n_数据源: {escape_v2(source_label)}_"
 
 def get_weather_keyboard(location_query: str, mode: str = "default", show_charts: bool = True) -> InlineKeyboardMarkup:
     """
@@ -281,9 +306,10 @@ def get_weather_keyboard(location_query: str, mode: str = "default", show_charts
     :param show_charts: 是否显示图表切换按钮 (Inline模式下因无法切图，建议关闭)
     """
     if mode == "chart":
-        # 图表模式：只显示返回按钮
+        # 图表模式：保留图表切换。Inline 图表消息无法可靠恢复成纯文本。
         keyboard = [[
-            InlineKeyboardButton("🔙 返回详情", callback_data=f"back|{location_query}")
+            InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{location_query}|temp"),
+            InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{location_query}|rain")
         ]]
     else:
         # 默认文本模式：功能按钮

@@ -23,7 +23,7 @@ WEBHOOK_URL=https://yourdomain.com
 # 可选配置
 WEBHOOK_PORT=8443
 WEBHOOK_PATH=/webhook
-WEBHOOK_SECRET=your-random-secret-token
+WEBHOOK_SECRET=
 ```
 
 ### 2. 重启 Bot

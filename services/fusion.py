@@ -1,9 +1,9 @@
-import asyncio
 from typing import Optional
 from loguru import logger
 
 from adapters.qweather import QWeatherAdapter
 from adapters.caiyun import CaiyunAdapter
+from core.config import settings
 from domain.models import WeatherData
 
 class WeatherFusionService:
@@ -15,16 +15,20 @@ class WeatherFusionService:
     def __init__(self):
         self.qweather = QWeatherAdapter()
         self.caiyun = CaiyunAdapter()
+
+    @property
+    def caiyun_enabled(self) -> bool:
+        return settings.enable_caiyun_api or settings.enable_caiyun_minutely
         
     async def get_fused_weather(self, location: str) -> Optional[WeatherData]:
         """
         Get the best possible weather data.
         Strategy:
         1. Fetch QWeather (Master) first to resolve location coordinates.
-        2. If successful, use those coords to fetch Caiyun (Master for Rain) in parallel.
+        2. If Caiyun is enabled, use those coords to fetch Caiyun as a rain enhancer.
         3. Merge:
            - Base: QWeather
-           - Enrich: Minutely, Alerts, Air Quality (if missing), Indices (Unique)
+           - Enrich: Caiyun minutely rain first, other fields only if QWeather is missing them
            - Summary: Intelligent combo
         """
         # 1. Fetch Master (QWeather) to get specific coords
@@ -33,8 +37,8 @@ class WeatherFusionService:
         
         # Scenario: QWeather Geocoding failed or API down
         if not qw_data:
-            # If input is coordinates, we can try Caiyun directly as fallback
-            if "," in location and any(c.isdigit() for c in location):
+            # If input is coordinates and Caiyun is enabled, try Caiyun as final fallback.
+            if self.caiyun_enabled and "," in location and any(c.isdigit() for c in location):
                  logger.info(f"Fusion: QWeather failed, trying Caiyun fallback for coords '{location}'...")
                  try:
                      return await self.caiyun.get_weather(location)
@@ -46,7 +50,15 @@ class WeatherFusionService:
             
         logger.info(f"Fusion: QWeather success. Coordinates: {qw_data.coords}")
 
-        # 2. Fetch Slave (Caiyun) using resolved coords
+        if not self.caiyun_enabled:
+            logger.info("Fusion: Caiyun disabled. Using QWeather data only.")
+            return qw_data
+
+        if not settings.caiyun_api_token:
+            logger.warning("Fusion: Caiyun enabled but CAIYUN_API_TOKEN is missing. Using QWeather data only.")
+            return qw_data
+
+        # 2. Fetch optional Caiyun rain enhancement using resolved coords
         try:
             logger.info(f"Fusion: Fetching Caiyun for '{qw_data.coords}'...")
             cy_data = await self.caiyun.get_weather(qw_data.coords)
@@ -62,14 +74,14 @@ class WeatherFusionService:
         
         # 3. Fusion Logic
         
-        # A. Minutely Data: Caiyun is King
-        qw_data.minutely = cy_data.minutely
+        # A. Minutely rain: Caiyun is preferred only when it actually returns data.
+        if cy_data.minutely:
+            qw_data.minutely = cy_data.minutely
+            qw_data.is_raining = cy_data.is_raining or qw_data.is_raining
         
-        # B. Alerts: Merge and Dedup
-        existing_titles = {a.title for a in qw_data.alerts}
-        for alert in cy_data.alerts:
-            if alert.title not in existing_titles:
-                qw_data.alerts.append(alert)
+        # B. Alerts: QWeather v1 is preferred; Caiyun fills only if missing.
+        if not qw_data.alerts and cy_data.alerts:
+            qw_data.alerts = cy_data.alerts
         
         # C. Air Quality: Fill if missing
         if not qw_data.air_quality and cy_data.air_quality:
@@ -81,6 +93,9 @@ class WeatherFusionService:
             qw_data.hourly = cy_data.hourly
         if not qw_data.daily and cy_data.daily:
             qw_data.daily = cy_data.daily
+
+        if not qw_data.indices and cy_data.indices:
+            qw_data.indices = cy_data.indices
             
         # E. Summary & Decision Making
         base_summary = qw_data.summary
@@ -98,7 +113,7 @@ class WeatherFusionService:
         qw_data.summary = combined_summary
         
         # F. Source tagging
-        qw_data.source = "和风天气 & 彩云天气"
+        qw_data.source = "fusion"
         
         logger.info("Fusion: Data merge complete.")
         return qw_data

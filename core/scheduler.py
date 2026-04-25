@@ -3,6 +3,7 @@ from telegram.constants import ParseMode
 from loguru import logger
 from tenacity import retry, stop_after_attempt, wait_fixed
 from datetime import datetime, timedelta, time
+from html import escape
 
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
@@ -12,6 +13,40 @@ from utils.formatter import format_weather_response
 # Global Service Instance for Jobs
 weather_service = WeatherFusionService()
 llm_service = LLMService()
+
+def _naive_dt(value: datetime) -> datetime:
+    return value.astimezone().replace(tzinfo=None) if value.tzinfo else value
+
+def will_rain_soon(weather, minutes: int = 30) -> bool:
+    """Check current/minutely/hourly rain signals with provider-neutral rules."""
+    if weather.is_raining:
+        return True
+
+    now = datetime.now()
+    deadline = now + timedelta(minutes=minutes)
+    stale_before = now - timedelta(minutes=2)
+
+    has_usable_minutely = False
+    for item in weather.minutely:
+        item_time = _naive_dt(item.time)
+        if item_time < stale_before:
+            continue
+        if item_time > deadline:
+            continue
+        has_usable_minutely = True
+        if item.precip > 0:
+            return True
+        if item.probability is not None and item.probability > 0.5:
+            return True
+
+    if not has_usable_minutely:
+        for hour in weather.hourly[:6]:
+            if hour.precip > 0:
+                return True
+            if hour.pop is not None and hour.pop >= 50:
+                return True
+
+    return False
 
 async def job_error_handler(context: ContextTypes.DEFAULT_TYPE):
     """Specific error handler for Background Jobs"""
@@ -34,8 +69,8 @@ async def send_daily_brief(context: ContextTypes.DEFAULT_TYPE):
                 if not weather: continue
 
                 report_text = await llm_service.generate_weather_report(weather)
-                header = f"☀️ **早安！{location}**\n------------------\n"
-                await context.bot.send_message(chat_id=chat_id, text=header + report_text, parse_mode=ParseMode.MARKDOWN)
+                header = f"☀️ <b>早安！{escape(location)}</b>\n------------------\n"
+                await context.bot.send_message(chat_id=chat_id, text=header + report_text, parse_mode=ParseMode.HTML)
                 logger.info(f"Sent Daily Brief to {chat_id} for {location}")
             except Exception as e:
                 logger.error(f"Daily Brief failed for {chat_id}/{location}: {e}")
@@ -66,19 +101,7 @@ async def check_rain_alerts(context: ContextTypes.DEFAULT_TYPE):
                 if not weather:
                     continue
                     
-                # 2. Check Rain Condition
-                # Logic: Is raining now OR High probability in next 30 min
-                will_rain = False
-                if weather.is_raining:
-                    will_rain = True
-                elif weather.minutely:
-                    # Check first 30 mins
-                    for m in weather.minutely[:30]:
-                        if m.probability > 0.5:
-                            will_rain = True
-                            break
-                            
-                if will_rain:
+                if will_rain_soon(weather):
                     # 3. Check Cooldown (don't spam, alert once per 4 hours)
                     last_time = last_alert.get(location)
                     if last_time and (datetime.now() - last_time) < timedelta(hours=4):
