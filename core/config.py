@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     enable_caiyun_api: bool = Field(False, description="Enable Caiyun as an optional rain enhancement source")
     enable_caiyun_minutely: bool = Field(False, description="Deprecated alias for ENABLE_CAIYUN_API")
     enable_weather_plots: bool = True
+    enable_rain_alerts: bool = Field(True, description="Enable scheduled rain alert checks")
+    enable_daily_brief: bool = Field(True, description="Enable scheduled daily brief pushes")
 
     # LLM Service
     llm_provider: str = Field("openai", description="LLM Provider: 'openai' or 'gemini'")
@@ -59,12 +61,33 @@ class Settings(BaseSettings):
     llm_weather_report_prompt: Optional[str] = Field(None, description="Custom system prompt for AI weather reports")
     llm_weather_report_prompt_file: Optional[str] = Field(None, description="Path to a custom AI weather report prompt file")
 
-    @field_validator("llm_model", "openai_model", "gemini_model", "llm_weather_report_prompt_file", mode="before")
+    @field_validator(
+        "llm_model",
+        "openai_model",
+        "gemini_model",
+        "openai_api_key",
+        "openai_api_base",
+        "gemini_api_key",
+        "gemini_api_base",
+        "llm_weather_report_prompt_file",
+        "webhook_url",
+        "webhook_secret",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_string(cls, value):
         if isinstance(value, str):
             value = value.strip()
             return value or None
+        return value
+
+    @field_validator("bot_token", "qweather_api_key", mode="before")
+    @classmethod
+    def validate_required_non_empty_string(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+        if not value:
+            raise ValueError("value must not be empty")
         return value
 
     @field_validator("llm_weather_report_prompt", mode="before")
@@ -145,6 +168,15 @@ class Settings(BaseSettings):
             raise ValueError(f"openai_api_mode must be one of: {', '.join(sorted(allowed))}")
         return value
 
+    @field_validator("llm_provider")
+    @classmethod
+    def validate_llm_provider(cls, value: str) -> str:
+        value = value.strip().lower()
+        allowed = {"openai", "gemini"}
+        if value not in allowed:
+            raise ValueError(f"llm_provider must be one of: {', '.join(sorted(allowed))}")
+        return value
+
     @field_validator("openai_reasoning_effort")
     @classmethod
     def validate_openai_reasoning_effort(cls, value: str) -> str:
@@ -183,5 +215,29 @@ class Settings(BaseSettings):
     webhook_port: int = Field(8443, description="Webhook 监听端口")
     webhook_path: str = Field("/webhook", description="Webhook 路径")
     webhook_secret: Optional[str] = Field(None, description="Webhook Secret Token (可选，增强安全性)")
+
+    @field_validator("bot_mode")
+    @classmethod
+    def validate_bot_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+        allowed = {"polling", "webhook"}
+        if value not in allowed:
+            raise ValueError(f"bot_mode must be one of: {', '.join(sorted(allowed))}")
+        return value
+
+    @field_validator("webhook_path")
+    @classmethod
+    def normalize_webhook_path(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("webhook_path must not be empty")
+        return value if value.startswith("/") else f"/{value}"
+
+    @field_validator("webhook_port")
+    @classmethod
+    def validate_webhook_port(cls, value: int) -> int:
+        if value < 1 or value > 65535:
+            raise ValueError("webhook_port must be between 1 and 65535")
+        return value
 
 settings = Settings()

@@ -133,12 +133,19 @@ def setup_scheduler(app: Application):
     if not jq:
         logger.warning("JobQueue is not available!")
         return
-        
+
+    rain_status = "OFF"
+    daily_status = "OFF"
+
     # 1. Rain Alerts (Every 5 mins)
-    jq.run_repeating(check_rain_alerts, interval=300, first=10)
+    if settings.enable_rain_alerts:
+        jq.run_repeating(check_rain_alerts, interval=300, first=10)
+        rain_status = "ON"
     
     # 2. Daily Brief (8:00 AM)
-    # Assumes server timezone (or UTC if Docker). 
-    jq.run_daily(send_daily_brief, time=time(8, 0))
+    # Assumes server timezone (or UTC if Docker).
+    if settings.enable_daily_brief:
+        jq.run_daily(send_daily_brief, time=time(8, 0))
+        daily_status = "ON"
     
-    logger.info("Scheduler initialized: Rain Alerts [ON], Daily Brief [ON]")
+    logger.info(f"Scheduler initialized: Rain Alerts [{rain_status}], Daily Brief [{daily_status}]")

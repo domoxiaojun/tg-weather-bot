@@ -38,6 +38,9 @@ def main():
                 BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市]"),
                 BotCommand("daily_my", "我的订阅 - 查看已订阅城市"),
                 BotCommand("daily_unsub", "取消订阅 - /daily_unsub [城市]"),
+                BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市]"),
+                BotCommand("rain_my", "我的降雨提醒 - 查看已订阅城市"),
+                BotCommand("rain_unsub", "取消降雨提醒 - /rain_unsub [城市]"),
             ]
             await application.bot.set_my_commands(commands)
             logger.info("✅ Bot命令已注册到Telegram")

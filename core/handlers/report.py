@@ -18,7 +18,7 @@ class ReportHandlers:
     async def report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report command for AI-generated summary."""
         if not context.args:
-            await send_text(update, context, "请提供城市名称，例如：`/report 北京`", parse_mode=ParseMode.MARKDOWN)
+            await send_text(update, context, "请提供城市名称，例如：<code>/report 北京</code>", parse_mode=ParseMode.HTML)
             return
 
         location = context.args[0]

@@ -92,9 +92,10 @@ class OpenAIProvider(LLMProvider):
                 "model": self.model,
                 "instructions": system_prompt,
                 "input": user_prompt,
-                "reasoning": {"effort": self.reasoning_effort},
                 "text": {"verbosity": self.verbosity},
             }
+            if self.reasoning_effort != "none":
+                request_kwargs["reasoning"] = {"effort": self.reasoning_effort}
             if self.temperature is not None:
                 request_kwargs["temperature"] = self.temperature
             if self.max_output_tokens is not None:
@@ -114,9 +115,10 @@ class OpenAIProvider(LLMProvider):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "reasoning_effort": self.reasoning_effort,
                 "verbosity": self.verbosity,
             }
+            if self.reasoning_effort != "none":
+                request_kwargs["reasoning_effort"] = self.reasoning_effort
             if self.temperature is not None:
                 request_kwargs["temperature"] = self.temperature
             if self.max_output_tokens is not None:

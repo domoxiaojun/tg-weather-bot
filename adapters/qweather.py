@@ -328,7 +328,10 @@ class QWeatherAdapter(WeatherAdapter):
         loc_id = loc_info["id"]
         lon = loc_info["lon"]
         lat = loc_info["lat"]
-        loc_name = f"{loc_info['name']}, {loc_info['adm1']}"
+        loc_name = loc_info.get("name", location)
+        adm1 = loc_info.get("adm1")
+        if adm1:
+            loc_name = f"{loc_name}, {adm1}"
         coords = f"{lon},{lat}"
         coord_location = self._coord_location(lon, lat)
 

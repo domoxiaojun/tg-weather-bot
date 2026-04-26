@@ -69,9 +69,12 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - `/tq <city>` - Query weather (e.g., `/tq Beijing`).
 - `/chart <city>` - View temperature/rain charts.
 - `/report <city>` - **AI Weather Report** (Requires OpenAI/Gemini Key).
+- `/rain_sub <city>` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts.
+- `/daily_sub <city>` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions.
 - **Send Location** - Auto-query + Rain Chart.
 - **Inline**: `@your_bot Beijing` - Share weather anywhere.
 
 ## 🔔 Subscriptions
 
 - Click the **🔔 Subscribe Rain Alert** button under any weather message to enable 24/7 rain monitoring for that location. (Updates every 5 mins).
+- Scheduled rain alerts and daily briefs can be toggled with `ENABLE_RAIN_ALERTS` and `ENABLE_DAILY_BRIEF`.

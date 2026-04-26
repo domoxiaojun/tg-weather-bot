@@ -72,18 +72,28 @@ server {
 
 ## Docker Compose Webhook 配置
 
-修改 `docker-compose.yml`:
+当前 `docker-compose.yml` 已经内置端口映射，默认会把宿主机 `8443` 映射到容器内 `8443`。只需要在 `.env` 中配置：
+
+```.env
+BOT_MODE=webhook
+WEBHOOK_URL=https://yourdomain.com
+WEBHOOK_PORT=8443
+WEBHOOK_PATH=/webhook
+```
+
+如果要手动检查 Compose 配置，关键部分如下：
 
 ```yaml
 services:
   bot:
-    # ... 其他配置
+    env_file:
+      - .env
     ports:
-      - "8443:8443" # 映射 webhook 端口
+      # Polling 模式可删除或注释本段；Webhook 模式需要给 1Panel/Nginx 反代访问。
+      - "${WEBHOOK_PORT:-8443}:${WEBHOOK_PORT:-8443}"
     environment:
-      - BOT_MODE=webhook
-      - WEBHOOK_URL=https://yourdomain.com
-      - WEBHOOK_PORT=8443
+      - REDIS_URL=redis://redis:6379/0
+      - TZ=Asia/Shanghai
 ```
 
 ---

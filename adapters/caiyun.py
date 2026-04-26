@@ -230,7 +230,7 @@ class CaiyunAdapter(WeatherAdapter):
                     t_min = temps[i]["min"]
                     
                     s_day = skycons[i]["value"] if i < len(skycons) else "CLEAR_DAY"
-                    s_night = skycons[i]["value"] # Caiyun mostly gives one skycon per day in basic array, daily.skycon_08h_20h and 20h_32h are separate
+                    s_night = skycons[i]["value"] if i < len(skycons) else s_day
                     
                     # Try to get day/night split if available
                     if "skycon_08h_20h" in daily_data:

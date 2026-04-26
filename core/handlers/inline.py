@@ -37,16 +37,16 @@ class InlineHandlers:
                     title="💡 使用说明",
                     description="输入城市名或开启位置权限",
                     input_message_content=InputTextMessageContent(
-                        "🌤️ **DomoWeather 使用方法**\n\n"
-                        "📍 **方式1：位置查询**\n"
+                        "🌤️ <b>DomoWeather 使用方法</b>\n\n"
+                        "📍 <b>方式1：位置查询</b>\n"
                         "   开启位置权限，直接回车即可\n\n"
-                        "✍️ **方式2：文本查询**\n"
-                        "   • `北京` - 今日天气\n"
-                        "   • `上海 3` - 未来3天\n"
-                        "   • `广州 24h` - 逐小时\n"
-                        "   • `深圳 降水` - 降水预报\n"
-                        "   • `杭州 指数` - 生活指数",
-                        parse_mode=ParseMode.MARKDOWN,
+                        "✍️ <b>方式2：文本查询</b>\n"
+                        "   • <code>北京</code> - 今日天气\n"
+                        "   • <code>上海 3</code> - 未来3天\n"
+                        "   • <code>广州 24h</code> - 逐小时\n"
+                        "   • <code>深圳 降水</code> - 降水预报\n"
+                        "   • <code>杭州 指数</code> - 生活指数",
+                        parse_mode=ParseMode.HTML,
                     ),
                 )
             ]

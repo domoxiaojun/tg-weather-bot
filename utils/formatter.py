@@ -86,7 +86,7 @@ def format_realtime_weather(data: WeatherData) -> str:
     if data.summary:
         summary_lines = data.summary.split('\n')
         for line in summary_lines:
-            lines.append(f"**{escape_v2(line)}**")
+            lines.append(f"*{escape_v2(line)}*")
         
     lines.extend([
         "",

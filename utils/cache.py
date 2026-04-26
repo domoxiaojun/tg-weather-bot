@@ -16,6 +16,33 @@ class CacheManager:
         self._memory_cache: dict[str, tuple[Optional[float], str]] = {}
         self._redis_unavailable_until = 0.0
         self._redis_logged_ready = False
+        self._last_memory_cleanup = 0.0
+        self._memory_cache_max_items = 2048
+
+    def _cleanup_memory_cache(self):
+        now = time.monotonic()
+        if now - self._last_memory_cleanup < 60 and len(self._memory_cache) <= self._memory_cache_max_items:
+            return
+
+        self._last_memory_cleanup = now
+        expired_keys = [
+            key
+            for key, (expires_at, _) in self._memory_cache.items()
+            if expires_at is not None and expires_at <= now
+        ]
+        for key in expired_keys:
+            self._memory_cache.pop(key, None)
+
+        overflow = len(self._memory_cache) - self._memory_cache_max_items
+        if overflow <= 0:
+            return
+
+        sorted_keys = sorted(
+            self._memory_cache,
+            key=lambda key: self._memory_cache[key][0] if self._memory_cache[key][0] is not None else float("inf"),
+        )
+        for key in sorted_keys[:overflow]:
+            self._memory_cache.pop(key, None)
 
     async def _get_redis(self):
         if self.redis is not None:
@@ -66,6 +93,7 @@ class CacheManager:
             if self.redis is not None:
                 await self._mark_redis_failed(e)
 
+        self._cleanup_memory_cache()
         cached = self._memory_cache.get(key)
         if not cached:
             return None
@@ -106,6 +134,7 @@ class CacheManager:
 
         expires_at = time.monotonic() + ttl if ttl is not None else None
         self._memory_cache[key] = (expires_at, json_value)
+        self._cleanup_memory_cache()
 
     async def delete(self, key: str):
         """删除缓存"""

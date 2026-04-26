@@ -24,17 +24,18 @@ class WeatherHandlers:
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         welcome_text = (
-            "👋 **欢迎使用 DomoWeather Bot！**\n\n"
-            "🔍 **查询天气**：\n"
-            "• `/tq 北京` —— 实时天气\n"
-            "• `/tq 北京 daily 3` —— 未来3天\n"
-            "• `/tq 北京 hourly 24` —— 未来24小时\n"
-            "• `/chart 北京` —— 生成趋势图\n"
-            "• `/report 北京` —— 生成AI天气日报 (NEW! ✨)\n"
-            "• **Inline模式**：直接在对话框输入 `@bot_name 北京`\n\n"
+            "👋 <b>欢迎使用 DomoWeather Bot！</b>\n\n"
+            "🔍 <b>查询天气</b>：\n"
+            "• <code>/tq 北京</code> —— 实时天气\n"
+            "• <code>/tq 北京 daily 3</code> —— 未来3天\n"
+            "• <code>/tq 北京 hourly 24</code> —— 未来24小时\n"
+            "• <code>/chart 北京</code> —— 生成趋势图\n"
+            "• <code>/report 北京</code> —— 生成AI天气日报\n"
+            "• <code>/rain_my</code> —— 查看降雨提醒订阅\n"
+            "• <b>Inline模式</b>：直接在对话框输入 <code>@bot_name 北京</code>\n\n"
             "数据源：和风天气 (QWeather) & 彩云天气 (Caiyun)"
         )
-        await send_text(update, context, welcome_text, parse_mode=ParseMode.MARKDOWN)
+        await send_text(update, context, welcome_text, parse_mode=ParseMode.HTML)
 
     async def chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/chart [城市] [daily|hourly|rain] -> 发送趋势图"""
@@ -45,10 +46,10 @@ class WeatherHandlers:
                 context,
                 "⚠️ 用法：/chart 城市 [daily|hourly|rain]\n\n"
                 "示例：\n"
-                "• `/chart 北京` - 逐小时温度图\n"
-                "• `/chart 上海 daily` - 逐日温度图\n"
-                "• `/chart 广州 rain` - 逐小时降水概率",
-                parse_mode=ParseMode.MARKDOWN,
+                "• <code>/chart 北京</code> - 逐小时温度图\n"
+                "• <code>/chart 上海 daily</code> - 逐日温度图\n"
+                "• <code>/chart 广州 rain</code> - 逐小时降水概率",
+                parse_mode=ParseMode.HTML,
             )
             return
 
