@@ -18,10 +18,13 @@ from telegram.error import BadRequest, EndPointNotFound, Forbidden, NetworkError
 from core.config import settings
 from domain.models import DailyForecast, HourlyForecast, LifeIndex, WarningAlert, WeatherData
 from services import telegram_rich as tr
+from domain.models import AirQuality
 from utils.rich_formatter import (
+    build_air_quality_blocks,
     build_daily_blocks,
     build_hourly_blocks,
     build_indices_blocks,
+    build_period_matrix,
     build_rain_alert_blocks,
     build_realtime_blocks,
     build_weather_blocks,
@@ -408,6 +411,84 @@ class WeatherBlockRenderingTests(unittest.TestCase):
         for view in ("default", "hourly", "daily", "indices", "rain"):
             payload = tr.rich_message(blocks=build_weather_blocks(make_weather(), view_type=view))
             json.dumps(payload, ensure_ascii=False)
+
+    def test_period_matrix_has_one_row_per_day_and_four_period_columns(self):
+        blocks = build_period_matrix(make_weather(hours=48))
+        self.assertEqual(len(blocks), 1)
+        cells = blocks[0]["cells"]
+        header = [c.get("text") for c in cells[0]]
+        self.assertEqual(header, ["日期", "凌晨", "上午", "下午", "夜间"])
+        for row in cells:
+            self.assertEqual(len(row), 5)
+        # 26 hours from 16:00 spans three calendar days.
+        self.assertGreaterEqual(len(cells) - 1, 2)
+
+    def test_period_matrix_leaves_uncovered_periods_invisible(self):
+        cells = build_period_matrix(make_weather(hours=48))[0]["cells"]
+        first_day = cells[1]
+        # Hourly data starts at 16:00, so 凌晨/上午 of day one have no hours.
+        self.assertNotIn("text", first_day[1])
+        self.assertNotIn("text", first_day[2])
+        self.assertIn("text", first_day[3])
+
+    def test_period_matrix_highlights_wet_periods(self):
+        cells = build_period_matrix(make_weather(hours=48))[0]["cells"]
+        marks = [
+            entry
+            for row in cells[1:]
+            for entry in row
+            if isinstance(entry.get("text"), dict) and entry["text"].get("type") == "marked"
+        ]
+        self.assertTrue(marks, "expected precipitation periods to be highlighted")
+
+    def test_period_matrix_needs_at_least_two_days(self):
+        self.assertEqual(build_period_matrix(make_weather(hours=4)), [])
+        self.assertEqual(build_period_matrix(make_weather(hours=0)), [])
+
+    def test_daily_view_includes_the_period_matrix(self):
+        blocks = build_daily_blocks(make_weather(hours=48), 7)
+        captions = [
+            b.get("caption") for b in walk(blocks) if b["type"] == "table" and b.get("caption")
+        ]
+        self.assertTrue(any("时段概览" in str(c) for c in captions))
+
+    def test_air_quality_details_lists_all_reported_pollutants(self):
+        data = make_weather()
+        data.air_quality = AirQuality(
+            aqi=82,
+            category="良",
+            primary="PM2.5",
+            pm2p5=35.4,
+            pm10=60.0,
+            o3=90.0,
+            no2=25.0,
+            so2=5.0,
+            co=0.6,
+            description="敏感人群减少户外活动",
+        )
+        blocks = build_air_quality_blocks(data)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0]["type"], "details")
+        self.assertIn("AQI 82", blocks[0]["summary"])
+        pollutant_table = [b for b in walk(blocks) if b["type"] == "table"][0]
+        names = [row[0].get("text") for row in pollutant_table["cells"][1:]]
+        self.assertEqual(names, ["PM2.5", "PM10", "O₃", "NO₂", "SO₂", "CO"])
+        rendered = str(blocks)
+        self.assertIn("敏感人群减少户外活动", rendered)
+
+    def test_air_quality_block_skipped_without_data(self):
+        data = make_weather()
+        data.air_quality = None
+        self.assertEqual(build_air_quality_blocks(data), [])
+
+    def test_realtime_view_drops_duplicate_air_row_when_details_present(self):
+        data = make_weather()
+        data.air_quality = AirQuality(aqi=50, category="优", pm2p5=12.0)
+        blocks = build_realtime_blocks(data)
+        stats_table = [b for b in walk(blocks) if b["type"] == "table"][0]
+        labels = [row[0].get("text") for row in stats_table["cells"]]
+        self.assertNotIn("🌫️ 空气", labels)
+        self.assertTrue(any(b["type"] == "details" and "空气质量" in b["summary"] for b in walk(blocks)))
 
     def test_rich_text_is_not_markdown_escaped(self):
         blocks = build_realtime_blocks(make_weather())

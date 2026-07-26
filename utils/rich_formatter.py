@@ -89,7 +89,119 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
     return blocks
 
 
-def _current_stats_rows(data: WeatherData) -> List[list]:
+# Intraday buckets for the period overview matrix: hour // 6.
+PERIOD_LABELS = ("凌晨", "上午", "下午", "夜间")
+PERIOD_MATRIX_MAX_DAYS = 4
+
+
+def build_period_matrix(data: WeatherData) -> List[dict]:
+    """Rows = date, columns = 凌晨/上午/下午/夜间 — "when exactly will it rain".
+
+    Only covers the days the hourly forecast reaches (72h by default): daily
+    forecasts carry day/night granularity only, so anything further out cannot
+    be split into periods honestly.
+    """
+    if not data.hourly:
+        return []
+
+    grouped: dict = {}
+    for hour in data.hourly:
+        day = hour.time.date()
+        grouped.setdefault(day, {}).setdefault(hour.time.hour // 6, []).append(hour)
+
+    days = sorted(grouped)[:PERIOD_MATRIX_MAX_DAYS]
+    if len(days) < 2:
+        return []
+
+    rows: List[list] = []
+    any_rain = False
+    for day in days:
+        row = [cell(f"{day.strftime('%m-%d')} {_weekday_cn(day)}", align="left")]
+        for period in range(4):
+            hours = grouped[day].get(period)
+            if not hours:
+                # Omitting text renders an invisible cell — right for past or
+                # not-yet-forecast periods.
+                row.append(cell(align="center"))
+                continue
+
+            temps = [hour.temp for hour in hours if hour.temp is not None]
+            icons = [hour.icon for hour in hours if hour.icon]
+            icon = weather_icon(max(set(icons), key=icons.count)) if icons else "—"
+            if temps:
+                low, high = int(round(min(temps))), int(round(max(temps)))
+                temp_text = f"{low}~{high}°" if low != high else f"{low}°"
+            else:
+                temp_text = "—"
+
+            pops = [hour.pop for hour in hours if hour.pop is not None]
+            wet = any((hour.precip or 0) > 0 for hour in hours) or (pops and max(pops) >= 50)
+            text = f"{icon} {temp_text}"
+            if wet:
+                any_rain = True
+                row.append(cell(marked(text), align="center"))
+            else:
+                row.append(cell(text, align="center"))
+        rows.append(row)
+
+    caption = "时段概览 · 高亮表示该时段可能降水" if any_rain else "时段概览"
+    return [
+        table(
+            rows,
+            headers=["日期", *PERIOD_LABELS],
+            aligns=["left", "center", "center", "center", "center"],
+            bordered=True,
+            caption=caption,
+        )
+    ]
+
+
+def build_air_quality_blocks(data: WeatherData) -> List[dict]:
+    """Collapsible pollutant breakdown — six fields the text views cannot fit."""
+    air = data.air_quality
+    if air is None:
+        return []
+
+    pollutants = (
+        ("PM2.5", air.pm2p5),
+        ("PM10", air.pm10),
+        ("O₃", air.o3),
+        ("NO₂", air.no2),
+        ("SO₂", air.so2),
+        ("CO", air.co),
+    )
+    rows = [
+        [name, format_weather_number(value)]
+        for name, value in pollutants
+        if value is not None
+    ]
+    if not rows and not air.description and not air.primary:
+        return []
+
+    inner: List[dict] = []
+    if rows:
+        inner.append(
+            table(
+                rows,
+                headers=["污染物", "浓度"],
+                aligns=["left", "right"],
+                caption="浓度单位 μg/m³（CO 为 mg/m³）",
+            )
+        )
+    if air.primary:
+        inner.append(paragraph(["主要污染物: ", bold(air.primary)]))
+    if air.description:
+        inner.append(paragraph(italic(air.description)))
+
+    summary_bits = ["🌫️ 空气质量"]
+    if air.aqi is not None:
+        summary_bits.append(f"AQI {air.aqi}")
+    if air.category:
+        summary_bits.append(air.category)
+    return [details(" · ".join(summary_bits), inner)]
+
+
+def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[list]:
     rows: List[list] = []
     wind = _plain_wind(
         data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
@@ -106,7 +218,7 @@ def _current_stats_rows(data: WeatherData) -> List[list]:
         rows.append(["📈 气压", f"{format_weather_number(data.now_pressure)}hPa"])
     if data.now_cloud is not None:
         rows.append(["☁️ 云量", f"{data.now_cloud}%"])
-    if data.air_quality:
+    if include_air and data.air_quality:
         aqi = data.air_quality
         air_bits = []
         if aqi.aqi is not None:
@@ -190,11 +302,15 @@ def build_realtime_blocks(data: WeatherData) -> List[dict]:
 
     blocks.extend(build_alert_blocks(data))
 
-    rows = _current_stats_rows(data)
+    # The pollutant breakdown carries its own always-visible summary line, so
+    # the stats table drops its duplicate air row when that block is present.
+    air_blocks = build_air_quality_blocks(data)
+    rows = _current_stats_rows(data, include_air=not air_blocks)
     if rows:
         blocks.append(table(rows, aligns=["left", "left"]))
 
     blocks.extend(_today_detail_blocks(data))
+    blocks.extend(air_blocks)
     blocks.append(build_footer(data))
     return blocks
 
@@ -284,6 +400,8 @@ def build_daily_blocks(
 
     blocks = [
         *build_header(data, f"未来 {len(forecasts)} 天"),
+        # Period matrix first: it answers "which part of which day" at a glance.
+        *build_period_matrix(data),
         table(rows, headers=headers, aligns=["left", "center", "right", "right", "right"], bordered=True),
     ]
 
