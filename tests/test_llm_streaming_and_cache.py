@@ -71,6 +71,17 @@ class StreamingReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(seen[-1], "<b>晴天</b>，适合出门")
         self.assertEqual(len(seen), 3)
 
+    async def test_model_time_header_is_replaced_with_live_data_time(self):
+        # 模型硬写的时间行必须被剥掉，换成基于本次天气数据的新鲜时间行，
+        # 否则缓存命中时用户会看到几小时前的"当前时间"。
+        self.service.provider = FakeStreamingProvider(
+            ["当前时间：07月26日 04:30\n\n🌤️ <b>现在</b>\n晴。"]
+        )
+        text = await self.service.generate_weather_report(make_weather())
+        self.assertNotIn("04:30", text)
+        self.assertTrue(text.startswith("🕐 数据时间：07月26日 08:00"))
+        self.assertIn("<b>现在</b>", text)
+
     async def test_progress_callback_errors_do_not_break_generation(self):
         async def broken(_partial: str):
             raise RuntimeError("edit failed")
