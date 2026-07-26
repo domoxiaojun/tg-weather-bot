@@ -1,9 +1,11 @@
 import asyncio
 import os
+import warnings
 
 from loguru import logger
 from telegram import __version__ as ptb_version
 from telegram.constants import BOT_API_VERSION
+from telegram.warnings import PTBUserWarning
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -84,7 +86,11 @@ async def _set_commands(application: Application, commands, scope=None) -> None:
         if scope is not None:
             api_kwargs["scope"] = scope.to_dict()
         try:
-            await application.bot.do_api_request("setMyCommands", api_kwargs=api_kwargs)
+            # PTB warns that setMyCommands has a typed wrapper, but the wrapper
+            # cannot carry the Bot API 10.2 is_ephemeral flag — expected here.
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", PTBUserWarning)
+                await application.bot.do_api_request("setMyCommands", api_kwargs=api_kwargs)
             return
         except Exception as error:
             logger.warning(f"设置 ephemeral 命令标记失败，回退标准注册: {error}")
