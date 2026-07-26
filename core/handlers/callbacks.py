@@ -53,7 +53,8 @@ class CallbackHandlers:
         action = data_parts[0]
 
         if action == "noop":
-            await query.answer()
+            # The only noop button is the inline AI-report placeholder.
+            await self._safe_answer(query, "⏳ 日报生成中，请稍候…")
             return
 
         if action == "chart":
@@ -64,7 +65,7 @@ class CallbackHandlers:
             return
 
         if action == "back":
-            await query.answer("图表消息无法直接恢复文字，请重新查询或点击刷新。", show_alert=True)
+            await query.answer("图表消息无法直接恢复文字，请点「📝 文字天气」按钮或重新发送 /tq 城市。", show_alert=True)
             return
 
         location = data_parts[1] if len(data_parts) > 1 else None
@@ -99,7 +100,15 @@ class CallbackHandlers:
         context: ContextTypes.DEFAULT_TYPE,
         data_parts: list[str],
     ):
-        """City-disambiguation button: tq|{coords}|{view}|{start_day}|{limit}"""
+        """City choice / text-weather button: tq|{coords}|{view}|{start_day}|{limit}"""
+        query = update.callback_query
+        if query.inline_message_id:
+            await self._safe_answer(
+                query,
+                "⚠️ 这条消息里无法发送文字天气，请在聊天中发送 /tq 城市。",
+                show_alert=True,
+            )
+            return
         if self.weather_handlers is None:
             await self._notify(update, context, "❌ 功能暂不可用")
             return
@@ -121,6 +130,11 @@ class CallbackHandlers:
             start_day=start_day,
             limit=limit or None,
         )
+        # Retire the chooser buttons so the list cannot be tapped repeatedly.
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
 
     async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
         query = update.callback_query
@@ -245,7 +259,7 @@ class CallbackHandlers:
             return
 
         if is_inline:
-            await self._notify(update, context, "⚠️ Inline 图表需要 SUPER_ADMIN_ID 用于预上传 file_id 缓存。")
+            await self._notify(update, context, "⚠️ 这条消息里暂时无法生成图表，请私聊 Bot 发送「/chart 城市」查看。")
             return
 
         sent = await context.bot.send_photo(
@@ -315,6 +329,12 @@ class CallbackHandlers:
             return
 
         await self._safe_answer(query)
+        from core.handlers.subscriptions import (
+            rain_alert_expectation,
+            subscription_limit_message,
+            subscription_limit_reached,
+        )
+
         # Callback tokens may be coordinates; normalize to a display name so
         # the subscription list stays deduplicated and human-readable.
         try:
@@ -327,16 +347,23 @@ class CallbackHandlers:
             adm1 = loc_info.get("adm1")
             location = f"{name}, {adm1}" if adm1 and adm1 != name else name
 
+        chat = update.effective_chat
+        group_note = "（本群成员都会收到）" if chat is not None and chat.type != "private" else ""
+
         subs = context.chat_data.get("subs", [])
-        if location not in subs:
-            subs.append(location)
-            context.chat_data["subs"] = subs
+        if location in subs:
             await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"✅ 已订阅降雨提醒: {location}",
+                chat_id=chat.id,
+                text=f"ℹ️ 已经订阅过 {location} 了。管理订阅：/rain_my",
             )
-        else:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id,
-                text=f"ℹ️ 你已经订阅了 {location}。",
-            )
+            return
+        if subscription_limit_reached(subs):
+            await context.bot.send_message(chat_id=chat.id, text=subscription_limit_message("/rain_my"))
+            return
+
+        subs.append(location)
+        context.chat_data["subs"] = subs
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text=f"✅ 已订阅 {location} 的降雨提醒{group_note}。\n{rain_alert_expectation()}",
+        )

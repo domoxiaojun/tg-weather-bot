@@ -20,6 +20,16 @@ from services.chart_cache import (
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
 from utils.formatter import format_weather_response
+from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_quiet_hours
+
+__all__ = [
+    "DEFAULT_DAILY_BRIEF_TIME",
+    "check_rain_alerts",
+    "dispatch_daily_briefs",
+    "parse_brief_time",
+    "setup_scheduler",
+    "will_rain_soon",
+]
 
 
 def _naive_dt(value: datetime) -> datetime:
@@ -75,16 +85,9 @@ DEFAULT_DAILY_BRIEF_TIME = "08:00"
 _daily_brief_last_check: dict[int, datetime] = {}
 
 
-def parse_brief_time(value: str):
-    """Parse HH:MM; returns (hour, minute) or None."""
-    try:
-        hour_text, minute_text = value.strip().split(":", 1)
-        hour, minute = int(hour_text), int(minute_text)
-    except (ValueError, AttributeError):
-        return None
-    if 0 <= hour <= 23 and 0 <= minute <= 59:
-        return hour, minute
-    return None
+def _rain_lookahead_minutes() -> int:
+    """Look slightly past the next check so rain cannot start inside the gap."""
+    return max(30, settings.rain_check_interval_minutes + 10)
 
 
 def _remove_subscription(chat_data: dict, list_key: str, location: str) -> None:
@@ -202,30 +205,60 @@ async def check_rain_alerts(
     *,
     weather_service: WeatherFusionService,
 ):
-    """Fetch each unique location once, then fan out rain notifications."""
+    """Fetch each unique location once, then fan out rain notifications.
+
+    Alerts are episode-based: a location alerts once when it transitions to
+    "rain expected" and stays silent until the episode ends. Quiet hours pause
+    the whole check (state is untouched, so post-quiet checks catch up).
+    """
     app = context.application
     if not hasattr(app, "chat_data") or not app.chat_data:
         return
+
+    quiet_window = parse_quiet_hours(settings.rain_alert_quiet_hours)
+    if quiet_window is not None:
+        local_now = datetime.now(ZoneInfo(settings.timezone)).time()
+        if is_within_quiet_hours(local_now, quiet_window):
+            logger.debug("Rain check skipped during quiet hours")
+            return
 
     grouped: dict[str, dict] = {}
     for chat_id, data in app.chat_data.items():
         for location in data.get("subs", []):
             key = _location_key(location)
-            entry = grouped.setdefault(key, {"location": location, "subscribers": []})
+            entry = grouped.setdefault(key, {"location": location, "key": key, "subscribers": []})
             entry["subscribers"].append((chat_id, data, location))
+
+    bot_data = getattr(app, "bot_data", None)
+    rain_state = bot_data.setdefault("rain_state", {}) if isinstance(bot_data, dict) else {}
+    state_changed = False
 
     dirty_chats: set = set()
     cooldown = timedelta(hours=settings.rain_alert_cooldown_hours)
     logger.debug(f"Running rain check for {len(grouped)} unique locations")
 
     async def process(entry):
+        nonlocal state_changed
         location = entry["location"]
+        state_key = entry["key"]
         try:
             weather = await asyncio.wait_for(
                 weather_service.get_fused_weather(location, profile="rain"),
                 timeout=LOCATION_WEATHER_TIMEOUT,
             )
-            if not weather or not will_rain_soon(weather):
+            if not weather:
+                # Fetch failure: keep the previous state rather than guessing.
+                return
+
+            raining = will_rain_soon(weather, minutes=_rain_lookahead_minutes())
+            previously_raining = bool(rain_state.get(state_key, False))
+            if raining != previously_raining:
+                rain_state[state_key] = raining
+                state_changed = True
+            if not raining:
+                return
+            if previously_raining:
+                # Ongoing episode — subscribers were already notified.
                 return
 
             alert_text = "🚨 *自动降雨提醒*\n\n" + format_weather_response(
@@ -297,7 +330,20 @@ async def check_rain_alerts(
             logger.error(f"Rain check failed for {location}: {error}")
 
     await _bounded_gather(list(grouped.values()), process)
+
+    # Drop state for locations nobody subscribes to anymore.
+    stale_keys = set(rain_state) - set(grouped)
+    if stale_keys:
+        for stale in stale_keys:
+            rain_state.pop(stale, None)
+        state_changed = True
+
     await _persist_chat_data(app, dirty_chats)
+    if state_changed and not dirty_chats and hasattr(app, "update_persistence"):
+        try:
+            await app.update_persistence()
+        except Exception as error:
+            logger.debug(f"Rain state persistence failed: {error}")
 
 
 def setup_scheduler(
@@ -317,11 +363,11 @@ def setup_scheduler(
     if settings.enable_rain_alerts:
         job_queue.run_repeating(
             partial(check_rain_alerts, weather_service=weather_service),
-            interval=300,
+            interval=settings.rain_check_interval_minutes * 60,
             first=10,
             name="rain-alerts",
         )
-        rain_status = "ON"
+        rain_status = f"ON ({settings.rain_check_interval_minutes}min)"
 
     if settings.enable_daily_brief:
         # Minute-level dispatcher so each subscription can pick its own HH:MM.

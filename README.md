@@ -12,7 +12,7 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
   - Uses **Emoji Reactions** (bot reacts to your messages).
   - Beautiful Markdown formatting with Indices (Life Suggestions).
 - **Proactive Intelligence**:
-  - **Rain Alerts**: Subscribe to locations; the bot checks every 5 minutes and alerts you if rain is approaching.
+  - **Rain Alerts**: Subscribe to locations; the bot checks on a configurable interval (`RAIN_CHECK_INTERVAL_MINUTES`, default 30) and alerts once per rain episode when rain is approaching.
   - **Inline Mode**: Type `@botname Shanghai` in any chat to share weather cards.
   - **Interactive**: "Refresh" button to update weather instantly.
 
@@ -90,12 +90,18 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 
 ## 🔔 Subscriptions
 
-- Click the **🔔 Subscribe Rain Alert** button under any weather message to enable 24/7 rain monitoring for that location. (Updates every 5 mins).
+- Click the **🔔 Subscribe Rain Alert** button under any weather message to enable rain monitoring for that location (checked every `RAIN_CHECK_INTERVAL_MINUTES`, default 30).
 - Scheduled rain alerts and daily briefs can be toggled with `ENABLE_RAIN_ALERTS` and `ENABLE_DAILY_BRIEF`.
 - Daily briefs fire at 08:00 in the `TIMEZONE` configured in `.env` (default `Asia/Shanghai`); each subscription can override this with `/daily_sub <city> HH:MM` (minute-level dispatcher).
-- Rain alerts attach the hourly precipitation chart and respect `RAIN_ALERT_COOLDOWN_HOURS` (default 4h) per chat+location.
+- Rain alerts are **episode-based**: one alert when rain becomes imminent, silence until that episode ends; `RAIN_ALERT_COOLDOWN_HOURS` (default 4h) additionally guards against flapping, and `RAIN_ALERT_QUIET_HOURS` (default 23:00-07:00) pauses checks overnight.
+- Each chat can subscribe up to `MAX_SUBSCRIPTIONS_PER_CHAT` (default 3) cities per subscription type; rain alerts attach the hourly precipitation chart.
 - Subscription locations are geocoded and normalized on subscribe; chats that block the bot are removed from push lists automatically.
 - Ambiguous city names (e.g. 朝阳) prompt an inline chooser instead of silently picking the first match.
+
+## ⚙️ BotFather Checklist
+
+- **Inline mode**: enable via `/setinline`.
+- **Inline feedback**: set `/setinlinefeedback` to **Enabled (100%)** — the inline AI report relies on `chosen_inline_result` to replace its placeholder message; without feedback the placeholder never updates.
 
 ## 📚 API Notes
 

@@ -201,7 +201,8 @@ class InlineHandlers:
                     title=f"🤖 {data.location_name} · AI 天气日报",
                     description="点击发送，Bot 将实时生成日报",
                     input_message_content=InputTextMessageContent(
-                        f"⏳ 正在为 {data.location_name} 撰写 AI 天气日报...\n(Domo 正在思考 💭)",
+                        f"⏳ 正在为 {data.location_name} 撰写 AI 天气日报…\n"
+                        "通常需要 10-30 秒；若长时间没有更新，请回到输入框重新选择一次。",
                         parse_mode=None,
                     ),
                     reply_markup=loading_keyboard,

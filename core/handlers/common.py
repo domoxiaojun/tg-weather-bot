@@ -16,6 +16,16 @@ class BotDependencies:
 DAILY_WORDS = {"daily", "day", "days", "forecast", "预报", "未来"}
 HOURLY_WORDS = {"hourly", "hour", "hours", "逐小时", "小时"}
 CHART_TYPES = {"daily", "hourly", "rain", "temp"}
+RELATIVE_DAY_WORDS = {
+    "今天": 0,
+    "今日": 0,
+    "today": 0,
+    "明天": 1,
+    "明日": 1,
+    "tomorrow": 1,
+    "后天": 2,
+    "大后天": 3,
+}
 
 
 def join_location_args(args: list[str]) -> str:
@@ -45,6 +55,8 @@ def parse_query_param(param: str) -> tuple[str, int, Optional[int]]:
         return "rain", 0, None
     if param in ["指数", "index", "indices", "life"]:
         return "indices", 0, None
+    if param in RELATIVE_DAY_WORDS:
+        return "daily", RELATIVE_DAY_WORDS[param], 1
     if param in DAILY_WORDS:
         return "daily", 0, 7
     if param in HOURLY_WORDS:

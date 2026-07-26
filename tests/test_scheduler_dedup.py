@@ -85,22 +85,29 @@ class SchedulerDeduplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(llm_service.calls, 1)
 
     async def test_rain_check_fetches_once_and_fans_out(self):
-        weather_service = FakeWeatherService()
-        bot = FakeBot()
-        app = SimpleNamespace(
-            chat_data={
-                1: {"subs": ["北京"]},
-                2: {"subs": ["北京"]},
-            }
-        )
-        context = SimpleNamespace(application=app, bot=bot)
+        old_quiet = settings.rain_alert_quiet_hours
+        settings.rain_alert_quiet_hours = ""
+        try:
+            weather_service = FakeWeatherService()
+            bot = FakeBot()
+            app = SimpleNamespace(
+                chat_data={
+                    1: {"subs": ["北京"]},
+                    2: {"subs": ["北京"]},
+                },
+                bot_data={},
+            )
+            context = SimpleNamespace(application=app, bot=bot)
 
-        await check_rain_alerts(context, weather_service=weather_service)
+            await check_rain_alerts(context, weather_service=weather_service)
 
-        self.assertEqual(weather_service.calls, [("北京", "rain", False)])
-        self.assertEqual({message["chat_id"] for message in bot.messages}, {1, 2})
-        self.assertIn("北京", app.chat_data[1]["last_rain_alert"])
-        self.assertIn("北京", app.chat_data[2]["last_rain_alert"])
+            self.assertEqual(weather_service.calls[0][:2], ("北京", "rain"))
+            self.assertEqual(len(weather_service.calls), 1)
+            self.assertEqual({message["chat_id"] for message in bot.messages}, {1, 2})
+            self.assertIn("北京", app.chat_data[1]["last_rain_alert"])
+            self.assertIn("北京", app.chat_data[2]["last_rain_alert"])
+        finally:
+            settings.rain_alert_quiet_hours = old_quiet
 
 
 if __name__ == "__main__":

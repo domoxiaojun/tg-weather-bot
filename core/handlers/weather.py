@@ -44,17 +44,21 @@ class WeatherHandlers:
         self.deps = deps
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        bot_username = context.bot.username or "bot_name"
         welcome_text = (
             "👋 <b>欢迎使用 DomoWeather Bot！</b>\n\n"
-            "🔍 <b>查询天气</b>：\n"
+            "🔍 <b>查询天气</b>\n"
             "• <code>/tq 北京</code> —— 实时天气\n"
+            "• <code>/tq 北京 明天</code> —— 明日预报（也支持 今天/后天）\n"
             "• <code>/tq 北京 daily 3</code> —— 未来3天\n"
-            "• <code>/tq 北京 07-05</code> —— 指定日期预报\n"
-            "• <code>/tq 北京 hourly 24</code> —— 未来24小时\n"
-            "• <code>/chart 北京</code> —— 生成趋势图\n"
-            "• <code>/report 北京</code> —— 生成AI天气日报\n"
-            "• <code>/rain_my</code> —— 查看降雨提醒订阅\n"
-            "• <b>Inline模式</b>：直接在对话框输入 <code>@bot_name 北京</code>\n\n"
+            "• <code>/tq 北京 24h</code> —— 未来24小时\n"
+            "• <code>/chart 北京</code> —— 趋势图（可切换温度/降水/逐日）\n"
+            "• <code>/report 北京</code> —— AI 天气日报\n\n"
+            "🔔 <b>订阅推送</b>\n"
+            "• <code>/rain_sub 北京</code> —— 降雨提醒（快下雨时通知）\n"
+            "• <code>/daily_sub 北京 07:30</code> —— 早安简报（时间可选，默认 08:00）\n"
+            "• <code>/rain_my</code> / <code>/daily_my</code> —— 管理订阅\n\n"
+            f"⚡ <b>Inline</b>：任意聊天输入 <code>@{bot_username} 北京</code> 直接分享天气\n\n"
             "数据源：和风天气 (QWeather) & 彩云天气 (Caiyun)"
         )
         reply_markup = None
@@ -239,7 +243,13 @@ class WeatherHandlers:
             return
 
         if not data:
-            await send_text(update, context, "❌ 找不到该地区的天气数据，请检查拼写。")
+            await send_text(
+                update,
+                context,
+                f"❌ 未找到「{location_query}」的天气数据。\n"
+                "• 试试完整城市名或加上省份，如：辽宁 朝阳\n"
+                "• 参数写法：/tq 北京 明天 · /tq 北京 daily 3 · /tq 北京 24h · /tq 北京 07-05",
+            )
             return
 
         text = format_weather_response(data, view_type=view_type, days=limit, start_day=start_day)

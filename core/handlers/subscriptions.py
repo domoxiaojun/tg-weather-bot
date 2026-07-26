@@ -10,6 +10,32 @@ from core.config import settings
 from core.handlers.common import BotDependencies
 from core.handlers.messages import send_text
 from core.scheduler import DEFAULT_DAILY_BRIEF_TIME, parse_brief_time
+from utils.schedule_times import parse_quiet_hours
+
+
+def display_timezone() -> str:
+    return "北京时间" if settings.timezone == "Asia/Shanghai" else settings.timezone
+
+
+def rain_alert_expectation() -> str:
+    """One-line expectation for what a rain subscription actually does."""
+    quiet = parse_quiet_hours(settings.rain_alert_quiet_hours)
+    text = "即将下雨时会提醒你一次；雨过之后再次降雨才会重新提醒"
+    if quiet:
+        (start_h, start_m), (end_h, end_m) = quiet
+        text += f"（{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d} 免打扰）"
+    return f"{text}。管理订阅：/rain_my"
+
+
+def subscription_limit_reached(subs: list) -> bool:
+    return len(subs) >= settings.max_subscriptions_per_chat
+
+
+def subscription_limit_message(manage_command: str) -> str:
+    return (
+        f"❌ 每个聊天最多订阅 {settings.max_subscriptions_per_chat} 个城市。\n"
+        f"先用 {manage_command} 取消一个，再重新订阅。"
+    )
 
 
 def render_subscription_list(chat_data: dict, kind: str):
@@ -91,7 +117,9 @@ class SubscriptionHandlers:
             await send_text(
                 update,
                 context,
-                "usage: /daily_sub [城市名] [HH:MM]\n例如：/daily_sub 北京 07:30（时间可省略，默认 08:00）",
+                "用法：/daily_sub 城市 时间（时间可省略）\n"
+                "例：/daily_sub 北京 07:30\n"
+                "不填时间则默认每天 08:00 推送。",
             )
             return
 
@@ -112,10 +140,13 @@ class SubscriptionHandlers:
         subs = context.chat_data.setdefault("daily_subs", [])
         matched = self._find_subscribed(subs, location)
         if matched and brief_time is None:
-            await send_text(update, context, f"已订阅过 {matched} 的日报。")
+            await send_text(update, context, f"已订阅过 {matched} 的日报，改时间可用 /daily_sub {matched.split(',')[0]} HH:MM。")
             return
 
         if not matched:
+            if subscription_limit_reached(subs):
+                await send_text(update, context, subscription_limit_message("/daily_my"))
+                return
             subs.append(location)
             matched = location
         if brief_time:
@@ -126,13 +157,15 @@ class SubscriptionHandlers:
         await send_text(
             update,
             context,
-            f"✅ 已订阅 {matched} 的早安简报！\n每天 {effective_time} 推送（{settings.timezone}）。",
+            f"✅ 已订阅 {matched} 的早安简报！\n"
+            f"每天 {effective_time}（{display_timezone()}）推送。\n"
+            f"改时间：/daily_sub 城市 HH:MM，管理订阅：/daily_my",
         )
 
     async def daily_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_unsub [城市] - 取消订阅"""
         if not context.args:
-            await send_text(update, context, "usage: /daily_unsub [城市名]")
+            await send_text(update, context, "用法：/daily_unsub 城市\n也可以在 /daily_my 里点按钮取消。")
             return
 
         location = self._location_from_args(context)
@@ -160,7 +193,7 @@ class SubscriptionHandlers:
     async def rain_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_sub [城市] - 订阅降雨提醒"""
         if not context.args:
-            await send_text(update, context, "usage: /rain_sub [城市名]")
+            await send_text(update, context, "用法：/rain_sub 城市\n例：/rain_sub 北京")
             return
 
         raw = self._location_from_args(context)
@@ -171,16 +204,19 @@ class SubscriptionHandlers:
 
         subs = context.chat_data.setdefault("subs", [])
         if self._find_subscribed(subs, location):
-            await send_text(update, context, f"已订阅过 {location} 的降雨提醒。")
+            await send_text(update, context, f"已订阅过 {location} 的降雨提醒。管理订阅：/rain_my")
+            return
+        if subscription_limit_reached(subs):
+            await send_text(update, context, subscription_limit_message("/rain_my"))
             return
 
         subs.append(location)
-        await send_text(update, context, f"✅ 已订阅 {location} 的降雨提醒。")
+        await send_text(update, context, f"✅ 已订阅 {location} 的降雨提醒。\n{rain_alert_expectation()}")
 
     async def rain_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_unsub [城市] - 取消降雨提醒"""
         if not context.args:
-            await send_text(update, context, "usage: /rain_unsub [城市名]")
+            await send_text(update, context, "用法：/rain_unsub 城市\n也可以在 /rain_my 里点按钮取消。")
             return
 
         location = self._location_from_args(context)

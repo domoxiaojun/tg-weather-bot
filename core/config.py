@@ -51,12 +51,47 @@ class Settings(BaseSettings):
     # Scheduling
     timezone: str = Field("Asia/Shanghai", description="Timezone for scheduled pushes (daily brief)")
     rain_alert_cooldown_hours: float = Field(4.0, description="Minimum hours between rain alerts per chat+location")
+    rain_alert_quiet_hours: str = Field(
+        "23:00-07:00",
+        description="Quiet window (HH:MM-HH:MM in TIMEZONE) during which rain checks pause; empty disables",
+    )
+    max_subscriptions_per_chat: int = Field(3, description="Max subscribed cities per chat per subscription type")
+    rain_check_interval_minutes: int = Field(30, description="Minutes between scheduled rain checks")
+
+    @field_validator("rain_check_interval_minutes")
+    @classmethod
+    def validate_rain_check_interval(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("rain_check_interval_minutes must be at least 1")
+        return value
 
     @field_validator("rain_alert_cooldown_hours")
     @classmethod
     def validate_rain_alert_cooldown(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("rain_alert_cooldown_hours must be greater than 0")
+        return value
+
+    @field_validator("rain_alert_quiet_hours", mode="before")
+    @classmethod
+    def validate_rain_alert_quiet_hours(cls, value):
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            value = value.strip()
+            if not value:
+                return ""
+            from utils.schedule_times import parse_quiet_hours
+
+            if parse_quiet_hours(value) is None:
+                raise ValueError("rain_alert_quiet_hours must look like 23:00-07:00 (or empty to disable)")
+        return value
+
+    @field_validator("max_subscriptions_per_chat")
+    @classmethod
+    def validate_max_subscriptions(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("max_subscriptions_per_chat must be at least 1")
         return value
 
     # LLM Service

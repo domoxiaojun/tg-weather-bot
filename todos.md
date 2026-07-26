@@ -80,3 +80,16 @@
 - [x] G6 降雨提醒附降水图；冷却时长做成配置 RAIN_ALERT_COOLDOWN_HOURS
 - [x] G7 早安简报自定义时间 /daily_sub 城市 HH:MM（分钟级调度窗口）
 - [x] G8 全量验证（tests/ruff/compile/factory）并分批提交
+
+## 第四轮 — 降雨订阅体验重做与剩余 UX 修复（2026-07-26，用户决策）
+
+决策：降雨检查间隔可配置默认 30 分钟；免打扰时段默认 23:00-07:00；订阅上限每聊天 3 城；降雨提醒改按"降雨事件"触发。
+
+- [x] H1 config: RAIN_CHECK_INTERVAL_MINUTES(30) / RAIN_ALERT_QUIET_HOURS(23:00-07:00) / MAX_SUBSCRIPTIONS_PER_CHAT(3)
+- [x] H2 scheduler: 降雨状态机（每次降雨事件只提醒一次，雨停复位）；免打扰时段整体跳过检查；前瞻窗口随间隔自适应
+- [x] H3 /tq 支持 今天/明天/后天/大后天；查询失败文案给出参数示例与改名建议
+- [x] H4 inline 死胡同：noop 按钮给出等待反馈；占位文案加预期时长与重试指引；SUPER_ADMIN 术语弹窗改为用户可懂文案；README 增加 BotFather /setinlinefeedback 清单
+- [x] H5 图表键盘补齐三图互切 + 📝 文字天气 出口；back 文案修正；歧义选择后收起按钮
+- [x] H6 订阅上限（命令+按钮双入口）；订阅确认文案含预期管理；usage 全部中文化；时区显示"北京时间"
+- [x] H7 /start 帮助补齐订阅命令与相对日期示例，inline 示例用真实 bot 用户名
+- [x] H8 新增 9 项测试（状态机/免打扰/上限/相对日期/时段解析），全量 84 项通过

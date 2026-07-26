@@ -535,11 +535,15 @@ def get_weather_keyboard(
     """
     token = callback_location_token(location_query, coords)
     if mode == "chart":
-        # 图表模式：保留图表切换。Inline 图表消息无法可靠恢复成纯文本。
-        keyboard = [[
-            InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
-            InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain")
-        ]]
+        # 图表模式：三种图表可互切，并提供回到文字天气的出口。
+        keyboard = [
+            [
+                InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
+                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain"),
+                InlineKeyboardButton("📅 逐日图", callback_data=f"chart|{token}|daily"),
+            ],
+            [InlineKeyboardButton("📝 文字天气", callback_data=f"tq|{token}|default|0|0")],
+        ]
     else:
         # 默认文本模式：功能按钮
         # 第一排：基础功能
