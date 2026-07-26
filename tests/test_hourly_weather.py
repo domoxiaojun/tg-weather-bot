@@ -257,8 +257,9 @@ class HourlyPresentationTests(unittest.TestCase):
         self.assertTrue(temperature_png.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertTrue(rain_png.startswith(b"\x89PNG\r\n\x1a\n"))
         # 12x6.75 inch card at 120 dpi (slimmer PNGs for faster uploads).
-        self.assertEqual(struct.unpack(">II", temperature_png[16:24]), (1440, 810))
-        self.assertEqual(struct.unpack(">II", rain_png[16:24]), (1440, 810))
+        # Square 1080x1080: chat bubbles scale by width, so square reads larger.
+        self.assertEqual(struct.unpack(">II", temperature_png[16:24]), (1080, 1080))
+        self.assertEqual(struct.unpack(">II", rain_png[16:24]), (1080, 1080))
 
     def test_temperature_chart_keeps_native_feels_like_gaps(self):
         runs = Visualizer._finite_runs(
@@ -323,7 +324,7 @@ class HourlyPresentationTests(unittest.TestCase):
         changed = original.model_copy(deep=True)
         changed.hourly[0].temp += 1
         original_key = chart_cache_key(original, "temp")
-        self.assertTrue(original_key.startswith("chart:v6:"))
+        self.assertTrue(original_key.startswith("chart:v7:"))
         self.assertNotEqual(
             original_key,
             chart_cache_key(changed, "temp"),

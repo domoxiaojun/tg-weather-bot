@@ -127,7 +127,9 @@ class Visualizer:
     def _create_card_figure(cls):
         """OO API figure（不注册进 pyplot，线程安全，GC 自动回收）。"""
         cls._setup_style()
-        fig = Figure(figsize=(12, 6.75), dpi=120, facecolor=cls._THEME["canvas"])
+        # Square, not 16:9: chat bubbles scale by width, so the same point
+        # sizes read ~1.7x larger on a 7.2" square than on a 12" banner.
+        fig = Figure(figsize=(7.2, 7.2), dpi=150, facecolor=cls._THEME["canvas"])
         FigureCanvasAgg(fig)
         card = FancyBboxPatch(
             (0.018, 0.026),
@@ -208,11 +210,13 @@ class Visualizer:
             fontsize=10,
         )
 
-        visible_metrics = metrics[-3:]
+        # Square canvas fits two metrics; a third collides with the title.
+        # Keep the FIRST two — callers list metrics in importance order.
+        visible_metrics = metrics[:2]
         count = len(visible_metrics)
         if not count:
             return
-        spacing = 0.125 if count < 3 else 0.115
+        spacing = 0.19
         positions = [0.925 - spacing * (count - 1 - index) for index in range(count)]
         for index, ((label, value), x_pos) in enumerate(zip(visible_metrics, positions)):
             if index:
@@ -254,9 +258,8 @@ class Visualizer:
             ax.grid(
                 axis="y",
                 color=cls._THEME["grid"],
-                alpha=0.5,
+                alpha=0.3,
                 linewidth=0.8,
-                linestyle=(0, (2, 5)),
                 zorder=1,
             )
 
@@ -268,6 +271,7 @@ class Visualizer:
         *,
         show_ticks: bool,
         show_dates: bool,
+        now_at_start: bool = False,
     ) -> None:
         count = len(times)
         ax.set_xlim(-0.55, count - 0.45)
@@ -320,11 +324,11 @@ class Visualizer:
         if tick_indices[-1] != count - 1:
             tick_indices.append(count - 1)
         ax.set_xticks(tick_indices)
-        ax.set_xticklabels(
-            [times[index].strftime("%H:%M") for index in tick_indices],
-            color=cls._THEME["muted"],
-            fontsize=9,
-        )
+        labels = [times[index].strftime("%H:%M") for index in tick_indices]
+        if now_at_start and tick_indices and tick_indices[0] == 0:
+            labels[0] = "现在"
+            ax.axvline(0, color=cls._THEME["subtle"], linewidth=1, alpha=0.55, zorder=2)
+        ax.set_xticklabels(labels, color=cls._THEME["muted"], fontsize=9)
 
     @staticmethod
     def _finite_runs(values: np.ndarray) -> List[np.ndarray]:
@@ -633,7 +637,7 @@ class Visualizer:
             metrics=metrics,
         )
 
-        ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
+        ax = fig.add_axes([0.09, 0.16, 0.83, 0.56])
         cls._style_axis(ax, grid=False)
         ax.set_xlim(-0.55, len(times) - 0.45)
         top = max(3.2, peak_rate * 1.35)
@@ -672,11 +676,10 @@ class Visualizer:
         if ticks[-1] != len(times) - 1:
             ticks.append(len(times) - 1)
         ax.set_xticks(ticks)
-        ax.set_xticklabels(
-            [times[index].strftime("%H:%M") for index in ticks],
-            color=cls._THEME["muted"],
-            fontsize=9,
-        )
+        tick_labels = [times[index].strftime("%H:%M") for index in ticks]
+        tick_labels[0] = "现在"
+        ax.axvline(0, color=cls._THEME["subtle"], linewidth=1, alpha=0.55, zorder=2)
+        ax.set_xticklabels(tick_labels, color=cls._THEME["muted"], fontsize=9)
 
         if peak_rate > 0:
             peak_index = int(np.nanargmax(rates))
@@ -765,9 +768,9 @@ class Visualizer:
             title="逐小时温度",
             metrics=metrics,
         )
-        ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
+        ax = fig.add_axes([0.09, 0.16, 0.845, 0.56])
         cls._style_axis(ax)
-        cls._decorate_time_axis(ax, times, show_ticks=True, show_dates=True)
+        cls._decorate_time_axis(ax, times, show_ticks=True, show_dates=True, now_at_start=True)
         ax.set_ylim(y_bottom, y_top)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
@@ -1057,19 +1060,15 @@ class Visualizer:
             metrics=metrics,
         )
 
-        precip_panels = int(has_amount) + int(has_intensity)
+        # Two layers max on the square canvas: probability + one precip panel.
+        # Three stacked strips compressed each to ~20px on a phone.
+        precip_panels = int(has_amount or has_intensity)
         if not has_visual_signal or not precip_panels:
-            probability_rect = [0.075, 0.17, 0.85, 0.51]
+            probability_rect = [0.09, 0.16, 0.845, 0.56]
             panel_rects = []
-        elif precip_panels == 1:
-            probability_rect = [0.075, 0.36, 0.85, 0.32]
-            panel_rects = [[0.075, 0.16, 0.85, 0.14]]
         else:
-            probability_rect = [0.075, 0.43, 0.85, 0.25]
-            panel_rects = [
-                [0.075, 0.285, 0.85, 0.09],
-                [0.075, 0.135, 0.85, 0.09],
-            ]
+            probability_rect = [0.09, 0.40, 0.845, 0.32]
+            panel_rects = [[0.09, 0.155, 0.845, 0.185]]
 
         probability_ax = fig.add_axes(probability_rect)
         cls._style_axis(probability_ax)
@@ -1078,6 +1077,7 @@ class Visualizer:
             times,
             show_ticks=not panel_rects,
             show_dates=True,
+            now_at_start=not panel_rects,
         )
         probability_ax.set_ylim(0, 108)
         probability_ax.set_yticks([0, 50, 100])
@@ -1231,44 +1231,40 @@ class Visualizer:
             )
 
         precip_axes = []
-        panel_index = 0
         missing_precipitation = ~np.isfinite(precipitation)
 
-        if panel_rects and has_amount:
-            precip_axes.append(
-                cls._draw_precip_panel(
-                    fig,
-                    panel_rects[panel_index],
-                    times,
-                    x,
-                    amount,
-                    max_amount,
-                    missing_precipitation,
-                    style="amount",
-                )
+        if panel_rects:
+            # One combined panel: amount bars, with the (rare) intensity
+            # estimate overlaid as a dashed line instead of a third strip.
+            primary = amount if has_amount else intensity
+            primary_peak = max_amount if has_amount else max_intensity
+            panel_ax = cls._draw_precip_panel(
+                fig,
+                panel_rects[0],
+                times,
+                x,
+                primary,
+                primary_peak,
+                missing_precipitation,
+                style="amount" if has_amount else "intensity",
             )
-            panel_index += 1
-
-        if panel_rects and has_intensity:
-            precip_axes.append(
-                cls._draw_precip_panel(
-                    fig,
-                    panel_rects[panel_index],
-                    times,
-                    x,
-                    intensity,
-                    max_intensity,
-                    missing_precipitation,
-                    style="intensity",
-                )
-            )
-
-        if precip_axes:
+            if has_amount and has_intensity:
+                for smooth_x, smooth_y in cls._smooth_segments(x, intensity):
+                    panel_ax.plot(
+                        smooth_x,
+                        smooth_y,
+                        color=cls._THEME["intensity"],
+                        linewidth=1.8,
+                        linestyle=(0, (5, 3)),
+                        zorder=4,
+                    )
+            precip_axes.append(panel_ax)
             cls._decorate_time_axis(
-                precip_axes[-1],
+                panel_ax,
                 times,
                 show_ticks=True,
                 show_dates=False,
+                now_at_start=True,
             )
 
         handles = []
@@ -1323,7 +1319,7 @@ class Visualizer:
             ],
         )
 
-        ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
+        ax = fig.add_axes([0.09, 0.17, 0.875, 0.55])
         cls._style_axis(ax)
         ax.set_xlim(-0.55, len(days) - 0.45)
 
@@ -1396,9 +1392,15 @@ class Visualizer:
                 zorder=6,
             )
 
-        ax.set_xticks(x)
+        tick_idx = list(range(0, len(days), 2 if len(days) > 8 else 1))
+        if tick_idx[-1] != len(days) - 1:
+            tick_idx.append(len(days) - 1)
+        ax.set_xticks(tick_idx)
         ax.set_xticklabels(
-            [f"{day.month:02d}/{day.day:02d}\n{cls._WEEKDAYS[day.weekday()]}" for day in days],
+            [
+                f"{days[i].month:02d}/{days[i].day:02d}\n{cls._WEEKDAYS[days[i].weekday()]}"
+                for i in tick_idx
+            ],
             color=cls._THEME["muted"],
             fontsize=9,
         )
