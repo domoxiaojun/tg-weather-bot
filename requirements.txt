@@ -1,4 +1,4 @@
-python-telegram-bot[all]==22.5
+python-telegram-bot[all]==22.8
 pydantic>=2.10.0
 pydantic-settings>=2.7.0
 httpx[http2,brotli]>=0.28.0
@@ -10,6 +10,5 @@ tenacity>=9.0.0
 python-dotenv>=1.0.1
 fake-useragent>=2.0.3
 scipy>=1.13.0
-openai>=2.0.0
+openai==2.48.0
 google-generativeai
-

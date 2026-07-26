@@ -23,10 +23,6 @@ def main():
     try:
         app = create_app()
         
-        # Initialize Scheduler
-        from core.scheduler import setup_scheduler
-        setup_scheduler(app)
-        
         # 设置Bot命令列表（自动注册到Telegram）
         async def post_init(application: Application):
             from telegram import BotCommand
@@ -56,7 +52,7 @@ def main():
                 logger.error("Webhook模式需要配置 WEBHOOK_URL")
                 return
                 
-            logger.info(f"Bot is starting in WEBHOOK mode...")
+            logger.info("Bot is starting in WEBHOOK mode...")
             logger.info(f"Webhook URL: {settings.webhook_url}{settings.webhook_path}")
             logger.info(f"Listening on port: {settings.webhook_port}")
             

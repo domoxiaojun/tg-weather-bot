@@ -20,7 +20,7 @@ import httpx
 # Gemini now uses httpx (no SDK required)
 HAS_GEMINI = True
 
-from core.config import settings
+from core.config import DEFAULT_OPENAI_MODEL, settings
 from domain.models import WeatherData
 
 
@@ -45,7 +45,8 @@ DEFAULT_WEATHER_REPORT_PROMPT = (
     "1. 优先依据 risk_signals、预警、分钟级降水、逐小时预报、空气质量和生活指数；不要编造 JSON 没有的数据。\n"
     "2. 如果 risk_signals.avoid_unfounded_rain_advice 为 true，不要提醒带伞、洗车会被雨打湿或今晚下雨，除非日预报明确有雨。\n"
     "3. 如果有预警，必须在当前时间之后第一块用 ⚠️ <b>预警</b> 单独突出。\n"
-    "4. 控制在 260-420 个中文字符；可幽默，但每个玩笑都要服务于天气判断。"
+    "4. 不要自行估算、推导或补写 API 没有返回的体感温度或其他字段。\n"
+    "5. 控制在 260-420 个中文字符；可幽默，但每个玩笑都要服务于天气判断。"
 )
 
 class LLMProvider(ABC):
@@ -54,6 +55,9 @@ class LLMProvider(ABC):
         """Generate a complete response from the LLM"""
         pass
 
+    async def aclose(self) -> None:
+        """Release provider resources."""
+
 
 
 class OpenAIProvider(LLMProvider):
@@ -61,7 +65,7 @@ class OpenAIProvider(LLMProvider):
         self,
         api_key: str,
         base_url: Optional[str] = None,
-        model: str = "gpt-5.5",
+        model: str = DEFAULT_OPENAI_MODEL,
         api_mode: str = "responses",
         reasoning_effort: str = "medium",
         verbosity: str = "medium",
@@ -85,6 +89,9 @@ class OpenAIProvider(LLMProvider):
         if self.api_mode == "chat_completions":
             return await self._generate_report_chat_completions(system_prompt, user_prompt)
         return await self._generate_report_responses(system_prompt, user_prompt)
+
+    async def aclose(self) -> None:
+        await self.client.close()
 
     async def _generate_report_responses(self, system_prompt: str, user_prompt: str) -> str:
         try:
@@ -196,6 +203,9 @@ class GeminiProvider(LLMProvider):
             logger.error(f"Gemini Request Failed: {error_msg}")
             raise
 
+    async def aclose(self) -> None:
+        await self.client.aclose()
+
 
 
     def _build_payload(self, system_prompt: str, user_prompt: str) -> dict:
@@ -241,16 +251,25 @@ class LLMService:
             if not settings.openai_api_key:
                 logger.warning("OpenAI API Key is missing. LLM features will be disabled.")
                 return
+            model = settings.openai_model or settings.llm_model or DEFAULT_OPENAI_MODEL
             self.provider = OpenAIProvider(
                 api_key=settings.openai_api_key, 
                 base_url=settings.openai_api_base,
-                model=settings.openai_model or settings.llm_model or "gpt-5.5",
+                model=model,
                 api_mode=settings.openai_api_mode,
                 reasoning_effort=settings.openai_reasoning_effort,
                 verbosity=settings.openai_verbosity,
                 temperature=settings.openai_temperature,
                 timeout_seconds=settings.openai_timeout_seconds,
                 max_output_tokens=settings.openai_max_output_tokens,
+            )
+            logger.info(
+                "OpenAI SDK {} configured: model={} api_mode={} reasoning={} verbosity={}",
+                getattr(openai, "__version__", "unknown"),
+                model,
+                settings.openai_api_mode,
+                settings.openai_reasoning_effort,
+                settings.openai_verbosity,
             )
         elif provider_type == "gemini":
             if not HAS_GEMINI:
@@ -266,6 +285,10 @@ class LLMService:
             )
         else:
             logger.error(f"Unsupported LLM provider: {provider_type}")
+
+    async def aclose(self) -> None:
+        if self.provider is not None:
+            await self.provider.aclose()
 
     @staticmethod
     def _round_number(value: Any, digits: int = 1) -> Any:
@@ -301,37 +324,79 @@ class LLMService:
         minutely_next_60m = data.minutely[:12]
         hourly_next_6h = data.hourly[:6]
         minutely_precip_total = round(sum(item.precip for item in minutely_next_60m), 2)
-        hourly_precip_total = round(sum(hour.precip for hour in hourly_next_6h), 2)
+        hourly_amount_total = round(
+            sum(
+                hour.precip
+                for hour in hourly_next_6h
+                if hour.precip is not None and hour.precip_kind != "intensity"
+            ),
+            2,
+        )
+        max_hourly_intensity = max(
+            (
+                hour.precip
+                for hour in hourly_next_6h
+                if hour.precip is not None and hour.precip_kind == "intensity"
+            ),
+            default=0,
+        )
+        has_hourly_precip = any((hour.precip or 0) > 0 for hour in hourly_next_6h)
         max_hourly_pop = max((hour.pop for hour in hourly_next_6h if hour.pop is not None), default=0)
+        max_hourly_feels_like = max(
+            (
+                hour.feels_like
+                for hour in hourly_next_6h
+                if hour.feels_like is not None and not hour.feels_like_estimated
+            ),
+            default=data.now_feels_like,
+        )
+        max_hourly_uv = max(
+            (hour.uv_index for hour in hourly_next_6h if hour.uv_index is not None),
+            default=0,
+        )
 
-        today = data.daily[0] if data.daily else None
+        selected_day = data.get_current_daily_forecast()
+        today = (
+            selected_day
+            if selected_day is not None and selected_day.date.date() == data.local_update_date
+            else None
+        )
         today_text = f"{today.text_day}/{today.text_night}" if today else ""
+        upcoming_days = data.get_daily_forecasts(limit=2)
         next_two_days_have_rain = any(
-            day.precip > 0 or "雨" in f"{day.text_day}{day.text_night}"
-            for day in data.daily[:2]
+            (day.precip or 0) > 0 or "雨" in f"{day.text_day}{day.text_night}"
+            for day in upcoming_days
         )
         rain_soon = (
             data.is_raining
-            or data.now_precip > 0
+            or (data.now_precip or 0) > 0
             or minutely_precip_total > 0
-            or hourly_precip_total > 0
+            or has_hourly_precip
             or max_hourly_pop >= 50
         )
 
         uv_value = self._numeric_text_to_float(today.uv_index if today else None)
-        heat_signal = data.now_temp >= 32 or data.now_feels_like >= 33
+        heat_signal = (
+            data.now_temp >= 32
+            or (data.now_feels_like is not None and data.now_feels_like >= 33)
+            or (max_hourly_feels_like is not None and max_hourly_feels_like >= 33)
+        )
 
         return {
             "rain_now_or_soon": rain_soon,
             "rain_expected_today_or_tomorrow": rain_soon or next_two_days_have_rain,
             "avoid_unfounded_rain_advice": not (rain_soon or next_two_days_have_rain),
             "next_60m_precip_total_mm": minutely_precip_total,
-            "next_6h_precip_total_mm": hourly_precip_total,
+            "next_6h_precip_amount_total_mm": hourly_amount_total,
+            "next_6h_max_precip_intensity_mm_per_hour": max_hourly_intensity,
             "next_6h_max_pop_pct": max_hourly_pop,
             "heat_signal": heat_signal,
-            "high_uv_signal": uv_value is not None and uv_value >= 5,
+            "high_uv_signal": (uv_value is not None and uv_value >= 5) or max_hourly_uv >= 5,
             "current_weather_text": data.now_text,
             "today_weather_text": today_text,
+            "selected_daily_forecast_date": (
+                self._date_text(selected_day.date) if selected_day else None
+            ),
             "has_alerts": bool(data.alerts),
         }
 
@@ -342,6 +407,7 @@ class LLMService:
             index for index in data.indices
             if index.type in priority_indices
         ][:10]
+        daily_forecasts = data.get_daily_forecasts(limit=5)
 
         payload = {
             "report_contract": {
@@ -360,11 +426,19 @@ class LLMService:
                 "temp_c": self._round_number(data.now_temp),
                 "feels_like_c": self._round_number(data.now_feels_like),
                 "weather": data.now_text,
-                "wind": f"{data.now_wind_dir} {data.now_wind_scale}级".strip(),
+                "wind_direction": data.now_wind_dir or data.now_wind_direction_degrees,
+                "wind_scale": data.now_wind_scale or None,
+                "wind_speed_kmh": self._round_number(data.now_wind_speed),
                 "humidity_pct": data.now_humidity,
-                "precip_mm": self._round_number(data.now_precip, 2),
+                "precip_value": self._round_number(data.now_precip, 2),
+                "precip_kind": data.now_precip_kind,
+                "precip_unit": (
+                    "mm/h" if data.now_precip_kind == "intensity" else "mm"
+                ) if data.now_precip is not None else None,
                 "pressure_hpa": data.now_pressure,
                 "visibility_km": self._round_number(data.now_vis),
+                "cloud_pct": data.now_cloud,
+                "radiation_w_m2": self._round_number(data.now_radiation),
             },
             "risk_signals": self._build_risk_signals(data),
             "summary_from_weather_api": data.summary,
@@ -373,6 +447,11 @@ class LLMService:
                 "category": data.air_quality.category,
                 "primary_pollutant": data.air_quality.primary,
                 "pm2_5": self._round_number(data.air_quality.pm2p5),
+                "pm10": self._round_number(data.air_quality.pm10),
+                "o3": self._round_number(data.air_quality.o3),
+                "so2": self._round_number(data.air_quality.so2),
+                "no2": self._round_number(data.air_quality.no2),
+                "co": self._round_number(data.air_quality.co),
                 "advice": data.air_quality.description,
             } if data.air_quality else None,
             "alerts": [
@@ -403,13 +482,29 @@ class LLMService:
                 {
                     "time": self._time_text(hour.time),
                     "temp_c": self._round_number(hour.temp),
+                    "feels_like_c": self._round_number(
+                        hour.feels_like if not hour.feels_like_estimated else None
+                    ),
+                    "feels_like_source": hour.feels_like_source,
                     "weather": hour.text,
                     "pop_pct": hour.pop,
-                    "precip_mm": self._round_number(hour.precip, 2),
+                    "precip_value": self._round_number(hour.precip, 2),
+                    "precip_kind": hour.precip_kind,
+                    "precip_unit": (
+                        "mm/h" if hour.precip_kind == "intensity" else "mm"
+                    ) if hour.precip is not None else None,
                     "humidity_pct": hour.humidity,
-                    "wind": f"{hour.wind_dir} {hour.wind_scale}级".strip(),
+                    "wind_direction": hour.wind_dir or hour.wind_direction_degrees,
+                    "wind_scale": hour.wind_scale or None,
+                    "wind_speed_kmh": self._round_number(hour.wind_speed),
                     "pressure_hpa": self._round_number(hour.pressure),
                     "cloud_pct": hour.cloud,
+                    "visibility_km": self._round_number(hour.visibility),
+                    "radiation_w_m2": self._round_number(hour.radiation),
+                    "aqi": hour.aqi,
+                    "pm2_5": self._round_number(hour.pm2p5),
+                    "dew_point_c": self._round_number(hour.dew),
+                    "uv_index": self._round_number(hour.uv_index),
                 }
                 for hour in data.hourly[:12]
             ],
@@ -420,17 +515,33 @@ class LLMService:
                     "night_weather": day.text_night,
                     "temp_min_c": self._round_number(day.temp_min),
                     "temp_max_c": self._round_number(day.temp_max),
-                    "precip_mm": self._round_number(day.precip, 2),
+                    "precip_value": self._round_number(day.precip, 2),
+                    "precip_kind": day.precip_kind,
+                    "precip_unit": (
+                        "mm/h" if day.precip_kind == "intensity" else "mm"
+                    ) if day.precip is not None else None,
+                    "precip_probability_pct": day.precip_probability,
+                    "day_precip_probability_pct": day.precip_day_probability,
+                    "night_precip_probability_pct": day.precip_night_probability,
                     "humidity_pct": day.humidity,
                     "visibility_km": self._round_number(day.vis),
+                    "pressure_hpa": self._round_number(day.pressure),
+                    "cloud_pct": day.cloud,
+                    "radiation_w_m2": self._round_number(day.radiation),
+                    "aqi": day.aqi,
+                    "pm2_5": self._round_number(day.pm2p5),
                     "uv_index": day.uv_index,
                     "sunrise": day.sunrise,
                     "sunset": day.sunset,
                     "moon_phase": day.moon_phase,
-                    "day_wind": f"{day.wind_dir_day or ''} {day.wind_scale_day or ''}级".strip(),
-                    "night_wind": f"{day.wind_dir_night or ''} {day.wind_scale_night or ''}级".strip(),
+                    "day_wind_direction": day.wind_dir_day or day.wind_direction_day_degrees,
+                    "day_wind_scale": day.wind_scale_day,
+                    "day_wind_speed_kmh": self._round_number(day.wind_speed_day),
+                    "night_wind_direction": day.wind_dir_night or day.wind_direction_night_degrees,
+                    "night_wind_scale": day.wind_scale_night,
+                    "night_wind_speed_kmh": self._round_number(day.wind_speed_night),
                 }
-                for day in data.daily[:5]
+                for day in daily_forecasts
             ],
             "life_indices": [
                 {
@@ -573,4 +684,3 @@ class LLMService:
             text = text.replace(placeholder, tag)
 
         return text.strip()
-

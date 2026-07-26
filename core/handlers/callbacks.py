@@ -57,9 +57,14 @@ class CallbackHandlers:
         query = update.callback_query
         location = data_parts[1] if len(data_parts) > 1 else "北京"
         chart_type = normalize_chart_type(data_parts[2] if len(data_parts) > 2 else "temp")
+        profile = {
+            "daily": "daily",
+            "rain": "rain",
+            "temp": "hourly",
+        }[chart_type]
 
         try:
-            weather_data = await self.deps.weather_service.get_fused_weather(location)
+            weather_data = await self.deps.weather_service.get_fused_weather(location, profile=profile)
         except Exception as e:
             logger.error(f"Chart data fetch error: {e}")
             await query.answer("图表数据获取失败", show_alert=True)
@@ -115,7 +120,11 @@ class CallbackHandlers:
     async def _handle_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
         query = update.callback_query
         try:
-            weather_data = await self.deps.weather_service.get_fused_weather(location)
+            weather_data = await self.deps.weather_service.get_fused_weather(
+                location,
+                profile="full",
+                refresh_qweather=True,
+            )
             if not weather_data:
                 await query.answer("未获取到天气数据", show_alert=True)
                 return

@@ -6,7 +6,7 @@ from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
 from core.config import settings
-from core.handlers.common import BotDependencies, parse_location_and_view
+from core.handlers.common import BotDependencies, parse_chart_request, parse_location_and_view
 from core.handlers.messages import send_photo, send_text
 from services.chart_cache import (
     get_cached_chart_file_id,
@@ -28,6 +28,7 @@ class WeatherHandlers:
             "🔍 <b>查询天气</b>：\n"
             "• <code>/tq 北京</code> —— 实时天气\n"
             "• <code>/tq 北京 daily 3</code> —— 未来3天\n"
+            "• <code>/tq 北京 07-05</code> —— 指定日期预报\n"
             "• <code>/tq 北京 hourly 24</code> —— 未来24小时\n"
             "• <code>/chart 北京</code> —— 生成趋势图\n"
             "• <code>/report 北京</code> —— 生成AI天气日报\n"
@@ -53,11 +54,17 @@ class WeatherHandlers:
             )
             return
 
-        location = args[0]
-        chart_type = normalize_chart_type(args[1].lower() if len(args) > 1 else "temp")
+        location, requested_chart_type = parse_chart_request(list(args))
+        chart_type = normalize_chart_type(requested_chart_type)
+
+        profile = {
+            "daily": "daily",
+            "rain": "rain",
+            "temp": "hourly",
+        }[chart_type]
 
         try:
-            data = await self.deps.weather_service.get_fused_weather(location)
+            data = await self.deps.weather_service.get_fused_weather(location, profile=profile)
         except Exception as e:
             logger.error(f"获取天气数据失败: {e}")
             await send_text(update, context, "❌ 系统繁忙，请稍后再试")
@@ -115,7 +122,11 @@ class WeatherHandlers:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         try:
-            data = await self.deps.weather_service.get_fused_weather(location_query)
+            profile = view_type if view_type in {"hourly", "daily", "rain", "indices"} else "full"
+            data = await self.deps.weather_service.get_fused_weather(
+                location_query,
+                profile=profile,
+            )
         except Exception as e:
             logger.error(f"Error fetching weather: {e}")
             await send_text(update, context, "❌ 系统繁忙，请稍后再试。")

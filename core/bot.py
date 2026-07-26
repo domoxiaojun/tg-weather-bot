@@ -1,6 +1,9 @@
+import asyncio
 import os
 
 from loguru import logger
+from telegram import __version__ as ptb_version
+from telegram.constants import BOT_API_VERSION
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -26,6 +29,11 @@ from utils.cache import cache
 
 def create_app() -> Application:
     """Factory to create the PTB Application."""
+    logger.info(
+        "Telegram client: python-telegram-bot {} (typed Bot API support {})",
+        ptb_version,
+        BOT_API_VERSION,
+    )
     os.makedirs("data", exist_ok=True)
     persistence = PicklePersistence(filepath="data/bot_data.pickle")
 
@@ -60,14 +68,24 @@ def create_app() -> Application:
     app.add_handler(InlineQueryHandler(inline.handle_inline_query))
     app.add_handler(ChosenInlineResultHandler(reports.handle_chosen_inline_result))
 
+    from core.scheduler import setup_scheduler
+
+    setup_scheduler(app, deps.weather_service, deps.llm_service)
+
     async def log_error(update, context):
         logger.opt(exception=context.error).error("Unhandled Telegram update error")
 
     app.add_error_handler(log_error)
 
-    async def close_cache(application: Application):
+    async def close_resources(application: Application):
+        await cache.cancel_inflight()
+        await asyncio.gather(
+            deps.weather_service.aclose(),
+            deps.llm_service.aclose(),
+            return_exceptions=True,
+        )
         await cache.close()
 
-    app.post_shutdown = close_cache
+    app.post_shutdown = close_resources
 
     return app

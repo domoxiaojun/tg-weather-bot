@@ -1,4 +1,6 @@
+import hashlib
 import io
+import json
 from typing import Literal, Optional
 
 from loguru import logger
@@ -40,7 +42,35 @@ def render_chart_bytes(weather_data: WeatherData, chart_type: str) -> Optional[b
 
 
 def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
-    return f"chart:v3:{weather_data.location_name}:{normalize_chart_type(chart_type)}"
+    normalized = normalize_chart_type(chart_type)
+    if normalized == "rain":
+        values = [
+            (hour.time.isoformat(), hour.pop, hour.precip, hour.precip_kind)
+            for hour in weather_data.hourly[:Visualizer.HOURLY_POINT_LIMIT]
+        ]
+    elif normalized == "daily":
+        values = [
+            (day.date.isoformat(), day.temp_min, day.temp_max)
+            for day in weather_data.get_daily_forecasts()
+        ]
+    else:
+        values = [
+            (hour.time.isoformat(), hour.temp, hour.feels_like, hour.feels_like_source)
+            for hour in weather_data.hourly[:Visualizer.HOURLY_POINT_LIMIT]
+        ]
+    fingerprint_payload = {
+        "location": weather_data.location_name,
+        "update_time": weather_data.update_time.isoformat(),
+        "values": values,
+    }
+    fingerprint = hashlib.sha256(
+        json.dumps(
+            fingerprint_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"chart:v5:{weather_data.coords}:{normalized}:{fingerprint}"
 
 
 async def get_cached_chart_file_id(weather_data: WeatherData, chart_type: str) -> Optional[str]:
@@ -57,25 +87,27 @@ async def get_or_create_chart_file_id(bot, weather_data: WeatherData, chart_type
         logger.warning("SUPER_ADMIN_ID is not configured; inline chart file_id cache cannot be created.")
         return None
 
-    img_bytes = render_chart_bytes(weather_data, chart_type)
-    if not img_bytes:
-        return None
+    key = chart_cache_key(weather_data, chart_type)
 
-    try:
-        msg = await bot.send_photo(
-            chat_id=settings.super_admin_id,
-            photo=InputFile(io.BytesIO(img_bytes), filename=f"{normalize_chart_type(chart_type)}.png"),
-            disable_notification=True,
-        )
-        file_id = msg.photo[-1].file_id
-        await cache.set(chart_cache_key(weather_data, chart_type), file_id, ttl=CHART_CACHE_TTL)
-
+    async def upload_chart() -> Optional[str]:
+        img_bytes = render_chart_bytes(weather_data, chart_type)
+        if not img_bytes:
+            return None
         try:
-            await msg.delete()
-        except Exception:
-            pass
+            msg = await bot.send_photo(
+                chat_id=settings.super_admin_id,
+                photo=InputFile(io.BytesIO(img_bytes), filename=f"{normalize_chart_type(chart_type)}.png"),
+                disable_notification=True,
+            )
+            file_id = msg.photo[-1].file_id
+            try:
+                await msg.delete()
+            except Exception:
+                pass
+            return file_id
+        except Exception as e:
+            logger.error(f"Failed to upload chart for file_id cache: {e}")
+            return None
 
-        return file_id
-    except Exception as e:
-        logger.error(f"Failed to upload chart for file_id cache: {e}")
-        return None
+    value = await cache.get_or_set(key, upload_chart, ttl=CHART_CACHE_TTL)
+    return value if isinstance(value, str) and value else None

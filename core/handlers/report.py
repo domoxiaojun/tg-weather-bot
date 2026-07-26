@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.constants import ChatAction, ParseMode
 from telegram.ext import ContextTypes
 
-from core.handlers.common import BotDependencies
+from core.handlers.common import BotDependencies, join_location_args
 from core.handlers.messages import send_text
 
 
@@ -21,7 +21,7 @@ class ReportHandlers:
             await send_text(update, context, "请提供城市名称，例如：<code>/report 北京</code>", parse_mode=ParseMode.HTML)
             return
 
-        location = context.args[0]
+        location = join_location_args(list(context.args))
 
         try:
             await update.message.set_reaction("👀")
@@ -35,7 +35,7 @@ class ReportHandlers:
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         try:
-            weather_data = await self.deps.weather_service.get_fused_weather(location)
+            weather_data = await self.deps.weather_service.get_fused_weather(location, profile="full")
             if not weather_data:
                 await send_text(update, context, f"❌ 未找到城市：{location}")
                 return
@@ -93,7 +93,7 @@ class ReportHandlers:
             return
 
         try:
-            weather_data = await self.deps.weather_service.get_fused_weather(location)
+            weather_data = await self.deps.weather_service.get_fused_weather(location, profile="full")
             if not weather_data:
                 await context.bot.edit_message_text(
                     inline_message_id=inline_message_id,

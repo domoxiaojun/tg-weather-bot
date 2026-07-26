@@ -1,11 +1,16 @@
+import asyncio
 import json
 import time
-from typing import Any, Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Optional, TypeVar
 
 import redis.asyncio as redis
 from loguru import logger
 
 from core.config import settings
+
+
+T = TypeVar("T")
 
 
 class CacheManager:
@@ -18,6 +23,7 @@ class CacheManager:
         self._redis_logged_ready = False
         self._last_memory_cleanup = 0.0
         self._memory_cache_max_items = 2048
+        self._inflight: dict[str, asyncio.Task[Any]] = {}
 
     def _cleanup_memory_cache(self):
         now = time.monotonic()
@@ -149,8 +155,67 @@ class CacheManager:
         finally:
             self._memory_cache.pop(key, None)
 
+    async def get_or_set(
+        self,
+        key: str,
+        factory: Callable[[], Awaitable[T]],
+        ttl: Optional[int] | Callable[[T], Optional[int]] = None,
+        *,
+        force_refresh: bool = False,
+    ) -> Optional[T]:
+        """Return a cached value or share one in-flight async factory call.
+
+        Only non-``None`` results are cached. Waiting callers are shielded from
+        cancelling the shared task, so one Telegram request timing out cannot
+        abort a provider request that other callers are awaiting.
+        """
+        if not force_refresh:
+            cached = await self.get(key)
+            if cached is not None:
+                return cached
+
+        existing = self._inflight.get(key)
+        if existing is not None:
+            logger.debug(f"Cache single-flight join: {key}")
+            return await asyncio.shield(existing)
+
+        async def load_value() -> Optional[T]:
+            # A second read closes the small race with another process writing
+            # Redis between the caller's initial lookup and task creation.
+            if not force_refresh:
+                cached_value = await self.get(key)
+                if cached_value is not None:
+                    return cached_value
+
+            value = await factory()
+            if value is not None:
+                resolved_ttl = ttl(value) if callable(ttl) else ttl
+                await self.set(key, value, ttl=resolved_ttl)
+            return value
+
+        task: asyncio.Task[Optional[T]] = asyncio.create_task(load_value())
+        self._inflight[key] = task
+
+        def discard_finished(done_task: asyncio.Task[Any]) -> None:
+            if self._inflight.get(key) is done_task:
+                self._inflight.pop(key, None)
+
+        task.add_done_callback(discard_finished)
+        return await asyncio.shield(task)
+
+    async def cancel_inflight(self):
+        """Cancel and drain outstanding loaders during application shutdown."""
+        tasks = list(dict.fromkeys(self._inflight.values()))
+        self._inflight.clear()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def close(self):
         """Close Redis connection when the application shuts down."""
+        await self.cancel_inflight()
         if self.redis is not None:
             await self.redis.aclose()
             self.redis = None

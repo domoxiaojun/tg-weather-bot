@@ -43,6 +43,7 @@ class InlineHandlers:
                         "✍️ <b>方式2：文本查询</b>\n"
                         "   • <code>北京</code> - 今日天气\n"
                         "   • <code>上海 3</code> - 未来3天\n"
+                        "   • <code>广州 07-05</code> - 指定日期预报\n"
                         "   • <code>广州 24h</code> - 逐小时\n"
                         "   • <code>深圳 降水</code> - 降水预报\n"
                         "   • <code>杭州 指数</code> - 生活指数",
@@ -65,7 +66,7 @@ class InlineHandlers:
                     location_query = parsed_location
 
             data = await asyncio.wait_for(
-                self.deps.weather_service.get_fused_weather(location_query),
+                self.deps.weather_service.get_fused_weather(location_query, profile="full"),
                 timeout=8.0,
             )
 

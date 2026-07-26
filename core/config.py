@@ -1,6 +1,9 @@
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
+
+
+DEFAULT_OPENAI_MODEL = "gpt-5.6-sol"
 
 class Settings(BaseSettings):
     """
@@ -21,18 +24,22 @@ class Settings(BaseSettings):
     # Weather APIs
     qweather_api_key: str = Field(..., description="HeFeng Weather API Key")
     qweather_api_host: str = Field("https://api.qweather.com", description="QWeather API root host")
-    qweather_daily_days: str = Field("7d", description="QWeather daily forecast range: 3d, 7d, 10d, 15d, 30d")
-    qweather_hourly_hours: str = Field("24h", description="QWeather hourly forecast range: 24h, 72h, 168h")
+    qweather_daily_days: str = Field("15d", description="QWeather daily forecast range: 3d, 7d, 10d, 15d, 30d")
+    qweather_hourly_hours: str = Field("72h", description="QWeather hourly forecast range: 24h, 72h, 168h")
     qweather_indices_types: str = Field("1,2,3,5,9", description="QWeather life index type ids")
     qweather_enable_minutely: bool = Field(True, description="Enable QWeather minutely precipitation")
     caiyun_api_token: Optional[str] = Field(None, description="Caiyun Weather API Token")
+    caiyun_cache_ttl_seconds: int = Field(3600, description="Caiyun successful response cache TTL")
+    caiyun_failure_cooldown_seconds: int = Field(60, description="Caiyun temporary failure cooldown")
+    caiyun_hourly_steps: int = Field(72, description="Caiyun hourly forecast steps")
+    caiyun_daily_steps: int = Field(15, description="Caiyun daily forecast steps")
 
     
     # Infrastructure
     redis_url: str = Field("redis://localhost:6379/0", description="Redis Connection URL")
     
     # Logging
-    log_level: str = Field("DEBUG", description="Logging Level")
+    log_level: str = Field("INFO", description="Logging Level")
     
     # Feature Flags
     enable_caiyun_api: bool = Field(False, description="Enable Caiyun as an optional rain enhancement source")
@@ -133,6 +140,18 @@ class Settings(BaseSettings):
             return value or None
         return value
 
+    @field_validator(
+        "caiyun_cache_ttl_seconds",
+        "caiyun_failure_cooldown_seconds",
+        "caiyun_hourly_steps",
+        "caiyun_daily_steps",
+    )
+    @classmethod
+    def validate_positive_caiyun_integer(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Caiyun cache and step settings must be greater than 0")
+        return value
+
     @field_validator("qweather_daily_days")
     @classmethod
     def validate_qweather_daily_days(cls, value: str) -> str:
@@ -181,10 +200,17 @@ class Settings(BaseSettings):
     @classmethod
     def validate_openai_reasoning_effort(cls, value: str) -> str:
         value = value.strip().lower()
-        allowed = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        allowed = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
         if value not in allowed:
             raise ValueError(f"openai_reasoning_effort must be one of: {', '.join(sorted(allowed))}")
         return value
+
+    @model_validator(mode="after")
+    def validate_openai_model_reasoning_pair(self):
+        effective_model = self.openai_model or self.llm_model or DEFAULT_OPENAI_MODEL
+        if effective_model.startswith("gpt-5.6") and self.openai_reasoning_effort == "minimal":
+            raise ValueError("GPT-5.6 does not support minimal reasoning effort; use none or low")
+        return self
 
     @field_validator("openai_verbosity")
     @classmethod

@@ -1,12 +1,14 @@
 import httpx
-from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, List
+from datetime import datetime, timezone
+import time
+from typing import Any, Optional, Dict, List
+from zoneinfo import ZoneInfo
 from loguru import logger
 
 from core.config import settings
 from adapters.base import WeatherAdapter
 from domain.models import (
-    WeatherData, MinutelyPrecipitation, WarningAlert, 
+    WeatherData, WarningAlert,
     HourlyForecast, DailyForecast, AirQuality, LifeIndex
 )
 
@@ -44,8 +46,13 @@ class CaiyunAdapter(WeatherAdapter):
     def __init__(self):
         self.token = settings.caiyun_api_token
         self.client = httpx.AsyncClient(timeout=10.0, http2=True)
+
+    async def aclose(self):
+        await self.client.aclose()
     
-    def _get_skycon_info(self, skycon: str) -> tuple[str, str]:
+    def _get_skycon_info(self, skycon: Optional[str]) -> tuple[str, str]:
+        if not skycon:
+            return "", ""
         return SKYCON_MAP.get(skycon, (skycon, "❓"))
 
     @staticmethod
@@ -58,11 +65,579 @@ class CaiyunAdapter(WeatherAdapter):
             return default
 
     @classmethod
+    def _optional_float(cls, value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _optional_int(cls, value: Any) -> Optional[int]:
+        parsed = cls._optional_float(value)
+        return int(round(parsed)) if parsed is not None else None
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> Optional[datetime]:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _series_map(items: Any, *, daily: bool = False) -> Dict[str, Dict[str, Any]]:
+        mapped: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(items, list):
+            return mapped
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            raw_key = item.get("date") or item.get("datetime")
+            if raw_key is None:
+                continue
+            key = str(raw_key)[:10] if daily else str(raw_key)
+            mapped[key] = item
+        return mapped
+
+    @classmethod
+    def _percent_value(cls, value: Any) -> Optional[int]:
+        parsed = cls._optional_float(value)
+        if parsed is None:
+            return None
+        return int(round(parsed * 100 if parsed <= 1 else parsed))
+
+    @classmethod
+    def _hpa_value(cls, value: Any) -> Optional[float]:
+        parsed = cls._optional_float(value)
+        return parsed / 100 if parsed is not None else None
+
+    @classmethod
     def _probability_over(cls, value, threshold: float) -> bool:
         probability = cls._safe_float(value)
         if probability > 1:
             probability = probability / 100
         return probability > threshold
+
+    @classmethod
+    def _probability_pct(cls, value) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        probability = cls._safe_float(value)
+        return probability * 100 if probability <= 1 else probability
+
+    @staticmethod
+    def _normalize_location(location: str) -> Optional[tuple[str, str]]:
+        try:
+            lon_text, lat_text = (part.strip() for part in location.split(",", 1))
+            lon = float(lon_text)
+            lat = float(lat_text)
+        except (TypeError, ValueError):
+            return None
+
+        if not (-180 <= lon <= 180 and -90 <= lat <= 90):
+            return None
+
+        request_location = f"{lon:.6f},{lat:.6f}"
+        cache_location = f"{lon:.4f},{lat:.4f}"
+        return request_location, cache_location
+
+    @staticmethod
+    def _requires_long_cooldown(status_code: Optional[int], error_text: str = "") -> bool:
+        if status_code in {401, 403}:
+            return True
+        normalized = error_text.lower()
+        return any(
+            marker in normalized
+            for marker in ("token", "auth", "quota", "credit", "balance", "次数", "额度", "余额")
+        )
+
+    async def _set_failure_cooldown(
+        self,
+        key: str,
+        *,
+        status_code: Optional[int] = None,
+        error_text: str = "",
+    ) -> None:
+        from utils.cache import cache
+
+        ttl = (
+            settings.caiyun_cache_ttl_seconds
+            if self._requires_long_cooldown(status_code, error_text)
+            else settings.caiyun_failure_cooldown_seconds
+        )
+        await cache.set(
+            key,
+            {"status_code": status_code, "failure": True},
+            ttl=ttl,
+        )
+
+    async def _get_payload(
+        self,
+        request_location: str,
+        cache_location: str,
+    ) -> Optional[Dict[str, Any]]:
+        from utils.cache import cache
+
+        cache_key = (
+            f"caiyun:weather:v3:{cache_location}:metric-v2:"
+            f"h{settings.caiyun_hourly_steps}:d{settings.caiyun_daily_steps}:a1"
+        )
+        cooldown_key = f"{cache_key}:cooldown"
+
+        cached = await cache.get(cache_key)
+        if isinstance(cached, dict):
+            logger.debug(f"Caiyun cache hit: {cache_location}")
+            return cached
+
+        if await cache.get(cooldown_key) is not None:
+            logger.warning(f"Caiyun request skipped during failure cooldown: {cache_location}")
+            return None
+
+        async def fetch_payload() -> Optional[Dict[str, Any]]:
+            # Another waiter may have established a cooldown before this loader
+            # starts. Checking again avoids an unnecessary paid call.
+            if await cache.get(cooldown_key) is not None:
+                return None
+
+            logger.info(f"Caiyun cache miss: {cache_location}")
+
+            url = f"https://api.caiyunapp.com/v2.6/{self.token}/{request_location}/weather"
+            params = {
+                "alert": "true",
+                "dailysteps": str(settings.caiyun_daily_steps),
+                "hourlysteps": str(settings.caiyun_hourly_steps),
+                "unit": "metric:v2",
+            }
+            started_at = time.perf_counter()
+            try:
+                response = await self.client.get(url, params=params)
+                response.raise_for_status()
+                data = response.json()
+            except httpx.HTTPStatusError as error:
+                status_code = error.response.status_code
+                await self._set_failure_cooldown(cooldown_key, status_code=status_code)
+                logger.error(
+                    f"Caiyun API HTTP failure: status={status_code} location={cache_location}"
+                )
+                return None
+            except (httpx.RequestError, ValueError) as error:
+                await self._set_failure_cooldown(cooldown_key)
+                logger.error(
+                    f"Caiyun API request failure: type={type(error).__name__} location={cache_location}"
+                )
+                return None
+            except Exception as error:
+                await self._set_failure_cooldown(cooldown_key)
+                logger.error(
+                    f"Caiyun API unexpected failure: type={type(error).__name__} location={cache_location}"
+                )
+                return None
+
+            if not isinstance(data, dict) or data.get("status") != "ok":
+                error_text = str(data.get("error", "")) if isinstance(data, dict) else "invalid response"
+                await self._set_failure_cooldown(cooldown_key, error_text=error_text)
+                logger.warning(f"Caiyun API returned non-ok status for {cache_location}")
+                return None
+
+            result = data.get("result")
+            if not isinstance(result, dict) or not isinstance(result.get("realtime"), dict):
+                await self._set_failure_cooldown(cooldown_key)
+                logger.warning(f"Caiyun API response missing required blocks for {cache_location}")
+                return None
+
+            elapsed = time.perf_counter() - started_at
+            hourly_count = len(result.get("hourly", {}).get("temperature", []))
+            daily_count = len(result.get("daily", {}).get("temperature", []))
+            logger.info(
+                "Caiyun API success: location={} hourly={} daily={} elapsed={:.2f}s",
+                cache_location,
+                hourly_count,
+                daily_count,
+                elapsed,
+            )
+            return data
+
+        payload = await cache.get_or_set(
+            cache_key,
+            fetch_payload,
+            ttl=settings.caiyun_cache_ttl_seconds,
+        )
+        return payload if isinstance(payload, dict) else None
+
+    @staticmethod
+    def _target_timezone(data: Dict[str, Any]):
+        timezone_name = data.get("timezone")
+        if timezone_name:
+            try:
+                return ZoneInfo(str(timezone_name))
+            except Exception:
+                pass
+        return timezone.utc
+
+    def _parse_alerts(self, result: Dict[str, Any], target_tz) -> List[WarningAlert]:
+        alerts: List[WarningAlert] = []
+        level_map = {
+            "00": "白色",
+            "01": "蓝色",
+            "02": "黄色",
+            "03": "橙色",
+            "04": "红色",
+        }
+        content = (result.get("alert") or {}).get("content", [])
+        for item in content if isinstance(content, list) else []:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "")
+            published = self._optional_float(item.get("pubtimestamp"))
+            alerts.append(
+                WarningAlert(
+                    title=str(item.get("title") or ""),
+                    type=code[:2] if len(code) >= 2 else code,
+                    level=level_map.get(code[-2:], ""),
+                    status=str(item.get("status") or ""),
+                    text=str(item.get("description") or ""),
+                    pub_time=(
+                        datetime.fromtimestamp(published, tz=target_tz)
+                        if published is not None
+                        else datetime.now(tz=target_tz)
+                    ),
+                    source=str(item.get("source") or "Caiyun"),
+                    alert_id=str(item.get("alertId") or "") or None,
+                )
+            )
+        return alerts
+
+    def _parse_air_quality(self, raw: Any) -> Optional[AirQuality]:
+        if not isinstance(raw, dict):
+            return None
+        aqi_data = raw.get("aqi") or {}
+        description_data = raw.get("description") or {}
+        aqi = self._optional_int(aqi_data.get("chn") if isinstance(aqi_data, dict) else aqi_data)
+        description = (
+            str(description_data.get("chn") or "")
+            if isinstance(description_data, dict)
+            else str(description_data or "")
+        )
+        pollutant_values = {
+            name: self._optional_float(raw.get(api_name))
+            for name, api_name in {
+                "pm2p5": "pm25",
+                "pm10": "pm10",
+                "o3": "o3",
+                "so2": "so2",
+                "no2": "no2",
+                "co": "co",
+            }.items()
+        }
+        if aqi is None and not any(value is not None for value in pollutant_values.values()):
+            return None
+        return AirQuality(
+            aqi=aqi,
+            category=description,
+            primary="",
+            description=description,
+            source="caiyun",
+            field_sources={
+                **({"aqi": "caiyun"} if aqi is not None else {}),
+                **({key: "caiyun" for key, value in pollutant_values.items() if value is not None}),
+            },
+            **pollutant_values,
+        )
+
+    def _parse_hourly(self, hourly_data: Any) -> List[HourlyForecast]:
+        if not isinstance(hourly_data, dict):
+            return []
+
+        temperatures = hourly_data.get("temperature") or []
+        series = {
+            name: self._series_map(hourly_data.get(api_name, []))
+            for name, api_name in {
+                "skycon": "skycon",
+                "wind": "wind",
+                "precip": "precipitation",
+                "humidity": "humidity",
+                "feels_like": "apparent_temperature",
+                "pressure": "pressure",
+                "cloud": "cloudrate",
+                "visibility": "visibility",
+                "radiation": "dswrf",
+            }.items()
+        }
+        air_quality = hourly_data.get("air_quality") or {}
+        aqi_map = self._series_map(air_quality.get("aqi", [])) if isinstance(air_quality, dict) else {}
+        pm25_map = self._series_map(air_quality.get("pm25", [])) if isinstance(air_quality, dict) else {}
+
+        forecasts: List[HourlyForecast] = []
+        for temperature in temperatures if isinstance(temperatures, list) else []:
+            if not isinstance(temperature, dict):
+                continue
+            key = str(temperature.get("datetime") or "")
+            forecast_time = self._parse_datetime(key)
+            temp_value = self._optional_float(temperature.get("value"))
+            if forecast_time is None or temp_value is None:
+                continue
+
+            skycon_item = series["skycon"].get(key, {})
+            skycon = skycon_item.get("value")
+            text, icon = self._get_skycon_info(str(skycon) if skycon else None)
+            wind = series["wind"].get(key, {})
+            precip_item = series["precip"].get(key, {})
+            humidity_item = series["humidity"].get(key, {})
+            feels_like_item = series["feels_like"].get(key, {})
+            pressure_item = series["pressure"].get(key, {})
+            cloud_item = series["cloud"].get(key, {})
+            visibility_item = series["visibility"].get(key, {})
+            radiation_item = series["radiation"].get(key, {})
+
+            precip = self._optional_float(precip_item.get("value"))
+            feels_like = self._optional_float(feels_like_item.get("value"))
+            humidity = self._percent_value(humidity_item.get("value"))
+            cloud = self._percent_value(cloud_item.get("value"))
+            aqi_raw = (aqi_map.get(key, {}) or {}).get("value")
+            if isinstance(aqi_raw, dict):
+                aqi_raw = aqi_raw.get("chn")
+            aqi = self._optional_int(aqi_raw)
+            pm2p5 = self._optional_float((pm25_map.get(key, {}) or {}).get("value"))
+
+            field_sources = {
+                "temperature": "caiyun",
+                **({"weather": "caiyun"} if skycon else {}),
+                **({"feels_like": "caiyun"} if feels_like is not None else {}),
+                **({"precip": "caiyun"} if precip is not None else {}),
+                **({"aqi": "caiyun"} if aqi is not None else {}),
+                **({"pm2p5": "caiyun"} if pm2p5 is not None else {}),
+            }
+            forecasts.append(
+                HourlyForecast(
+                    time=forecast_time,
+                    temp=temp_value,
+                    feels_like=feels_like,
+                    feels_like_estimated=False,
+                    feels_like_source="caiyun" if feels_like is not None else None,
+                    text=text,
+                    icon=icon,
+                    pop=self._probability_pct(precip_item.get("probability")),
+                    precip=precip,
+                    precip_kind="intensity" if precip is not None else None,
+                    precip_source="caiyun" if precip is not None else None,
+                    wind_dir="",
+                    wind_speed=self._optional_float(wind.get("speed")),
+                    wind_direction_degrees=self._optional_float(wind.get("direction")),
+                    humidity=humidity,
+                    pressure=self._hpa_value(pressure_item.get("value")),
+                    cloud=cloud,
+                    visibility=self._optional_float(visibility_item.get("value")),
+                    radiation=self._optional_float(radiation_item.get("value")),
+                    aqi=aqi,
+                    pm2p5=pm2p5,
+                    field_sources=field_sources,
+                )
+            )
+        return forecasts
+
+    def _parse_daily(self, daily_data: Any) -> List[DailyForecast]:
+        if not isinstance(daily_data, dict):
+            return []
+
+        temperatures = daily_data.get("temperature") or []
+        series = {
+            name: self._series_map(daily_data.get(api_name, []), daily=True)
+            for name, api_name in {
+                "skycon": "skycon",
+                "skycon_day": "skycon_08h_20h",
+                "skycon_night": "skycon_20h_32h",
+                "astro": "astro",
+                "precip": "precipitation",
+                "precip_day": "precipitation_08h_20h",
+                "precip_night": "precipitation_20h_32h",
+                "humidity": "humidity",
+                "pressure": "pressure",
+                "cloud": "cloudrate",
+                "visibility": "visibility",
+                "radiation": "dswrf",
+                "wind_day": "wind_08h_20h",
+                "wind_night": "wind_20h_32h",
+            }.items()
+        }
+        air_quality = daily_data.get("air_quality") or {}
+        aqi_map = self._series_map(air_quality.get("aqi", []), daily=True) if isinstance(air_quality, dict) else {}
+        pm25_map = self._series_map(air_quality.get("pm25", []), daily=True) if isinstance(air_quality, dict) else {}
+
+        forecasts: List[DailyForecast] = []
+        for temperature in temperatures if isinstance(temperatures, list) else []:
+            if not isinstance(temperature, dict):
+                continue
+            key = str(temperature.get("date") or "")[:10]
+            forecast_date = self._parse_datetime(key)
+            temp_min = self._optional_float(temperature.get("min"))
+            temp_max = self._optional_float(temperature.get("max"))
+            if forecast_date is None or temp_min is None or temp_max is None:
+                continue
+
+            skycon_default = series["skycon"].get(key, {}).get("value")
+            skycon_day = series["skycon_day"].get(key, {}).get("value") or skycon_default
+            skycon_night = series["skycon_night"].get(key, {}).get("value") or skycon_default
+            text_day, icon_day = self._get_skycon_info(str(skycon_day) if skycon_day else None)
+            text_night, icon_night = self._get_skycon_info(str(skycon_night) if skycon_night else None)
+            astro = series["astro"].get(key, {})
+            precip = series["precip"].get(key, {})
+            precip_day = series["precip_day"].get(key, {})
+            precip_night = series["precip_night"].get(key, {})
+            humidity = series["humidity"].get(key, {})
+            pressure = series["pressure"].get(key, {})
+            cloud = series["cloud"].get(key, {})
+            visibility = series["visibility"].get(key, {})
+            radiation = series["radiation"].get(key, {})
+            wind_day = series["wind_day"].get(key, {})
+            wind_night = series["wind_night"].get(key, {})
+            aqi_raw = (aqi_map.get(key, {}) or {}).get("avg")
+            if isinstance(aqi_raw, dict):
+                aqi_raw = aqi_raw.get("chn")
+
+            precip_value = self._optional_float(precip.get("avg"))
+            forecasts.append(
+                DailyForecast(
+                    date=forecast_date.replace(tzinfo=None),
+                    temp_min=temp_min,
+                    temp_max=temp_max,
+                    temp_avg=self._optional_float(temperature.get("avg")),
+                    text_day=text_day,
+                    icon_day=icon_day,
+                    text_night=text_night,
+                    icon_night=icon_night,
+                    precip=precip_value,
+                    precip_kind="intensity" if precip_value is not None else None,
+                    precip_source="caiyun" if precip_value is not None else None,
+                    precip_probability=self._probability_pct(precip.get("probability")),
+                    precip_day=self._optional_float(precip_day.get("avg")),
+                    precip_day_probability=self._probability_pct(precip_day.get("probability")),
+                    precip_night=self._optional_float(precip_night.get("avg")),
+                    precip_night_probability=self._probability_pct(precip_night.get("probability")),
+                    sunrise=(astro.get("sunrise") or {}).get("time"),
+                    sunset=(astro.get("sunset") or {}).get("time"),
+                    humidity=self._percent_value(humidity.get("avg")),
+                    pressure=self._hpa_value(pressure.get("avg")),
+                    cloud=self._percent_value(cloud.get("avg")),
+                    vis=self._optional_float(visibility.get("avg")),
+                    radiation=self._optional_float(radiation.get("avg")),
+                    wind_speed_day=self._optional_float(wind_day.get("avg", {}).get("speed") if isinstance(wind_day.get("avg"), dict) else wind_day.get("speed")),
+                    wind_direction_day_degrees=self._optional_float(wind_day.get("avg", {}).get("direction") if isinstance(wind_day.get("avg"), dict) else wind_day.get("direction")),
+                    wind_speed_night=self._optional_float(wind_night.get("avg", {}).get("speed") if isinstance(wind_night.get("avg"), dict) else wind_night.get("speed")),
+                    wind_direction_night_degrees=self._optional_float(wind_night.get("avg", {}).get("direction") if isinstance(wind_night.get("avg"), dict) else wind_night.get("direction")),
+                    aqi=self._optional_int(aqi_raw),
+                    pm2p5=self._optional_float((pm25_map.get(key, {}) or {}).get("avg")),
+                    field_sources={
+                        "temperature": "caiyun",
+                        **({"weather": "caiyun"} if skycon_day or skycon_night else {}),
+                        **({"precip": "caiyun"} if precip_value is not None else {}),
+                    },
+                )
+            )
+        return forecasts
+
+    def _parse_daily_indices(self, daily_data: Any) -> List[LifeIndex]:
+        if not isinstance(daily_data, dict):
+            return []
+        life_index = daily_data.get("life_index") or {}
+        if not isinstance(life_index, dict):
+            return []
+        index_map = {
+            "ultraviolet": ("5", "紫外线指数"),
+            "carWashing": ("2", "洗车指数"),
+            "dressing": ("3", "穿衣指数"),
+            "coldRisk": ("9", "感冒指数"),
+        }
+        indices: List[LifeIndex] = []
+        for key, (type_id, name) in index_map.items():
+            raw = life_index.get(key)
+            item = raw[0] if isinstance(raw, list) and raw else raw
+            if not isinstance(item, dict):
+                continue
+            indices.append(
+                LifeIndex(
+                    type=type_id,
+                    name=name,
+                    category=str(item.get("desc") or ""),
+                    text=str(item.get("desc") or ""),
+                    value=str(item.get("index")) if item.get("index") not in (None, "") else None,
+                    date=self._parse_datetime(item.get("date")),
+                    source="caiyun",
+                )
+            )
+        return indices
+
+    def _parse_payload(
+        self,
+        data: Dict[str, Any],
+        location: str,
+    ) -> Optional[WeatherData]:
+        result = data.get("result") or {}
+        realtime = result.get("realtime") or {}
+        now_temp = self._optional_float(realtime.get("temperature"))
+        if now_temp is None:
+            return None
+
+        skycon = realtime.get("skycon")
+        text, icon = self._get_skycon_info(str(skycon) if skycon else None)
+        local_precip = ((realtime.get("precipitation") or {}).get("local") or {})
+        realtime_precip = self._optional_float(local_precip.get("intensity"))
+        wind = realtime.get("wind") or {}
+        hourly = self._parse_hourly(result.get("hourly"))
+        daily = self._parse_daily(result.get("daily"))
+        summary = str(result.get("forecast_keypoint") or "")
+        target_tz = self._target_timezone(data)
+        server_time = self._optional_float(data.get("server_time"))
+        update_time = (
+            datetime.fromtimestamp(server_time, tz=target_tz)
+            if server_time is not None
+            else datetime.now(tz=target_tz)
+        )
+        is_raining = (
+            (realtime_precip or 0) > 0
+            or any((item.precip or 0) > 0 for item in hourly[:3])
+            or any((item.pop or 0) > 30 for item in hourly[:3])
+        )
+
+        return WeatherData(
+            source="caiyun",
+            update_time=update_time,
+            location_name="Current Location",
+            coords=location,
+            now_temp=now_temp,
+            now_feels_like=self._optional_float(realtime.get("apparent_temperature")),
+            now_text=text,
+            now_icon=icon,
+            now_wind_dir="",
+            now_wind_scale="",
+            now_wind_speed=self._optional_float(wind.get("speed")),
+            now_wind_direction_degrees=self._optional_float(wind.get("direction")),
+            now_humidity=self._percent_value(realtime.get("humidity")),
+            now_precip=realtime_precip,
+            now_precip_kind="intensity" if realtime_precip is not None else None,
+            now_precip_source="caiyun" if realtime_precip is not None else None,
+            now_pressure=self._hpa_value(realtime.get("pressure")),
+            now_vis=self._optional_float(realtime.get("visibility")),
+            now_cloud=self._percent_value(realtime.get("cloudrate")),
+            now_radiation=self._optional_float(realtime.get("dswrf")),
+            summary=summary,
+            provider_summaries={"caiyun": summary} if summary else {},
+            field_sources={
+                "now_temp": "caiyun",
+                **({"now_feels_like": "caiyun"} if realtime.get("apparent_temperature") not in (None, "") else {}),
+                **({"now_text": "caiyun"} if skycon else {}),
+            },
+            minutely=[],
+            hourly=hourly,
+            daily=daily,
+            alerts=self._parse_alerts(result, target_tz),
+            air_quality=self._parse_air_quality(realtime.get("air_quality")),
+            indices=self._parse_daily_indices(result.get("daily")),
+            is_raining=is_raining,
+            timezone=str(data.get("timezone") or "") or None,
+        )
 
     async def get_weather(self, location: str) -> Optional[WeatherData]:
         """
@@ -73,259 +648,20 @@ class CaiyunAdapter(WeatherAdapter):
             logger.warning("Caiyun API token is missing; skipping Caiyun request.")
             return None
 
-        if "," not in location:
+        normalized_location = self._normalize_location(location)
+        if normalized_location is None:
             logger.warning(f"Caiyun requires coordinates (lon,lat), got: {location}")
             return None
-        
-        clean_location = location.replace(" ", "")
-        
-        # Request full data: alert, daily(15d), hourly(48h)
-        url = f"https://api.caiyunapp.com/v2.6/{self.token}/{clean_location}/weather.json"
-        safe_url = f"https://api.caiyunapp.com/v2.6/***/{clean_location}/weather.json"
-        params = {
-            "alert": "true",
-            "dailysteps": "15",
-            "hourlysteps": "48",
-            "unit": "metric:v2" 
-        }
-        
-        try:
-            response = await self.client.get(url, params=params)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get("status") != "ok":
-                logger.warning(f"Caiyun API Error: {safe_url} - {data.get('error')}")
-                return None
-            else:
-                logger.info("Caiyun API Success")
-            
-            result = data["result"]
-            realtime = result["realtime"]
-            realtime_precip = self._safe_float(realtime.get("precipitation", {}).get("local", {}).get("intensity"))
-            
-            # --- 1. Realtime Data ---
-            skycon = realtime["skycon"]
-            text, icon = self._get_skycon_info(skycon)
-            
-            # --- 2. Minutely Data ---
-            minutely_list = []
-            minutely_data = result.get("minutely", {})
-            probs = minutely_data.get("probability", [])
-            precips = minutely_data.get("precipitation_2h", [])
-            now_dt = datetime.now()
-            
-            for i, p in enumerate(precips):
-                t = now_dt + timedelta(minutes=i)
-                prob = probs[i] if i < len(probs) else 0.0
-                minutely_list.append(MinutelyPrecipitation(time=t, precip=p, probability=prob, precip_type="rain"))
-                
-            # --- 3. Alerts ---
-            alerts_list = []
-            if "alert" in result and "content" in result["alert"]:
-                 for a in result["alert"]["content"]:
-                     alerts_list.append(WarningAlert(
-                         title=a["title"],
-                         type=a["code"],
-                         level=a["status"],
-                         text=a["description"],
-                         pub_time=datetime.fromtimestamp(a["pubtimestamp"]),
-                         source="Caiyun"
-                     ))
 
-            # --- 4. Air Quality ---
-            air_quality = None
-            if "air_quality" in realtime:
-                aq = realtime["air_quality"]
-                aqi_val = int(aq.get("aqi", {}).get("chn", 0)) # Default to China standard
-                desc = aq.get("description", {}).get("chn", "")
-                pm25 = float(aq.get("pm25", 0))
-                
-                # Simple category mapping if description is empty
-                category = desc
-                if not category:
-                    if aqi_val <= 50: category = "优"
-                    elif aqi_val <= 100: category = "良"
-                    elif aqi_val <= 150: category = "轻度污染"
-                    elif aqi_val <= 200: category = "中度污染"
-                    elif aqi_val <= 300: category = "重度污染"
-                    else: category = "严重污染"
-
-                air_quality = AirQuality(
-                    aqi=aqi_val,
-                    category=category,
-                    primary="PM2.5" if pm25 > 75 else "", # Simple inference
-                    pm2p5=pm25,
-                    description=desc
-                )
-
-            # --- 5. Hourly Forecast ---
-            hourly_list = []
-            hourly_data = result.get("hourly", {})
-            if "temperature" in hourly_data:
-                temps = hourly_data["temperature"]
-                skycons = hourly_data.get("skycon", [])
-                winds = hourly_data.get("wind", [])
-                precips_h = hourly_data.get("precipitation", [])
-                
-                for i in range(len(temps)):
-                    # Updated Parsing for ISO string
-                    try:
-                        h_time = datetime.fromisoformat(temps[i]["datetime"])
-                    except ValueError:
-                         # Fallback for manual replacement if python version < 3.11 or diff format
-                         h_time = datetime.fromisoformat(temps[i]["datetime"].replace("Z", "+00:00"))
-                         
-                    h_temp = temps[i]["value"]
-                    h_skycon = skycons[i]["value"] if i < len(skycons) else "CLEAR_DAY"
-                    h_text, h_icon = self._get_skycon_info(h_skycon)
-                    
-                    # Wind
-                    w_dir = ""
-                    w_speed = ""
-                    if i < len(winds):
-                        w_dir = str(winds[i].get("direction", ""))
-                        w_speed = str(winds[i].get("speed", ""))
-                        
-                    # Precip
-                    h_precip = 0.0
-                    if i < len(precips_h):
-                        h_precip = precips_h[i].get("value", 0.0)
-
-                    hourly_list.append(HourlyForecast(
-                        time=h_time,
-                        temp=h_temp,
-                        text=h_text,
-                        icon=h_icon,
-                        precip=h_precip,
-                        wind_dir=w_dir,
-                        wind_scale=w_speed, # Caiyun gives speed in km/h usually, distinct from scale
-                    ))
-
-            hourly_precip_rain = any(h.precip > 0 for h in hourly_list[:3])
-            hourly_probability_rain = any(
-                self._probability_over(item.get("probability"), 0.3)
-                for item in hourly_data.get("precipitation", [])[:3]
-            )
-
-            # --- 6. Daily Forecast ---
-            daily_list = []
-            daily_data = result.get("daily", {})
-            if "temperature" in daily_data:
-                temps = daily_data["temperature"]
-                skycons = daily_data.get("skycon", [])
-                astros = daily_data.get("astro", [])
-                precips_d = daily_data.get("precipitation", [])
-                humidities = daily_data.get("humidity", [])
-                
-                for i in range(len(temps)):
-                    d_date_str = temps[i]["date"]
-                    # Fix: Handle potential full ISO string in daily date
-                    if "T" in d_date_str:
-                         d_date = datetime.fromisoformat(d_date_str).replace(tzinfo=None)
-                    else:
-                         d_date = datetime.strptime(d_date_str, "%Y-%m-%d")
-                    
-                    t_max = temps[i]["max"]
-                    t_min = temps[i]["min"]
-                    
-                    s_day = skycons[i]["value"] if i < len(skycons) else "CLEAR_DAY"
-                    s_night = skycons[i]["value"] if i < len(skycons) else s_day
-                    
-                    # Try to get day/night split if available
-                    if "skycon_08h_20h" in daily_data:
-                         s_day = daily_data["skycon_08h_20h"][i]["value"]
-                    if "skycon_20h_32h" in daily_data:
-                         s_night = daily_data["skycon_20h_32h"][i]["value"]
-                    
-                    txt_d, icon_d = self._get_skycon_info(s_day)
-                    txt_n, icon_n = self._get_skycon_info(s_night)
-                    
-                    d_sunrise = None
-                    d_sunset = None
-                    if i < len(astros):
-                        d_sunrise = astros[i].get("sunrise", {}).get("time")
-                        d_sunset = astros[i].get("sunset", {}).get("time")
-                        
-                    d_precip = 0.0
-                    if i < len(precips_d):
-                        d_precip = precips_d[i].get("max", 0.0) or precips_d[i].get("avg", 0.0)
-
-                    d_humidity = None
-                    if i < len(humidities):
-                        d_humidity = int(humidities[i].get("avg", 0) * 100) # Caiyun gives 0-1
-
-                    daily_list.append(DailyForecast(
-                        date=d_date,
-                        temp_min=t_min,
-                        temp_max=t_max,
-                        text_day=txt_d,
-                        icon_day=icon_d,
-                        text_night=txt_n,
-                        icon_night=icon_n,
-                        precip=d_precip,
-                        sunrise=d_sunrise,
-                        sunset=d_sunset,
-                        humidity=d_humidity
-                    ))
-
-            # --- 7. Life Indices ---
-            indices_list = []
-            life_index = realtime.get("life_index", {})
-            
-            # Map Caiyun keys to our common Types
-            # 1: Sport, 2: Car, 3: Dress, 5: UV, 8: Comfort, 9: Flu
-            index_map = {
-                "ultraviolet": ("5", "紫外线"),
-                "comfort": ("8", "舒适度"),
-                "carWashing": ("2", "洗车"),
-                "dressing": ("3", "穿衣"),
-                "coldRisk": ("9", "感冒"), 
-            }
-            
-            for key, (type_id, name) in index_map.items():
-                if key in life_index:
-                    val = life_index[key]
-                    indices_list.append(LifeIndex(
-                        type=type_id,
-                        name=name,
-                        category=val.get("desc", ""), # Caiyun desc is usually the category/level
-                        text=val.get("desc", "")      # Caiyun doesn't have detailed text separate from desc sometimes
-                    ))
-
-            return WeatherData(
-                source="caiyun",
-                location_name="Current Location",
-                coords=location,
-                now_temp=realtime["temperature"],
-                now_feels_like=realtime.get("apparent_temperature", realtime["temperature"]),
-                now_text=text,
-                now_icon=icon,
-                now_wind_dir=str(realtime["wind"]["direction"]),
-                now_wind_scale=str(realtime["wind"]["speed"]),
-                now_humidity=int(realtime["humidity"] * 100),
-                now_precip=realtime_precip,
-                summary=result.get("forecast_keypoint", ""),
-                
-                minutely=minutely_list,
-                hourly=hourly_list,
-                daily=daily_list,
-                alerts=alerts_list,
-                air_quality=air_quality,
-                indices=indices_list,
-                
-                is_raining=(
-                    realtime_precip > 0
-                    or any(self._safe_float(precip) > 0 for precip in precips[:30])
-                    or any(self._probability_over(prob, 0.3) for prob in probs[:30])
-                    or hourly_precip_rain
-                    or hourly_probability_rain
-                )
-            )
-
-        except httpx.HTTPStatusError as e:
-            logger.error(f"Caiyun API Request Failed: HTTP {e.response.status_code} for {safe_url}")
+        clean_location, cache_location = normalized_location
+        data = await self._get_payload(clean_location, cache_location)
+        if data is None:
             return None
-        except Exception as e:
-            logger.error(f"Caiyun API Request Failed: {type(e).__name__}: {e}")
+
+        try:
+            return self._parse_payload(data, clean_location)
+        except Exception as error:
+            logger.error(
+                f"Caiyun response mapping failed: type={type(error).__name__} location={cache_location}"
+            )
             return None

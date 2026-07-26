@@ -15,6 +15,18 @@ class BotDependencies:
 
 DAILY_WORDS = {"daily", "day", "days", "forecast", "预报", "未来"}
 HOURLY_WORDS = {"hourly", "hour", "hours", "逐小时", "小时"}
+CHART_TYPES = {"daily", "hourly", "rain", "temp"}
+
+
+def join_location_args(args: list[str]) -> str:
+    return " ".join(args).strip()
+
+
+def parse_chart_request(args: list[str]) -> tuple[str, str]:
+    """Parse a multi-word chart location and optional trailing chart type."""
+    if len(args) > 1 and args[-1].strip().lower() in CHART_TYPES:
+        return join_location_args(args[:-1]), args[-1].strip().lower()
+    return join_location_args(args), "temp"
 
 
 def parse_query_param(param: str) -> tuple[str, int, Optional[int]]:

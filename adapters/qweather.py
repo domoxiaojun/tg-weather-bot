@@ -1,6 +1,7 @@
+import asyncio
 import re
-from datetime import datetime, time as dtime
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, time as dtime
+from typing import Any, Dict, List, Literal, Optional
 
 import httpx
 from loguru import logger
@@ -15,18 +16,52 @@ from domain.models import (
     MinutelyPrecipitation,
     WarningAlert,
     WeatherData,
+    normalize_warning_level,
 )
+
+
+WeatherProfile = Literal["full", "hourly", "daily", "rain", "indices"]
 
 
 class QWeatherAdapter(WeatherAdapter):
     """Adapter for QWeather using full-path endpoints and header auth."""
+
+    _UNAVAILABLE_MARKER = "__qweather_data_unavailable__"
 
     def __init__(self):
         self.api_key = settings.qweather_api_key
         self.base_url = settings.qweather_api_host.rstrip("/")
         self.client = httpx.AsyncClient(timeout=10.0, http2=True)
 
-    async def _request(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    async def aclose(self):
+        await self.client.aclose()
+
+    @classmethod
+    def _is_unavailable_marker(cls, value: Any) -> bool:
+        return isinstance(value, dict) and value.get(cls._UNAVAILABLE_MARKER) is True
+
+    @staticmethod
+    def _is_data_not_available_error(data: Any) -> bool:
+        if not isinstance(data, dict):
+            return False
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return False
+        error_type = str(error.get("type") or "")
+        error_title = str(error.get("title") or "")
+        return "data-not-available" in error_type or error_title.lower() == "data not available"
+
+    @classmethod
+    def _unavailable_marker(cls, endpoint: str) -> Dict[str, Any]:
+        return {cls._UNAVAILABLE_MARKER: True, "endpoint": endpoint}
+
+    async def _request(
+        self,
+        endpoint: str,
+        params: Optional[Dict[str, Any]] = None,
+        *,
+        allow_data_unavailable: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """Request QWeather using the new full-path API style."""
         if not endpoint.startswith("/"):
             raise ValueError(f"QWeather endpoint must start with '/': {endpoint}")
@@ -44,6 +79,13 @@ class QWeatherAdapter(WeatherAdapter):
                 data = {"raw": response.text}
 
             if not response.is_success:
+                if allow_data_unavailable and self._is_data_not_available_error(data):
+                    logger.debug(
+                        "QWeather optional data unavailable: {} {}",
+                        response.status_code,
+                        endpoint,
+                    )
+                    return self._unavailable_marker(endpoint)
                 logger.warning(
                     "QWeather API HTTP error: {} {} - {}",
                     response.status_code,
@@ -79,6 +121,17 @@ class QWeatherAdapter(WeatherAdapter):
     def _to_int(cls, value: Any, default: int = 0) -> int:
         return int(round(cls._to_float(value, float(default))))
 
+    @classmethod
+    def _optional_float(cls, value: Any) -> Optional[float]:
+        if value in (None, ""):
+            return None
+        return cls._to_float(value)
+
+    @classmethod
+    def _optional_int(cls, value: Any) -> Optional[int]:
+        parsed = cls._optional_float(value)
+        return int(round(parsed)) if parsed is not None else None
+
     @staticmethod
     def _as_text(value: Any) -> str:
         if value is None:
@@ -108,29 +161,58 @@ class QWeatherAdapter(WeatherAdapter):
         """Resolve location string to Location ID and coordinates."""
         from utils.cache import cache
 
-        cache_key = f"geo:{location.lower()}"
+        cache_key = f"geo:{location.strip().lower()}"
         cached = await cache.get(cache_key)
-        if cached:
+        if isinstance(cached, dict):
             logger.debug(f"地理位置缓存命中: {location}")
             return cached
 
-        data = await self._request("/geo/v2/city/lookup", {"location": location})
-        if data and data.get("location"):
-            loc_data = data["location"][0]
-            await cache.set(cache_key, loc_data, ttl=None)
-            return loc_data
+        async def resolve_location() -> Optional[Dict[str, Any]]:
+            data = await self._request("/geo/v2/city/lookup", {"location": location})
+            if data and data.get("location"):
+                return data["location"][0]
 
-        if "," in location:
-            simple_loc = location.split(",")[0].strip()
-            if simple_loc:
-                logger.debug(f"Retrying geo lookup with simplified name: '{simple_loc}'")
-                data = await self._request("/geo/v2/city/lookup", {"location": simple_loc})
-                if data and data.get("location"):
-                    loc_data = data["location"][0]
-                    await cache.set(cache_key, loc_data, ttl=None)
-                    return loc_data
+            if "," in location:
+                simple_loc = location.split(",")[0].strip()
+                if simple_loc:
+                    logger.debug(f"Retrying geo lookup with simplified name: '{simple_loc}'")
+                    data = await self._request("/geo/v2/city/lookup", {"location": simple_loc})
+                    if data and data.get("location"):
+                        return data["location"][0]
+            return None
 
-        return None
+        resolved = await cache.get_or_set(cache_key, resolve_location, ttl=None)
+        return resolved if isinstance(resolved, dict) else None
+
+    async def _cached_request(
+        self,
+        cache_key: str,
+        endpoint: str,
+        params: Optional[Dict[str, Any]],
+        *,
+        ttl: int,
+        unavailable_ttl: Optional[int] = None,
+        allow_data_unavailable: bool = False,
+        force_refresh: bool = False,
+    ) -> Optional[Dict[str, Any]]:
+        from utils.cache import cache
+
+        def resolve_ttl(value: Dict[str, Any]) -> int:
+            if unavailable_ttl is not None and self._is_unavailable_marker(value):
+                return unavailable_ttl
+            return ttl
+
+        value = await cache.get_or_set(
+            cache_key,
+            lambda: self._request(
+                endpoint,
+                params,
+                allow_data_unavailable=allow_data_unavailable,
+            ),
+            ttl=resolve_ttl,
+            force_refresh=force_refresh,
+        )
+        return value if isinstance(value, dict) else None
 
     def _map_daily(self, daily_data: Optional[Dict[str, Any]]) -> List[DailyForecast]:
         daily_list: List[DailyForecast] = []
@@ -147,19 +229,29 @@ class QWeatherAdapter(WeatherAdapter):
                     icon_day=d.get("iconDay", ""),
                     text_night=d.get("textNight", ""),
                     icon_night=d.get("iconNight", ""),
-                    precip=self._to_float(d.get("precip")),
+                    precip=self._optional_float(d.get("precip")),
+                    precip_kind="amount" if d.get("precip") not in (None, "") else None,
+                    precip_source="qweather" if d.get("precip") not in (None, "") else None,
                     sunrise=d.get("sunrise"),
                     sunset=d.get("sunset"),
                     moon_phase=d.get("moonPhase"),
                     moon_rise=d.get("moonrise"),
                     moon_set=d.get("moonset"),
-                    humidity=self._to_int(d.get("humidity")),
-                    vis=self._to_float(d.get("vis")),
-                    uv_index=d.get("uvIndex", "N/A"),
+                    humidity=self._optional_int(d.get("humidity")),
+                    vis=self._optional_float(d.get("vis")),
+                    uv_index=d.get("uvIndex"),
+                    pressure=self._optional_float(d.get("pressure")),
+                    cloud=self._optional_int(d.get("cloud")),
                     wind_dir_day=d.get("windDirDay"),
                     wind_scale_day=d.get("windScaleDay"),
+                    wind_speed_day=self._optional_float(d.get("windSpeedDay")),
                     wind_dir_night=d.get("windDirNight"),
                     wind_scale_night=d.get("windScaleNight"),
+                    wind_speed_night=self._optional_float(d.get("windSpeedNight")),
+                    field_sources={
+                        "temperature": "qweather",
+                        "weather": "qweather",
+                    },
                 )
             )
         return daily_list
@@ -172,20 +264,34 @@ class QWeatherAdapter(WeatherAdapter):
         hourly_list: List[HourlyForecast] = []
         if hourly_data:
             for h in hourly_data.get("hourly", []):
+                temp = self._to_float(h.get("temp"))
+                humidity = self._optional_int(h.get("humidity"))
+                wind_speed = self._optional_float(h.get("windSpeed"))
+                dew = self._optional_float(h.get("dew"))
+                precip = self._optional_float(h.get("precip"))
                 hourly_list.append(
                     HourlyForecast(
                         time=self._parse_datetime(h.get("fxTime")) or datetime.now(),
-                        temp=self._to_float(h.get("temp")),
+                        temp=temp,
                         text=h.get("text", ""),
                         icon=h.get("icon", ""),
-                        pop=self._to_float(h.get("pop")) if h.get("pop") not in (None, "") else None,
-                        precip=self._to_float(h.get("precip")),
+                        pop=self._optional_float(h.get("pop")),
+                        precip=precip,
+                        precip_kind="amount" if precip is not None else None,
+                        precip_source="qweather" if precip is not None else None,
                         wind_dir=h.get("windDir", ""),
                         wind_scale=h.get("windScale", ""),
-                        humidity=self._to_int(h.get("humidity")),
-                        pressure=self._to_float(h.get("pressure")) if h.get("pressure") not in (None, "") else None,
-                        cloud=self._to_int(h.get("cloud")) if h.get("cloud") not in (None, "") else None,
-                        dew=self._to_float(h.get("dew")) if h.get("dew") not in (None, "") else None,
+                        wind_speed=wind_speed,
+                        humidity=humidity,
+                        pressure=self._optional_float(h.get("pressure")),
+                        cloud=self._optional_int(h.get("cloud")),
+                        dew=dew,
+                        uv_index=self._optional_float(h.get("uvIndex")),
+                        visibility=self._optional_float(h.get("vis")),
+                        field_sources={
+                            "temperature": "qweather",
+                            "weather": "qweather",
+                        },
                     )
                 )
 
@@ -196,24 +302,39 @@ class QWeatherAdapter(WeatherAdapter):
                 if current_obs_time:
                     current_hour_time = current_obs_time.replace(minute=0, second=0, microsecond=0)
                     if hourly_list[0].time > current_hour_time:
-                        current_precip = self._to_float(now.get("precip"))
-                        next_pop = hourly_list[0].pop if hourly_list[0].pop is not None else 0
-                        current_pop = 100.0 if current_precip > 0 else next_pop
+                        current_precip = self._optional_float(now.get("precip"))
                         hourly_list.insert(
                             0,
                             HourlyForecast(
                                 time=current_hour_time,
                                 temp=self._to_float(now.get("temp")),
+                                feels_like=(
+                                    self._to_float(now.get("feelsLike"))
+                                    if now.get("feelsLike") not in (None, "")
+                                    else None
+                                ),
+                                feels_like_estimated=False,
+                                feels_like_source="qweather",
                                 text=now.get("text", ""),
                                 icon=now.get("icon", ""),
-                                pop=current_pop,
+                                pop=None,
                                 precip=current_precip,
+                                precip_kind="amount" if current_precip is not None else None,
+                                precip_source="qweather" if current_precip is not None else None,
                                 wind_dir=now.get("windDir", ""),
                                 wind_scale=now.get("windScale", ""),
-                                humidity=self._to_int(now.get("humidity")),
-                                pressure=self._to_float(now.get("pressure")) if now.get("pressure") else None,
-                                cloud=self._to_int(now.get("cloud")) if now.get("cloud") else None,
-                                dew=self._to_float(now.get("dew")) if now.get("dew") else None,
+                                wind_speed=(
+                                    self._optional_float(now.get("windSpeed"))
+                                ),
+                                humidity=self._optional_int(now.get("humidity")),
+                                pressure=self._optional_float(now.get("pressure")),
+                                cloud=self._optional_int(now.get("cloud")),
+                                dew=self._optional_float(now.get("dew")),
+                                visibility=self._optional_float(now.get("vis")),
+                                field_sources={
+                                    "temperature": "qweather",
+                                    "weather": "qweather",
+                                },
                             ),
                         )
             except Exception as e:
@@ -234,6 +355,9 @@ class QWeatherAdapter(WeatherAdapter):
                     precip=self._to_float(item.get("precip")),
                     probability=None,
                     precip_type=item.get("type"),
+                    precip_kind="amount",
+                    interval_minutes=5,
+                    source="qweather",
                 )
             )
         return minutely_list
@@ -245,7 +369,8 @@ class QWeatherAdapter(WeatherAdapter):
 
         for item in warning_data.get("alerts", []):
             event_type = item.get("eventType") or {}
-            color = item.get("color") or {}
+            color = self._as_text(item.get("color"))
+            severity = self._as_text(item.get("severity"))
             description = item.get("description") or ""
             instruction = item.get("instruction") or ""
             text = "\n".join(part for part in (description, instruction) if part)
@@ -253,10 +378,13 @@ class QWeatherAdapter(WeatherAdapter):
                 WarningAlert(
                     title=item.get("headline") or item.get("title") or self._as_text(event_type) or "天气预警",
                     type=self._as_text(event_type),
-                    level=self._as_text(color) or self._as_text(item.get("severity")),
+                    level=normalize_warning_level(color if color else severity),
                     text=text,
                     pub_time=self._parse_datetime(item.get("issuedTime")) or datetime.now(),
                     source="QWeather",
+                    status=self._as_text(item.get("messageType")),
+                    alert_id=item.get("id"),
+                    expire_time=self._parse_datetime(item.get("expireTime")),
                 )
             )
         return alerts
@@ -278,21 +406,96 @@ class QWeatherAdapter(WeatherAdapter):
         health = selected.get("health") or {}
         advice = health.get("advice") or {}
 
-        pm2p5 = 0.0
+        pollutants: dict[str, Optional[float]] = {
+            "pm2p5": None,
+            "pm10": None,
+            "o3": None,
+            "so2": None,
+            "no2": None,
+            "co": None,
+        }
         for pollutant in air_data.get("pollutants", []):
-            code = str(pollutant.get("code") or pollutant.get("name") or "").lower().replace(".", "")
+            code = re.sub(
+                r"[^a-z0-9]",
+                "",
+                str(pollutant.get("code") or pollutant.get("name") or "").lower(),
+            )
             if code in {"pm25", "pm2p5"}:
-                concentration = pollutant.get("concentration") or {}
-                pm2p5 = self._to_float(concentration.get("value"))
-                break
+                target = "pm2p5"
+            elif code in pollutants:
+                target = code
+            else:
+                continue
+            concentration = pollutant.get("concentration") or {}
+            pollutants[target] = self._optional_float(concentration.get("value"))
+
+        raw_aqi = selected.get("aqi")
+        if raw_aqi in (None, ""):
+            raw_aqi = selected.get("aqiDisplay")
 
         return AirQuality(
-            aqi=self._to_int(selected.get("aqi") or selected.get("aqiDisplay")),
+            aqi=self._optional_int(raw_aqi),
             category=self._as_text(selected.get("category") or selected.get("level")),
             primary=self._as_text(primary),
-            pm2p5=pm2p5,
+            **pollutants,
             description=self._as_text(advice.get("generalPopulation") or health.get("effect")),
+            source="qweather",
+            field_sources={
+                "aqi": "qweather",
+                **({key: "qweather" for key, value in pollutants.items() if value is not None}),
+            },
         )
+
+    def _map_hourly_air_quality(
+        self,
+        air_data: Optional[Dict[str, Any]],
+    ) -> Dict[tuple, AirQuality]:
+        if not air_data:
+            return {}
+        records = air_data.get("hours") or air_data.get("hourly") or []
+        mapped: Dict[tuple, AirQuality] = {}
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            forecast_time = self._parse_datetime(
+                record.get("forecastTime") or record.get("fxTime") or record.get("time")
+            )
+            air_quality = self._map_air_quality(record)
+            if forecast_time is None or air_quality is None:
+                continue
+            if forecast_time.tzinfo is not None and forecast_time.utcoffset() is not None:
+                key = ("utc", int(forecast_time.timestamp() // 3600))
+            else:
+                key = (
+                    "local",
+                    forecast_time.year,
+                    forecast_time.month,
+                    forecast_time.day,
+                    forecast_time.hour,
+                )
+            mapped[key] = air_quality
+        return mapped
+
+    def _map_daily_air_quality(
+        self,
+        air_data: Optional[Dict[str, Any]],
+    ) -> Dict[date, AirQuality]:
+        if not air_data:
+            return {}
+        records = air_data.get("days") or air_data.get("daily") or []
+        mapped = {}
+        for record in records if isinstance(records, list) else []:
+            if not isinstance(record, dict):
+                continue
+            forecast_time = self._parse_datetime(
+                record.get("forecastStartTime")
+                or record.get("forecastDate")
+                or record.get("fxDate")
+            )
+            air_quality = self._map_air_quality(record)
+            if forecast_time is not None and air_quality is not None:
+                mapped[forecast_time.date()] = air_quality
+        return mapped
 
     def _map_indices(self, indices_data: Optional[Dict[str, Any]]) -> List[LifeIndex]:
         if not indices_data:
@@ -303,103 +506,157 @@ class QWeatherAdapter(WeatherAdapter):
                 name=i["name"],
                 category=i["category"],
                 text=i.get("text", ""),
+                date=self._parse_datetime(i.get("date")),
+                value=str(i.get("level")) if i.get("level") not in (None, "") else None,
+                source="qweather",
             )
             for i in indices_data.get("daily", [])
         ]
 
-    async def get_weather(self, location: str) -> Optional[WeatherData]:
-        from utils.cache import cache
+    async def get_weather(
+        self,
+        location: str,
+        *,
+        profile: WeatherProfile = "full",
+        refresh_qweather: bool = False,
+        loc_info: Optional[Dict[str, Any]] = None,
+    ) -> Optional[WeatherData]:
+        profile_components = {
+            "full": {"minutely", "air", "air_hourly", "air_daily", "warning", "daily", "hourly", "indices"},
+            "hourly": {"air", "air_hourly", "warning", "hourly"},
+            "daily": {"air_daily", "warning", "daily"},
+            "rain": {"minutely", "air", "warning", "hourly"},
+            "indices": {"air", "warning", "indices"},
+        }
+        if profile not in profile_components:
+            raise ValueError(f"Unsupported QWeather profile: {profile}")
 
-        cache_key = (
-            f"qweather:{location}:"
-            f"{settings.qweather_daily_days}:{settings.qweather_hourly_hours}:"
-            f"{settings.qweather_indices_types}:{settings.qweather_enable_minutely}"
-        )
-        cached = await cache.get(cache_key)
-        if cached:
-            logger.debug(f"Weather cache hit: {location}")
-            return WeatherData(**cached)
-
-        loc_info = await self.get_geo_location(location)
-        if not loc_info:
+        resolved_location = loc_info or await self.get_geo_location(location)
+        if not resolved_location:
             logger.warning(f"Could not resolve location: {location}")
             return None
 
-        loc_id = loc_info["id"]
-        lon = loc_info["lon"]
-        lat = loc_info["lat"]
-        loc_name = loc_info.get("name", location)
-        adm1 = loc_info.get("adm1")
+        loc_id = resolved_location["id"]
+        lon = resolved_location["lon"]
+        lat = resolved_location["lat"]
+        loc_name = resolved_location.get("name", location)
+        adm1 = resolved_location.get("adm1")
         if adm1:
             loc_name = f"{loc_name}, {adm1}"
         coords = f"{lon},{lat}"
         coord_location = self._coord_location(lon, lat)
 
-        from utils.cache import cache as api_cache
-
         now = datetime.now()
         midnight = datetime.combine(now.date(), dtime(23, 59, 59))
         seconds_until_midnight = max(60, int((midnight - now).total_seconds()))
+        components = profile_components[profile]
 
-        now_key = f"qw:now:{loc_id}"
-        now_data = await api_cache.get(now_key)
-        if not now_data:
-            now_data = await self._request("/v7/weather/now", {"location": loc_id})
-            if now_data:
-                await api_cache.set(now_key, now_data, ttl=600)
-
-        minutely_data = None
-        if settings.qweather_enable_minutely:
-            minutely_key = f"qw:minutely:{coord_location}"
-            minutely_data = await api_cache.get(minutely_key)
-            if not minutely_data:
-                minutely_data = await self._request("/v7/minutely/5m", {"location": coord_location})
-                if minutely_data:
-                    await api_cache.set(minutely_key, minutely_data, ttl=300)
-
-        air_key = f"qw:air:v1:{coord_location}"
-        air_data = await api_cache.get(air_key)
-        if not air_data:
-            air_data = await self._request(f"/airquality/v1/current/{lat}/{lon}")
-            if air_data:
-                await api_cache.set(air_key, air_data, ttl=3600)
-
-        warning_key = f"qw:warning:v1:{coord_location}"
-        warning_data = await api_cache.get(warning_key)
-        if not warning_data:
-            warning_data = await self._request(
+        requests: dict[str, Any] = {
+            "now": self._cached_request(
+                f"qw:now:{loc_id}",
+                "/v7/weather/now",
+                {"location": loc_id},
+                ttl=600,
+                force_refresh=refresh_qweather,
+            )
+        }
+        if "minutely" in components and settings.qweather_enable_minutely:
+            requests["minutely"] = self._cached_request(
+                f"qw:minutely:{coord_location}",
+                "/v7/minutely/5m",
+                {"location": coord_location},
+                ttl=300,
+                unavailable_ttl=3600,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
+            )
+        if "air" in components:
+            requests["air"] = self._cached_request(
+                f"qw:air:v1:{coord_location}",
+                f"/airquality/v1/current/{lat}/{lon}",
+                None,
+                ttl=3600,
+                unavailable_ttl=21600,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
+            )
+        if "air_hourly" in components:
+            requests["air_hourly"] = self._cached_request(
+                f"qw:air-hourly:v1:{coord_location}",
+                f"/airquality/v1/hourly/{lat}/{lon}",
+                None,
+                ttl=3600,
+                unavailable_ttl=21600,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
+            )
+        if "air_daily" in components:
+            requests["air_daily"] = self._cached_request(
+                f"qw:air-daily:v1:{coord_location}",
+                f"/airquality/v1/daily/{lat}/{lon}",
+                None,
+                ttl=43200,
+                unavailable_ttl=21600,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
+            )
+        if "warning" in components:
+            requests["warning"] = self._cached_request(
+                f"qw:warning:v1:{coord_location}",
                 f"/weatheralert/v1/current/{lat}/{lon}",
                 {"localTime": "true"},
+                ttl=1800,
+                unavailable_ttl=1800,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
             )
-            if warning_data:
-                await api_cache.set(warning_key, warning_data, ttl=1800)
-
-        daily_key = f"qw:daily:{settings.qweather_daily_days}:{loc_id}"
-        daily_data = await api_cache.get(daily_key)
-        if not daily_data:
-            daily_data = await self._request(f"/v7/weather/{settings.qweather_daily_days}", {"location": loc_id})
-            if daily_data:
-                await api_cache.set(daily_key, daily_data, ttl=43200)
-
-        hourly_key = f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}"
-        hourly_data = await api_cache.get(hourly_key)
-        if not hourly_data:
-            hourly_data = await self._request(f"/v7/weather/{settings.qweather_hourly_hours}", {"location": loc_id})
-            if hourly_data:
-                await api_cache.set(hourly_key, hourly_data, ttl=21600)
-
-        indices_key = f"qw:indices:{settings.qweather_indices_types}:{loc_id}"
-        indices_data = await api_cache.get(indices_key)
-        if not indices_data:
-            indices_data = await self._request(
+        if "daily" in components:
+            requests["daily"] = self._cached_request(
+                f"qw:daily:{settings.qweather_daily_days}:{loc_id}",
+                f"/v7/weather/{settings.qweather_daily_days}",
+                {"location": loc_id},
+                ttl=43200,
+                force_refresh=refresh_qweather,
+            )
+        if "hourly" in components:
+            requests["hourly"] = self._cached_request(
+                f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}",
+                f"/v7/weather/{settings.qweather_hourly_hours}",
+                {"location": loc_id},
+                ttl=21600,
+                force_refresh=refresh_qweather,
+            )
+        if "indices" in components:
+            requests["indices"] = self._cached_request(
+                f"qw:indices:{settings.qweather_indices_types}:{loc_id}",
                 "/v7/indices/1d",
                 {"location": loc_id, "type": settings.qweather_indices_types},
+                ttl=seconds_until_midnight,
+                force_refresh=refresh_qweather,
             )
-            if indices_data:
-                await api_cache.set(indices_key, indices_data, ttl=seconds_until_midnight)
 
-        if not now_data:
+        keys = list(requests)
+        values = await asyncio.gather(*requests.values(), return_exceptions=True)
+        payloads: dict[str, Optional[Dict[str, Any]]] = {}
+        for key, value in zip(keys, values):
+            if isinstance(value, Exception):
+                logger.error(f"QWeather component failed: component={key} type={type(value).__name__}")
+                payloads[key] = None
+            else:
+                payloads[key] = value
+
+        now_data = payloads.get("now")
+        if not now_data or not isinstance(now_data.get("now"), dict):
             return None
+
+        minutely_data = payloads.get("minutely")
+        air_data = payloads.get("air")
+        hourly_air_data = payloads.get("air_hourly")
+        daily_air_data = payloads.get("air_daily")
+        warning_data = payloads.get("warning")
+        daily_data = payloads.get("daily")
+        hourly_data = payloads.get("hourly")
+        indices_data = payloads.get("indices")
 
         now_weather = now_data["now"]
         daily_list = self._map_daily(daily_data)
@@ -409,35 +666,89 @@ class QWeatherAdapter(WeatherAdapter):
         aqi_obj = self._map_air_quality(air_data)
         indices_list = self._map_indices(indices_data)
 
-        now_precip = self._to_float(now_weather.get("precip"))
+        hourly_air = self._map_hourly_air_quality(hourly_air_data)
+        for hour in hourly_list:
+            if hour.time.tzinfo is not None and hour.time.utcoffset() is not None:
+                air_key = ("utc", int(hour.time.timestamp() // 3600))
+            else:
+                air_key = ("local", hour.time.year, hour.time.month, hour.time.day, hour.time.hour)
+            forecast_air = hourly_air.get(air_key)
+            if forecast_air is not None:
+                hour.aqi = forecast_air.aqi
+                hour.pm2p5 = forecast_air.pm2p5
+                if forecast_air.aqi is not None:
+                    hour.field_sources["aqi"] = "qweather"
+                if forecast_air.pm2p5 is not None:
+                    hour.field_sources["pm2p5"] = "qweather"
+
+        daily_air = self._map_daily_air_quality(daily_air_data)
+        for day in daily_list:
+            forecast_air = daily_air.get(day.date.date())
+            if forecast_air is not None:
+                day.aqi = forecast_air.aqi
+                day.pm2p5 = forecast_air.pm2p5
+                if forecast_air.aqi is not None:
+                    day.field_sources["aqi"] = "qweather"
+                if forecast_air.pm2p5 is not None:
+                    day.field_sources["pm2p5"] = "qweather"
+
+        now_temp = self._optional_float(now_weather.get("temp"))
+        if now_temp is None:
+            logger.warning(f"QWeather current response missing temperature for {loc_id}")
+            return None
+
+        now_precip = self._optional_float(now_weather.get("precip"))
         minutely_summary = minutely_data.get("summary") if minutely_data else ""
-        summary = f"当前 {now_weather['text']}，温度 {now_weather['temp']}°C。"
+        summary = f"当前 {now_weather.get('text', '')}，温度 {now_temp}°C。"
         if minutely_summary:
             summary = f"{summary}\n{minutely_summary}"
 
-        is_raining = now_precip > 0 or any(item.precip > 0 for item in minutely_list[:6])
+        is_raining = (now_precip or 0) > 0 or any(item.precip > 0 for item in minutely_list[:6])
         update_time = (
             self._parse_datetime(now_data.get("updateTime"))
             or self._parse_datetime(now_weather.get("obsTime"))
             or datetime.now()
         )
 
-        weather_obj = WeatherData(
+        attributions: list[str] = []
+        for payload in payloads.values():
+            if not isinstance(payload, dict):
+                continue
+            for attribution in (payload.get("metadata") or {}).get("attributions", []):
+                if isinstance(attribution, dict):
+                    name = str(attribution.get("name") or "").strip()
+                    url = str(attribution.get("url") or "").strip()
+                    text = " ".join(part for part in (name, url) if part)
+                else:
+                    text = str(attribution).strip()
+                if text and text not in attributions:
+                    attributions.append(text)
+
+        return WeatherData(
             source="qweather",
             update_time=update_time,
             location_name=loc_name,
             coords=coords,
-            now_temp=self._to_float(now_weather.get("temp")),
-            now_feels_like=self._to_float(now_weather.get("feelsLike")),
-            now_text=now_weather["text"],
-            now_icon=now_weather["icon"],
-            now_wind_dir=now_weather.get("windDir"),
-            now_wind_scale=now_weather.get("windScale"),
-            now_humidity=self._to_int(now_weather.get("humidity")),
+            now_temp=now_temp,
+            now_feels_like=self._optional_float(now_weather.get("feelsLike")),
+            now_text=now_weather.get("text", ""),
+            now_icon=now_weather.get("icon", ""),
+            now_wind_dir=now_weather.get("windDir") or "",
+            now_wind_scale=now_weather.get("windScale") or "",
+            now_wind_speed=self._optional_float(now_weather.get("windSpeed")),
+            now_humidity=self._optional_int(now_weather.get("humidity")),
             now_precip=now_precip,
-            now_pressure=self._to_int(now_weather.get("pressure")),
-            now_vis=self._to_float(now_weather.get("vis")),
+            now_precip_kind="amount" if now_precip is not None else None,
+            now_precip_source="qweather" if now_precip is not None else None,
+            now_pressure=self._optional_float(now_weather.get("pressure")),
+            now_vis=self._optional_float(now_weather.get("vis")),
+            now_cloud=self._optional_int(now_weather.get("cloud")),
             summary=summary,
+            provider_summaries={"qweather": summary},
+            field_sources={
+                "now_temp": "qweather",
+                "now_text": "qweather",
+            },
             daily=daily_list,
             hourly=hourly_list,
             minutely=minutely_list,
@@ -445,8 +756,5 @@ class QWeatherAdapter(WeatherAdapter):
             alerts=alerts_list,
             indices=indices_list,
             is_raining=is_raining,
+            attributions=attributions,
         )
-
-        await cache.set(cache_key, weather_obj.model_dump(mode="json"), ttl=600)
-        logger.debug(f"Cached weather for {location} (TTL=10m)")
-        return weather_obj
