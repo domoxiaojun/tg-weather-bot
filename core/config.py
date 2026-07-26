@@ -155,10 +155,19 @@ class Settings(BaseSettings):
     # are mm/h after normalising each source's unit (see rate_mm_per_hour).
     # Reference: 小雨 <2.5 · 中雨 2.5-8 · 大雨 8-16 · 暴雨 >=16 mm/h
     rain_alert_min_rate_mm_h: float = Field(
-        1.0, description="Minimum precipitation rate (mm/h) that triggers a rain alert"
+        1.0,
+        description=(
+            "Rate (mm/h) below which rain is treated as trace for the default "
+            "'一般降雨' level. The other two per-subscription levels are fixed: "
+            "'全部降雨' is 0 and '仅大雨' is 8."
+        ),
     )
     rain_alert_min_pop_pct: float = Field(
-        60.0, description="Minimum precipitation probability (%) that triggers a rain alert on its own"
+        60.0,
+        description=(
+            "Probability (%) high enough to alert on its own even without a "
+            "forecast amount; 101 disables that channel. '仅大雨' never uses it."
+        ),
     )
 
     @field_validator("rain_alert_min_rate_mm_h")

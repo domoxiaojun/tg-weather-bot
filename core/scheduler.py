@@ -37,6 +37,12 @@ __all__ = [
     "DEFAULT_DAILY_BRIEF_TIME",
     "RainSignal",
     "evaluate_rain",
+    "RAIN_LEVELS",
+    "DEFAULT_RAIN_LEVEL",
+    "parse_rain_level",
+    "rain_level_label",
+    "rain_level_hint",
+    "rain_level_thresholds",
     "rate_mm_per_hour",
     "check_rain_alerts",
     "check_weather_alerts",
@@ -57,6 +63,51 @@ def _location_key(location: str) -> str:
 
 # Chinese short-duration rain classes, in mm/h. Used only for labelling.
 RAIN_RATE_LABELS = ((16.0, "暴雨"), (8.0, "大雨"), (2.5, "中雨"), (0.0, "小雨"))
+
+# Per-subscription sensitivity. Named by intent rather than by mm/h: the owner
+# of this bot could not read the raw rates either, so the numbers stay an
+# implementation detail and only surface in help text.
+#   key -> (label, min rate mm/h or None to use the global setting,
+#           whether a high probability alone may trigger, one-line explanation)
+RAIN_LEVELS = {
+    "all": ("全部降雨", 0.0, True, "任何降水都提醒，适合晒衣服/骑车"),
+    "normal": ("一般降雨", None, True, "忽略毛毛雨（默认）"),
+    "heavy": ("仅大雨", 8.0, False, "只在雨大到影响出行时提醒"),
+}
+DEFAULT_RAIN_LEVEL = "normal"
+
+# What users may type. Kept generous because nobody remembers exact wording.
+RAIN_LEVEL_ALIASES = {
+    "all": "all", "全部": "all", "所有": "all", "全部降雨": "all", "任何": "all",
+    "小雨": "all", "毛毛雨": "all", "灵敏": "all", "1": "all",
+    "normal": "normal", "一般": "normal", "标准": "normal", "默认": "normal",
+    "一般降雨": "normal", "中雨": "normal", "2": "normal",
+    "heavy": "heavy", "大雨": "heavy", "仅大雨": "heavy", "只看大雨": "heavy",
+    "暴雨": "heavy", "3": "heavy",
+}
+
+
+def parse_rain_level(raw):
+    """Map user input to a level key, or None when it is not a level word."""
+    if not raw:
+        return None
+    return RAIN_LEVEL_ALIASES.get(str(raw).strip().lower())
+
+
+def rain_level_label(level) -> str:
+    return RAIN_LEVELS.get(level or DEFAULT_RAIN_LEVEL, RAIN_LEVELS[DEFAULT_RAIN_LEVEL])[0]
+
+
+def rain_level_hint(level) -> str:
+    return RAIN_LEVELS.get(level or DEFAULT_RAIN_LEVEL, RAIN_LEVELS[DEFAULT_RAIN_LEVEL])[3]
+
+
+def rain_level_thresholds(level):
+    """(min rate mm/h, allow probability-only trigger) for a level."""
+    label, rate, allow_pop, _hint = RAIN_LEVELS.get(
+        level or DEFAULT_RAIN_LEVEL, RAIN_LEVELS[DEFAULT_RAIN_LEVEL]
+    )
+    return (settings.rain_alert_min_rate_mm_h if rate is None else rate), allow_pop
 
 
 def rate_mm_per_hour(precip, kind=None, interval_minutes=None):
@@ -99,7 +150,7 @@ class RainSignal:
         return rain_rate_label(self.rate_mm_h)
 
 
-def evaluate_rain(weather, minutes: int = 30, min_rate=None, min_pop=None) -> RainSignal:
+def evaluate_rain(weather, minutes: int = 30, min_rate=None, min_pop=None, allow_pop=True) -> RainSignal:
     """Rain signal for the next ``minutes``, honouring the alert thresholds.
 
     Trace precipitation used to fire an alert exactly like a downpour; the rate
@@ -155,7 +206,9 @@ def evaluate_rain(weather, minutes: int = 30, min_rate=None, min_pop=None) -> Ra
 
     if peak_rate is not None and peak_rate >= min_rate:
         return RainSignal(True, peak_rate, peak_pop, peak_at, reason)
-    if peak_pop is not None and peak_pop >= min_pop:
+    # "仅大雨" must not fire on a high chance of light rain, so that level
+    # switches the probability-only channel off entirely.
+    if allow_pop and peak_pop is not None and peak_pop >= min_pop:
         return RainSignal(True, peak_rate, peak_pop, peak_at, "降水概率")
     # No measurable rate anywhere but the provider still reports rain: trust it
     # rather than stay silent on unmeasurable data.
@@ -186,7 +239,7 @@ WEEKDAYS_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周�
 _daily_brief_last_check: dict[int, datetime] = {}
 
 
-def _zone_for(tz_name):
+def zone_for(tz_name):
     """Subscription timezone with a graceful fall back to the global default."""
     for candidate in (tz_name, settings.timezone):
         if not candidate:
@@ -265,7 +318,7 @@ async def dispatch_daily_briefs(
         for location in data.get("daily_subs", []):
             parsed = parse_brief_time(sub_times.get(location, DEFAULT_DAILY_BRIEF_TIME))
             hour, minute = parsed if parsed else parse_brief_time(DEFAULT_DAILY_BRIEF_TIME)
-            zone = _zone_for(sub_zones.get(location))
+            zone = zone_for(sub_zones.get(location))
             local_now = now_utc.astimezone(zone)
             target_utc = local_now.replace(
                 hour=hour, minute=minute, second=0, microsecond=0
@@ -362,10 +415,14 @@ async def check_rain_alerts(
     grouped: dict[str, dict] = {}
     for chat_id, data in app.chat_data.items():
         zones = data.get("sub_tz", {})
+        levels = data.get("rain_level", {})
         for location in data.get("subs", []):
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "key": key, "subscribers": []})
-            entry["subscribers"].append((chat_id, data, location, _zone_for(zones.get(location))))
+            entry["subscribers"].append((
+                chat_id, data, location, zone_for(zones.get(location)),
+                levels.get(location, DEFAULT_RAIN_LEVEL),
+            ))
 
     dirty_chats: set = set()
     cooldown = timedelta(hours=settings.rain_alert_cooldown_hours)
@@ -382,10 +439,18 @@ async def check_rain_alerts(
                 # Fetch failure: keep the previous state rather than guessing.
                 return
 
-            signal = evaluate_rain(weather, minutes=_rain_lookahead_minutes())
-            if not signal.will_rain:
-                # Episode over: reset every subscriber so the next rain alerts.
-                for chat_id, chat_data, subscribed_location, _zone in entry["subscribers"]:
+            # Sensitivity is per subscription, so evaluate once per distinct
+            # level instead of once per location.
+            lookahead = _rain_lookahead_minutes()
+            signals = {}
+            for level in {sub[4] for sub in entry["subscribers"]}:
+                min_rate, allow_pop = rain_level_thresholds(level)
+                signals[level] = evaluate_rain(
+                    weather, minutes=lookahead, min_rate=min_rate, allow_pop=allow_pop
+                )
+            if not any(sig.will_rain for sig in signals.values()):
+                # Episode over for everyone: reset so the next rain alerts.
+                for chat_id, chat_data, subscribed_location, _zone, _level in entry["subscribers"]:
                     episodes = chat_data.get("rain_episode", {})
                     if episodes.get(subscribed_location):
                         episodes[subscribed_location] = False
@@ -393,6 +458,7 @@ async def check_rain_alerts(
                         dirty_chats.add(chat_id)
                 return
 
+            signal = max(signals.values(), key=lambda sig: sig.rate_mm_h or 0.0)
             headline = "🚨 *自动降雨提醒*"
             if signal.rate_mm_h is not None:
                 headline += f" · {signal.label} 约 {signal.rate_mm_h:.1f}mm/h"
@@ -455,8 +521,16 @@ async def check_rain_alerts(
                         message_thread_id=thread_id,
                     )
 
-            for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
+            for chat_id, chat_data, subscribed_location, zone, level in entry["subscribers"]:
                 episodes = chat_data.get("rain_episode", {})
+                if not signals[level].will_rain:
+                    # Below this subscriber's threshold: clear their episode so a
+                    # heavier burst later still reaches them.
+                    if episodes.get(subscribed_location):
+                        episodes[subscribed_location] = False
+                        chat_data["rain_episode"] = episodes
+                        dirty_chats.add(chat_id)
+                    continue
                 if episodes.get(subscribed_location):
                     # Ongoing episode — this subscriber was already notified.
                     continue
@@ -581,7 +655,7 @@ async def check_weather_alerts(
         for location in data.get("subs", []):
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "subscribers": []})
-            entry["subscribers"].append((chat_id, data, location, _zone_for(zones.get(location))))
+            entry["subscribers"].append((chat_id, data, location, zone_for(zones.get(location))))
 
     if not grouped:
         return

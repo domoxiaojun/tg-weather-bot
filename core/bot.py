@@ -60,7 +60,7 @@ def _subscription_commands():
     from telegram import BotCommand
 
     return [
-        BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市]"),
+        BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市] [档位]"),
         BotCommand("rain_my", "我的降雨提醒 - 查看并取消"),
         BotCommand("rain_unsub", "取消降雨提醒 - /rain_unsub [城市]"),
         BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市] [HH:MM]"),

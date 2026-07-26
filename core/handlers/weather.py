@@ -62,7 +62,7 @@ class WeatherHandlers:
             "• <code>/chart 北京</code> —— 趋势图（可切换温度/降水/逐日）\n"
             "• <code>/report 北京</code> —— AI 天气日报\n\n"
             "🔔 <b>订阅推送</b>\n"
-            "• <code>/rain_sub 北京</code> —— 降雨提醒（快下雨时通知）\n"
+            "• <code>/rain_sub 北京</code> —— 降雨提醒（快下雨时通知，可加「仅大雨」等档位）\n"
             "• <code>/daily_sub 北京 07:30</code> —— 早安简报（时间可选，默认 08:00）\n"
             "• <code>/rain_my</code> / <code>/daily_my</code> —— 管理订阅\n\n"
             f"⚡ <b>Inline</b>：任意聊天输入 <code>@{bot_username} 北京</code> 直接分享天气\n\n"

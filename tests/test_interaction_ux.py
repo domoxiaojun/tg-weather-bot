@@ -69,8 +69,10 @@ class KeyboardViewTests(unittest.TestCase):
         from core.handlers.subscriptions import render_subscription_list
 
         _text, keyboard = render_subscription_list({"subs": ["北京"]}, "rain")
-        button = keyboard.inline_keyboard[0][0]
-        self.assertEqual(button.to_dict().get("style"), "danger")
+        buttons = [b for row in keyboard.inline_keyboard for b in row]
+        unsub = [b for b in buttons if (b.callback_data or "").startswith("unsub|")]
+        self.assertEqual(len(unsub), 1)
+        self.assertEqual(unsub[0].to_dict().get("style"), "danger")
 
 
 class HourlyCompactFormatTests(unittest.TestCase):

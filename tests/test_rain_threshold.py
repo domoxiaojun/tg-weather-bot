@@ -15,8 +15,14 @@ os.environ.setdefault("QWEATHER_API_KEY", "test-qweather-key")
 
 from core.config import settings
 from core.scheduler import (
+    DEFAULT_RAIN_LEVEL,
+    RAIN_LEVELS,
     RainSignal,
     evaluate_rain,
+    parse_rain_level,
+    rain_level_hint,
+    rain_level_label,
+    rain_level_thresholds,
     rain_rate_label,
     rate_mm_per_hour,
     will_rain_soon,
@@ -192,6 +198,72 @@ class ThresholdTests(unittest.TestCase):
 
     def test_signal_label_is_empty_without_a_rate(self):
         self.assertEqual(RainSignal(True).label, "")
+
+
+class RainLevelTests(unittest.TestCase):
+    """The three levels users actually pick from, and their aliases."""
+
+    def test_three_levels_named_by_intent_not_by_mm(self):
+        self.assertEqual(list(RAIN_LEVELS), ["all", "normal", "heavy"])
+        for label, _rate, _pop, hint in RAIN_LEVELS.values():
+            self.assertNotIn("mm", label)
+            self.assertTrue(hint)
+
+    def test_aliases_cover_the_words_people_type(self):
+        for raw in ("全部", "所有", "小雨", "灵敏", "1", "all"):
+            self.assertEqual(parse_rain_level(raw), "all", raw)
+        for raw in ("一般", "标准", "默认", "中雨", "2", "normal"):
+            self.assertEqual(parse_rain_level(raw), "normal", raw)
+        for raw in ("大雨", "仅大雨", "暴雨", "3", "heavy"):
+            self.assertEqual(parse_rain_level(raw), "heavy", raw)
+
+    def test_unknown_words_and_blanks_are_not_levels(self):
+        # A city name must never be swallowed as a level word.
+        for raw in ("北京", "", None, "  "):
+            self.assertIsNone(parse_rain_level(raw))
+
+    def test_labels_and_hints_fall_back_to_the_default_level(self):
+        self.assertEqual(rain_level_label("nope"), rain_level_label(DEFAULT_RAIN_LEVEL))
+        self.assertEqual(rain_level_hint("nope"), rain_level_hint(DEFAULT_RAIN_LEVEL))
+
+    def test_normal_level_follows_the_configured_threshold(self):
+        original = settings.rain_alert_min_rate_mm_h
+        settings.rain_alert_min_rate_mm_h = 2.0
+        try:
+            self.assertEqual(rain_level_thresholds("normal"), (2.0, True))
+        finally:
+            settings.rain_alert_min_rate_mm_h = original
+
+    def test_all_level_catches_any_measurable_rain(self):
+        min_rate, allow_pop = rain_level_thresholds("all")
+        self.assertEqual(min_rate, 0.0)
+        self.assertTrue(allow_pop)
+        # 0.1mm/5min = 1.2mm/h drizzle: below "normal" default, caught by "all".
+        data = weather(minutely=minutely([0.0, 0.02]))
+        self.assertTrue(evaluate_rain(data, min_rate=min_rate, allow_pop=allow_pop).will_rain)
+        self.assertFalse(evaluate_rain(data, min_rate=1.0).will_rain)
+
+    def test_heavy_level_ignores_moderate_rain(self):
+        min_rate, allow_pop = rain_level_thresholds("heavy")
+        self.assertEqual(min_rate, 8.0)
+        self.assertFalse(allow_pop)
+        moderate = weather(minutely=minutely([0.0, 0.4]))  # 4.8mm/h → 中雨
+        self.assertFalse(
+            evaluate_rain(moderate, min_rate=min_rate, allow_pop=allow_pop).will_rain
+        )
+        downpour = weather(minutely=minutely([0.0, 1.2]))  # 14.4mm/h → 大雨
+        self.assertTrue(
+            evaluate_rain(downpour, min_rate=min_rate, allow_pop=allow_pop).will_rain
+        )
+
+    def test_heavy_level_does_not_fire_on_probability_alone(self):
+        # 90% chance of light rain: the pop-only channel must stay off for 仅大雨.
+        data = weather(hourly=hourly([0.2], pops=[90]))
+        self.assertTrue(evaluate_rain(data, minutes=120).will_rain)
+        min_rate, allow_pop = rain_level_thresholds("heavy")
+        self.assertFalse(
+            evaluate_rain(data, minutes=120, min_rate=min_rate, allow_pop=allow_pop).will_rain
+        )
 
 
 if __name__ == "__main__":

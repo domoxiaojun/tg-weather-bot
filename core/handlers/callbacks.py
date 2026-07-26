@@ -98,6 +98,10 @@ class CallbackHandlers:
             await self._handle_unsubscribe(update, context, data_parts)
             return
 
+        if action == "lvl" and len(data_parts) >= 3:
+            await self._handle_rain_level(update, context, data_parts)
+            return
+
         await query.answer()
 
     async def _handle_weather_choice(
@@ -165,6 +169,49 @@ class CallbackHandlers:
             logger.error(f"Report button failed: {e}")
             await self._notify(update, context, "❌ 生成日报失败，请稍后重试。")
 
+    async def _handle_rain_level(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        data_parts: list[str],
+    ):
+        """Change a rain subscription's sensitivity from /rain_my: lvl|{index}|{level}"""
+        from core.handlers.subscriptions import set_rain_level
+        from core.scheduler import rain_level_hint, rain_level_label
+
+        query = update.callback_query
+        try:
+            index = int(data_parts[1])
+        except ValueError:
+            await query.answer()
+            return
+        level = data_parts[2]
+
+        location = set_rain_level(context.chat_data, index, level)
+        if location is None:
+            await self._safe_answer(query, "列表已变化，已刷新")
+        else:
+            await self._safe_answer(
+                query, f"✅ {location}：{rain_level_label(level)}——{rain_level_hint(level)}"
+            )
+        await self._refresh_subscription_list(query, context, "rain")
+
+    async def _refresh_subscription_list(self, query, context, kind: str):
+        """Re-render the list in place so the message always matches stored state."""
+        from core.handlers.subscriptions import render_subscription_list
+
+        text, keyboard = render_subscription_list(context.chat_data, kind)
+        try:
+            if text is None:
+                await query.edit_message_text(
+                    "📭 你还没有订阅任何早安简报。" if kind == "daily" else "📭 你还没有订阅任何降雨提醒。"
+                )
+            else:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.debug(f"Subscription list refresh failed: {e}")
+
     async def _handle_unsubscribe(
         self,
         update: Update,
@@ -172,10 +219,7 @@ class CallbackHandlers:
         data_parts: list[str],
     ):
         """One-tap unsubscribe from the /rain_my and /daily_my lists."""
-        from core.handlers.subscriptions import (
-            remove_subscription_entry,
-            render_subscription_list,
-        )
+        from core.handlers.subscriptions import remove_subscription_entry
 
         query = update.callback_query
         kind = data_parts[1]
@@ -195,18 +239,7 @@ class CallbackHandlers:
         else:
             await self._safe_answer(query, f"✅ 已取消 {removed}")
 
-        text, keyboard = render_subscription_list(context.chat_data, kind)
-        try:
-            if text is None:
-                empty_text = (
-                    "📭 你还没有订阅任何早安简报。" if kind == "daily" else "📭 你还没有订阅任何降雨提醒。"
-                )
-                await query.edit_message_text(empty_text)
-            else:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-        except Exception as e:
-            if "Message is not modified" not in str(e):
-                logger.debug(f"Subscription list refresh failed: {e}")
+        await self._refresh_subscription_list(query, context, kind)
 
     async def _handle_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data_parts: list[str]):
         query = update.callback_query

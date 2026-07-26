@@ -92,7 +92,10 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - `/report <city>` - **AI Weather Report** (Requires OpenAI/Gemini Key).
 - `/typhoon [city]` - Active tropical cyclones and whether they reach that location (basin NP only).
 - `/tide [coastal city]` - Nearest tide station's high/low tide table plus the tide curve.
-- `/rain_sub <city>` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts (`/rain_my` offers one-tap unsubscribe buttons).
+- `/rain_sub <city> [level]` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts. Each subscription
+  carries its own sensitivity: 全部降雨 (any measurable rain) / 一般降雨 (default, skips drizzle) /
+  仅大雨 (≥8mm/h only, and never on probability alone). `/rain_my` shows the current level, the last
+  alert time and whether quiet hours are active, with one-tap buttons to change level or unsubscribe.
 - `/daily_sub <city> [HH:MM]` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions with an optional custom push time (default 08:00 in `TIMEZONE`).
 - **Send Location** - Auto-query + Rain Chart.
 - **Inline**: `@your_bot Beijing` - Share weather anywhere.
