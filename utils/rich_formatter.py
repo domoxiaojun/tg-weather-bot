@@ -1,0 +1,410 @@
+"""Render WeatherData into Bot API 10.2 rich blocks.
+
+The MarkdownV2 renderers in :mod:`utils.formatter` stay as the fallback path.
+Rich blocks need no escaping at all (plain strings are passed through), and
+tables give the column alignment that the text views can only approximate.
+"""
+
+from typing import List, Optional
+
+from domain.models import WeatherData
+from services.telegram_rich import (
+    bold,
+    bullet_list,
+    cell,
+    details,
+    footer,
+    heading,
+    italic,
+    marked,
+    paragraph,
+    table,
+    thinking,
+)
+from utils.formatter import (
+    CATEGORIES,
+    INDICES_EMOJI,
+    _display_summary_lines,
+    _weekday_cn,
+    format_precip_value,
+    format_weather_number,
+    normalize_warning_level,
+    weather_icon,
+)
+
+SOURCE_LABELS = {
+    "qweather": "和风天气",
+    "caiyun": "彩云天气",
+    "fusion": "和风天气 & 彩云天气",
+}
+
+# Keep tables readable on a phone.
+HOURLY_TABLE_LIMIT = 24
+DAILY_TABLE_LIMIT = 15
+MINUTELY_TABLE_LIMIT = 12
+
+
+def _plain_wind(direction, degrees, scale, speed) -> str:
+    """Wind text without MarkdownV2 escaping (rich blocks take plain text)."""
+    parts: List[str] = []
+    if direction:
+        parts.append(str(direction))
+    elif degrees is not None:
+        parts.append(f"{format_weather_number(degrees, 0)}°")
+    if scale:
+        parts.append(f"{scale}级")
+    if speed is not None:
+        parts.append(f"{format_weather_number(speed)}km/h")
+    return " ".join(parts)
+
+
+def _source_label(data: WeatherData) -> str:
+    return SOURCE_LABELS.get(data.source, str(data.source).title())
+
+
+def build_footer(data: WeatherData) -> dict:
+    return footer(
+        f"数据源: {_source_label(data)} · {data.update_time.strftime('%m-%d %H:%M')} 更新"
+    )
+
+
+def build_header(data: WeatherData, subtitle: Optional[str] = None) -> List[dict]:
+    blocks = [heading(f"{weather_icon(data.now_icon)} {data.location_name}", size=2)]
+    if subtitle:
+        blocks.append(paragraph(italic(subtitle)))
+    return blocks
+
+
+def build_alert_blocks(data: WeatherData) -> List[dict]:
+    """Warnings first and visually separated — they matter most."""
+    blocks: List[dict] = []
+    for alert in data.alerts[:3]:
+        level = normalize_warning_level(alert.level)
+        title = alert.title if not level or level in alert.title else f"{alert.title}（{level}）"
+        inner = [paragraph(marked(f"⚠️ {title}"))]
+        text = (alert.text or "").strip()
+        if text:
+            inner.append(paragraph(text[:220] + ("…" if len(text) > 220 else "")))
+        blocks.append({"type": "blockquote", "blocks": inner, "credit": alert.source or "预警"})
+    return blocks
+
+
+def _current_stats_rows(data: WeatherData) -> List[list]:
+    rows: List[list] = []
+    wind = _plain_wind(
+        data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
+    )
+    if wind:
+        rows.append(["💨 风况", wind])
+    if data.now_humidity is not None:
+        rows.append(["💧 湿度", f"{data.now_humidity}%"])
+    if data.now_precip is not None:
+        rows.append(["☔️ 降水", format_precip_value(data.now_precip, data.now_precip_kind)])
+    if data.now_vis is not None:
+        rows.append(["👁️ 能见度", f"{format_weather_number(data.now_vis)}km"])
+    if data.now_pressure is not None:
+        rows.append(["📈 气压", f"{format_weather_number(data.now_pressure)}hPa"])
+    if data.now_cloud is not None:
+        rows.append(["☁️ 云量", f"{data.now_cloud}%"])
+    if data.air_quality:
+        aqi = data.air_quality
+        air_bits = []
+        if aqi.aqi is not None:
+            air_bits.append(str(aqi.aqi))
+        if aqi.category:
+            air_bits.append(aqi.category)
+        if aqi.pm2p5 is not None:
+            air_bits.append(f"PM2.5 {format_weather_number(aqi.pm2p5)}")
+        if air_bits:
+            rows.append(["🌫️ 空气", " · ".join(air_bits)])
+    return rows
+
+
+def _today_detail_blocks(data: WeatherData) -> List[dict]:
+    day = data.get_current_daily_forecast()
+    if day is None:
+        return []
+
+    rows: List[list] = [
+        [
+            "🌡️ 气温",
+            f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°C",
+        ]
+    ]
+    day_wind = _plain_wind(
+        day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
+    )
+    night_wind = _plain_wind(
+        day.wind_dir_night,
+        day.wind_direction_night_degrees,
+        day.wind_scale_night,
+        day.wind_speed_night,
+    )
+    rows.append(["☀️ 日间", f"{weather_icon(day.icon_day)} {day.text_day}" + (f"（{day_wind}）" if day_wind else "")])
+    rows.append(["🌙 夜间", f"{weather_icon(day.icon_night)} {day.text_night}" + (f"（{night_wind}）" if night_wind else "")])
+    if day.sunrise or day.sunset:
+        rows.append(["🌅 日出/日落", f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}"])
+    if day.moon_phase:
+        rows.append(["🌙 月相", day.moon_phase])
+    if day.uv_index:
+        rows.append(["☀️ 紫外线", str(day.uv_index)])
+
+    pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
+    if pops:
+        rows.append(["☔️ 未来6h降概", f"{int(max(pops))}%"])
+    if day.precip is not None:
+        rows.append(["💧 全天降水", format_precip_value(day.precip, day.precip_kind)])
+
+    blocks = [table(rows, aligns=["left", "left"])]
+
+    tips = []
+    wanted = {"3": "🧥", "8": "😊", "2": "🚗", "5": "🕶️", "9": "🤒"}
+    for index in data.indices:
+        if index.type in wanted:
+            tips.append(paragraph([f"{wanted[index.type]} ", bold(index.name), f": {index.category}"]))
+    if tips:
+        blocks.append(bullet_list(tips))
+
+    title = "今日详情" if day.date.date() == data.local_update_date else "最近预报"
+    return [
+        details(
+            f"📅 {title}（{day.date.strftime('%m-%d')} {_weekday_cn(day.date)}）",
+            blocks,
+            is_open=True,
+        )
+    ]
+
+
+def build_realtime_blocks(data: WeatherData) -> List[dict]:
+    blocks = build_header(data)
+
+    hero: list = [bold(f"{format_weather_number(data.now_temp)}°C")]
+    if data.now_text:
+        hero.append(f" {data.now_text}")
+    if data.now_feels_like is not None:
+        hero.append(f"（体感 {format_weather_number(data.now_feels_like)}°C）")
+    blocks.append(paragraph(hero))
+
+    for line in _display_summary_lines(data.summary):
+        blocks.append(paragraph(italic(line)))
+
+    blocks.extend(build_alert_blocks(data))
+
+    rows = _current_stats_rows(data)
+    if rows:
+        blocks.append(table(rows, aligns=["left", "left"]))
+
+    blocks.extend(_today_detail_blocks(data))
+    blocks.append(build_footer(data))
+    return blocks
+
+
+def build_hourly_blocks(data: WeatherData, limit: Optional[int] = None) -> List[dict]:
+    hours = data.hourly[: min(limit or HOURLY_TABLE_LIMIT, HOURLY_TABLE_LIMIT)]
+    if not hours:
+        return build_realtime_blocks(data)
+
+    show_feels_like = any(
+        hour.feels_like is not None and not hour.feels_like_estimated for hour in hours
+    )
+    headers = ["时间", "天气", "温度"]
+    if show_feels_like:
+        headers.append("体感")
+    headers += ["降概", "降水"]
+    width = len(headers)
+
+    peak_pop = max((hour.pop for hour in hours if hour.pop is not None), default=None)
+
+    rows: List[list] = []
+    previous_date = None
+    for hour in hours:
+        current_date = hour.time.date()
+        if previous_date is not None and current_date != previous_date:
+            # Full-width separator row keeps multi-day tables readable.
+            rows.append([
+                cell(
+                    f"{hour.time.strftime('%m-%d')} {_weekday_cn(hour.time)}",
+                    is_header=True,
+                    align="left",
+                    colspan=width,
+                )
+            ])
+        previous_date = current_date
+
+        row: list = [
+            hour.time.strftime("%H:%M"),
+            weather_icon(hour.icon),
+            f"{format_weather_number(hour.temp)}°",
+        ]
+        if show_feels_like:
+            row.append(
+                f"{format_weather_number(hour.feels_like)}°"
+                if hour.feels_like is not None and not hour.feels_like_estimated
+                else "—"
+            )
+        if hour.pop is None:
+            row.append("—")
+        else:
+            pop_text = f"{format_weather_number(hour.pop, decimals=0)}%"
+            row.append(marked(pop_text) if peak_pop and hour.pop == peak_pop and hour.pop > 0 else pop_text)
+        row.append(
+            format_precip_value(hour.precip, hour.precip_kind) if hour.precip is not None else "—"
+        )
+        rows.append(row)
+
+    aligns = ["left", "center", "right"] + (["right"] if show_feels_like else []) + ["right", "right"]
+    return [
+        *build_header(data, f"未来 {len(hours)} 小时 · 当地时间"),
+        table(rows, headers=headers, aligns=aligns, bordered=True),
+        build_footer(data),
+    ]
+
+
+def build_daily_blocks(
+    data: WeatherData, days: Optional[int] = None, start_day: int = 0
+) -> List[dict]:
+    forecasts = data.get_daily_forecasts(start_day=max(0, start_day))
+    forecasts = forecasts[: min(days or DAILY_TABLE_LIMIT, DAILY_TABLE_LIMIT)]
+    if not forecasts:
+        return build_realtime_blocks(data)
+
+    headers = ["日期", "天气", "气温", "降水", "UV"]
+    rows: List[list] = []
+    for day in forecasts:
+        weather_cell = weather_icon(day.icon_day)
+        if day.icon_night and day.icon_night != day.icon_day:
+            weather_cell = f"{weather_icon(day.icon_day)}→{weather_icon(day.icon_night)}"
+        rows.append([
+            f"{day.date.strftime('%m-%d')} {_weekday_cn(day.date)}",
+            weather_cell,
+            f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°",
+            format_precip_value(day.precip, day.precip_kind) if day.precip is not None else "—",
+            str(day.uv_index) if day.uv_index else "—",
+        ])
+
+    blocks = [
+        *build_header(data, f"未来 {len(forecasts)} 天"),
+        table(rows, headers=headers, aligns=["left", "center", "right", "right", "right"], bordered=True),
+    ]
+
+    # Day/night wording is the detail people scan for; keep it collapsible.
+    detail_items = []
+    for day in forecasts[:7]:
+        wind = _plain_wind(
+            day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
+        )
+        line: list = [
+            bold(f"{day.date.strftime('%m-%d')} {_weekday_cn(day.date)}"),
+            f" {day.text_day} → {day.text_night}",
+        ]
+        if wind:
+            line.append(f" · {wind}")
+        detail_items.append(paragraph(line))
+    if detail_items:
+        blocks.append(details("🔎 逐日文字描述", [bullet_list(detail_items)]))
+
+    blocks.append(build_footer(data))
+    return blocks
+
+
+def build_indices_blocks(data: WeatherData) -> List[dict]:
+    if not data.indices:
+        return build_realtime_blocks(data)
+
+    blocks = build_header(data, "生活指数")
+    for category_name, type_ids in CATEGORIES.items():
+        group = [index for index in data.indices if index.type in type_ids]
+        if not group:
+            continue
+        blocks.append(heading(category_name, size=4))
+        items = []
+        for index in group:
+            emoji = INDICES_EMOJI.get(index.type, "ℹ️")
+            entry = [paragraph([f"{emoji} ", bold(index.name), f": {index.category}"])]
+            if index.text:
+                entry.append(paragraph(italic(index.text)))
+            items.append(entry)
+        blocks.append(bullet_list(items))
+    blocks.append(build_footer(data))
+    return blocks
+
+
+def build_rain_blocks(data: WeatherData) -> List[dict]:
+    blocks = build_header(data, "降水预报")
+    summary = (data.summary or "").split("\n")
+    for line in _display_summary_lines("\n".join(summary)):
+        blocks.append(paragraph(italic(line)))
+
+    if data.minutely:
+        entries = data.minutely[:MINUTELY_TABLE_LIMIT]
+        peak = max((item.precip for item in entries), default=0)
+        rows = []
+        for item in entries:
+            value = f"{format_weather_number(item.precip, decimals=2)}mm"
+            rows.append([
+                item.time.strftime("%H:%M"),
+                marked(value) if peak and item.precip == peak and peak > 0 else value,
+            ])
+        blocks.append(
+            table(rows, headers=["时间", "降水"], aligns=["left", "right"], bordered=True,
+                  caption="分钟级降水（和风天气）")
+        )
+    elif data.hourly:
+        rows = []
+        for hour in data.hourly[:6]:
+            rows.append([
+                hour.time.strftime("%H:%M"),
+                format_precip_value(hour.precip, hour.precip_kind) if hour.precip is not None else "—",
+                f"{format_weather_number(hour.pop, decimals=0)}%" if hour.pop is not None else "—",
+            ])
+        blocks.append(
+            table(rows, headers=["时间", "降水", "降概"], aligns=["left", "right", "right"], bordered=True)
+        )
+    else:
+        blocks.append(paragraph("暂无可用降水预报"))
+
+    blocks.append(build_footer(data))
+    return blocks
+
+
+def build_weather_blocks(
+    data: WeatherData,
+    view_type: str = "default",
+    days: Optional[int] = None,
+    start_day: int = 0,
+) -> List[dict]:
+    """Rich counterpart of :func:`utils.formatter.format_weather_response`."""
+    if view_type == "hourly":
+        return build_hourly_blocks(data, days)
+    if view_type == "daily":
+        return build_daily_blocks(data, days, start_day)
+    if view_type == "indices":
+        return build_indices_blocks(data)
+    if view_type == "rain":
+        return build_rain_blocks(data)
+    return build_realtime_blocks(data)
+
+
+def build_rain_alert_blocks(data: WeatherData) -> List[dict]:
+    """Push notification for the rain watcher."""
+    return [
+        heading("🚨 降雨提醒", size=2),
+        paragraph([bold(data.location_name), f" · {data.update_time.strftime('%m-%d %H:%M')}"]),
+        *build_alert_blocks(data),
+        *build_rain_blocks(data)[1:],
+    ]
+
+
+def build_report_blocks(title: str, report_html: str, *, in_progress: bool = False) -> List[dict]:
+    """AI report as rich blocks.
+
+    The report body is already Telegram HTML, so it rides in a paragraph-free
+    ``html`` payload elsewhere; here we only need the streaming variant, which
+    uses the dedicated "thinking" block while text is still arriving.
+    """
+    blocks: List[dict] = [heading(title, size=2)]
+    if in_progress:
+        blocks.append(thinking(report_html))
+    else:
+        blocks.append(paragraph(report_html))
+    return blocks

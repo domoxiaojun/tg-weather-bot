@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes
 
 from core.config import settings
 from core.handlers.common import BotDependencies, parse_chart_request, parse_location_and_view
-from core.handlers.messages import send_photo, send_text
+from core.handlers.messages import send_photo, send_text, send_weather_view
 from services.chart_cache import (
     get_cached_chart_file_id,
     get_chart_caption,
@@ -313,11 +313,14 @@ class WeatherHandlers:
                     reply_markup=keyboard,
                 )
             else:
-                await send_text(
-                    update,
+                # Rich blocks when the server supports them; MarkdownV2 otherwise.
+                await send_weather_view(
                     context,
-                    text,
-                    parse_mode=ParseMode.MARKDOWN_V2,
+                    update.effective_chat.id,
+                    data,
+                    view_type=view_type,
+                    days=limit,
+                    start_day=start_day,
                     reply_markup=keyboard,
                 )
         except Exception as e:

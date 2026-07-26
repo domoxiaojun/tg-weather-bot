@@ -19,7 +19,9 @@ from services.chart_cache import (
 )
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
+from services.telegram_rich import FEATURE_SEND, photo_block, rich
 from utils.formatter import format_weather_response
+from utils.rich_formatter import build_rain_alert_blocks
 from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_quiet_hours
 
 __all__ = [
@@ -178,11 +180,12 @@ async def dispatch_daily_briefs(
             )
             for chat_id, chat_data, subscribed_location in entry["subscribers"]:
                 try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=header + report_text,
-                        parse_mode=ParseMode.HTML,
-                    )
+                    if await rich.send_rich(context.bot, chat_id, html=header + report_text) is None:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=header + report_text,
+                            parse_mode=ParseMode.HTML,
+                        )
                     chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = today_str
                     dirty_chats.add(chat_id)
                     logger.info(f"Sent Daily Brief to {chat_id} for {location}")
@@ -279,6 +282,14 @@ async def check_rain_alerts(
 
             async def deliver(chat_id):
                 nonlocal chart_file_id, chart_bytes
+                # A rich message carries the chart AND the full text together,
+                # sidestepping the 1024-char photo caption limit.
+                if chart_file_id and rich.supports(FEATURE_SEND):
+                    blocks = build_rain_alert_blocks(weather)
+                    blocks.insert(2, photo_block(chart_file_id, "逐小时降水"))
+                    if await rich.send_rich(context.bot, chat_id, blocks=blocks) is not None:
+                        return
+
                 caption_fits = len(alert_text) <= 1000
                 if chart_file_id or chart_bytes:
                     photo = chart_file_id or InputFile(io.BytesIO(chart_bytes), filename="rain.png")

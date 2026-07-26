@@ -6,6 +6,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from core.handlers.common import BotDependencies
+from core.handlers.messages import edit_weather_view
 from services.chart_cache import (
     get_cached_chart_file_id,
     get_chart_caption,
@@ -320,11 +321,24 @@ class CallbackHandlers:
                 await self._notify(update, context, "未获取到天气数据")
                 return
 
-            text = format_weather_response(
-                weather_data, view_type=view, days=limit or None, start_day=start_day
-            )
             keyboard = get_weather_keyboard(
                 location, show_charts=True, coords=weather_data.coords, view_type=view
+            )
+            if await edit_weather_view(
+                context,
+                weather_data,
+                chat_id=query.message.chat_id if query.message else None,
+                message_id=query.message.message_id if query.message else None,
+                inline_message_id=query.inline_message_id,
+                view_type=view,
+                days=limit or None,
+                start_day=start_day,
+                reply_markup=keyboard,
+            ):
+                return
+
+            text = format_weather_response(
+                weather_data, view_type=view, days=limit or None, start_day=start_day
             )
             try:
                 await query.edit_message_text(
@@ -356,14 +370,28 @@ class CallbackHandlers:
                 return
 
             is_inline = query.inline_message_id is not None
-            text = format_weather_response(
-                weather_data, view_type=view, days=limit or None, start_day=start_day
-            )
             keyboard = get_weather_keyboard(
                 location, show_charts=True, coords=weather_data.coords, view_type=view
             )
 
             is_caption = bool(query.message and query.message.caption)
+            if not is_caption and await edit_weather_view(
+                context,
+                weather_data,
+                chat_id=query.message.chat_id if query.message else None,
+                message_id=query.message.message_id if query.message else None,
+                inline_message_id=query.inline_message_id,
+                view_type=view,
+                days=limit or None,
+                start_day=start_day,
+                reply_markup=keyboard,
+            ):
+                await self._safe_answer(query, "✅ 数据已更新")
+                return
+
+            text = format_weather_response(
+                weather_data, view_type=view, days=limit or None, start_day=start_day
+            )
             try:
                 if is_caption:
                     await query.edit_message_caption(

@@ -105,3 +105,21 @@
 - [x] I7 使用: 私聊直接发送城市名即可查询（支持"北京 明天"参数；>20字或多行自动忽略防误伤）
 - [x] I8 使用: /tq 不带参数时回落到上次查询的城市
 - [x] I9 新增 6 项测试（键盘视图编码/64字节上限/紧凑版式/上次城市/私聊文本守卫），全量 90 项通过
+
+## 第六轮 — Bot API 10.1/10.2 富文本接入（2026-07-26，用户决策：轻量封装 + 默认开启 rich）
+
+方案：留在 PTB 22.8，用官方公开逃生舱 do_api_request/api_kwargs 封装；不迁移 aiogram。线格式对照官方 10.2 机器可读规格逐字段核对（网页摘要给出的 InputRichMessage{text,parse_mode} 是错的）。
+
+- [x] J1 services/telegram_rich.py: 块/富文本构造器 + 传输层 + 能力记忆降级（EndPointNotFound 永久 / 3×BadRequest / 瞬时不禁用）
+- [x] J2 utils/rich_formatter.py: 五个视图的 block 渲染（表格/可折叠/引用/高亮），完全无需 MarkdownV2 转义
+- [x] J3 config: ENABLE_RICH_MESSAGES / ENABLE_EPHEMERAL_MESSAGES / ENABLE_RICH_REPORT_STREAMING 全部默认 true
+- [x] J4 weather/callbacks: 发送与视图切换/刷新走 rich，失败回落文本
+- [x] J5 report: 私聊 sendRichMessageDraft 原生流式（thinking 块）→ sendRichMessage 落地；群/inline 最终 editMessageText(rich_message)
+- [x] J6 scheduler: 降雨提醒把图表以 photo 块嵌入同一条富消息（绕开 1024 caption 上限）；早安简报 rich html
+- [x] J7 subscriptions: 群内订阅管理回复改 ephemeral（receiver_user_id）；命令注册带 is_ephemeral
+- [x] J8 新增 32 项 rich 测试（线格式/降级分级/ephemeral 路由/五视图块合法性），全量 122 项通过
+- [x] J9 文档：重写 docs/telegram-bot-api-update-2026-07.md（含 PTB 传输层审计与已核对线格式）、README、CLAUDE.md、.env.example
+
+### 暂未接入（有意）
+- Inline 查询结果的 InputRichMessageContent：answerInlineQuery 由 PTB typed 封装，需重写整个调用；选中后的编辑已是富文本
+- editEphemeralMessage*/deleteEphemeralMessage：当前 ephemeral 均为一次性回复

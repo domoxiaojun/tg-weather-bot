@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     enable_weather_plots: bool = True
     enable_rain_alerts: bool = Field(True, description="Enable scheduled rain alert checks")
     enable_daily_brief: bool = Field(True, description="Enable scheduled daily brief pushes")
+    enable_rich_messages: bool = Field(
+        True,
+        description="Use Bot API 10.1/10.2 rich messages (tables, collapsible details); falls back to MarkdownV2/HTML automatically",
+    )
+    enable_ephemeral_messages: bool = Field(
+        True,
+        description="Use Bot API 10.2 ephemeral messages for personal replies in group chats",
+    )
+    enable_rich_report_streaming: bool = Field(
+        True,
+        description="Stream AI reports with sendRichMessageDraft in private chats (native animated preview)",
+    )
 
     # Scheduling
     timezone: str = Field("Asia/Shanghai", description="Timezone for scheduled pushes (daily brief)")

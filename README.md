@@ -57,12 +57,19 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - Reports are cached per location for `LLM_REPORT_CACHE_TTL_SECONDS` (default 4h, 0 disables); new weather alerts or rain onset invalidate the cache automatically.
 - If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and set `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` (default 60s) controls when the bot gives up. Gemini HTTP timeout is configured with `GEMINI_TIMEOUT_SECONDS`.
 
-## Telegram Bot API Compatibility
+## Rich Messages (Bot API 10.1/10.2)
 
-- Telegram's server API is currently 10.2 (2026-07-14). Bot API 10.1 introduced Rich Messages, while 10.2 added outgoing rich blocks and ephemeral messages.
-- The latest stable `python-telegram-bot 22.8` only provides typed support through Bot API 10.0. Existing weather commands, photos, callbacks, Inline mode, webhooks, and scheduled jobs remain compatible with the newer Telegram server.
-- Rich/ephemeral messages are intentionally not sent through private raw requests. The AI report continues to use supported Telegram HTML until PTB exposes the new objects and methods.
-- See [the local Telegram Bot API compatibility audit](docs/telegram-bot-api-update-2026-07.md) for the exact version boundary and follow-up plan.
+Rich output is **enabled by default** (`ENABLE_RICH_MESSAGES=true`) through a thin wrapper over PTB's public `Bot.do_api_request` escape hatch — `python-telegram-bot 22.8` is typed only through Bot API 10.0, so the newer methods are called directly while every surface keeps its MarkdownV2/HTML fallback.
+
+- **Tables** for the hourly and daily views (real column alignment instead of emoji-prefixed text runs), with a full-width date separator row when the hourly table crosses midnight.
+- **Collapsible `details`** for "今日详情" and per-day descriptions, so long views stay scrollable.
+- **`blockquote`** for weather warnings and **`marked`** highlights on precipitation peaks.
+- **Native streaming** for AI reports in private chats via `sendRichMessageDraft` (an animated 30-second preview using the `thinking` block), finalized with `sendRichMessage`; groups and inline messages use throttled rich edits instead.
+- **Rain alerts embed the chart as a `photo` block** inside the same rich message, sidestepping Telegram's 1024-character photo caption limit.
+- **Ephemeral messages** (`ENABLE_EPHEMERAL_MESSAGES=true`): in groups, subscription management replies are visible only to the requesting user, and those commands are registered with `is_ephemeral`.
+- Unsupported servers/proxies are detected once (`EndPointNotFound`) and the capability is disabled for the process — functionality degrades, nothing breaks.
+
+See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, the transport audit of PTB 22.8, and what is intentionally not wired yet (inline query *results* still use text content).
 
 ## 🐳 Docker Deploy (Recommended)
 

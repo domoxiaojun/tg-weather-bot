@@ -8,7 +8,7 @@ from telegram.ext import ContextTypes
 
 from core.config import settings
 from core.handlers.common import BotDependencies
-from core.handlers.messages import send_text
+from core.handlers.messages import send_personal_text
 from core.scheduler import DEFAULT_DAILY_BRIEF_TIME, parse_brief_time
 from utils.schedule_times import parse_quiet_hours
 
@@ -114,7 +114,7 @@ class SubscriptionHandlers:
     async def daily_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_sub [城市] [HH:MM] - 订阅每日早安简报，可自定义推送时间"""
         if not context.args:
-            await send_text(
+            await send_personal_text(
                 update,
                 context,
                 "用法：/daily_sub 城市 时间（时间可省略）\n"
@@ -134,18 +134,18 @@ class SubscriptionHandlers:
         raw = " ".join(args).strip()
         location = await self._resolve_location(raw)
         if not location:
-            await send_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
+            await send_personal_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
             return
 
         subs = context.chat_data.setdefault("daily_subs", [])
         matched = self._find_subscribed(subs, location)
         if matched and brief_time is None:
-            await send_text(update, context, f"已订阅过 {matched} 的日报，改时间可用 /daily_sub {matched.split(',')[0]} HH:MM。")
+            await send_personal_text(update, context, f"已订阅过 {matched} 的日报，改时间可用 /daily_sub {matched.split(',')[0]} HH:MM。")
             return
 
         if not matched:
             if subscription_limit_reached(subs):
-                await send_text(update, context, subscription_limit_message("/daily_my"))
+                await send_personal_text(update, context, subscription_limit_message("/daily_my"))
                 return
             subs.append(location)
             matched = location
@@ -154,7 +154,7 @@ class SubscriptionHandlers:
         effective_time = context.chat_data.get("daily_sub_times", {}).get(
             matched, DEFAULT_DAILY_BRIEF_TIME
         )
-        await send_text(
+        await send_personal_text(
             update,
             context,
             f"✅ 已订阅 {matched} 的早安简报！\n"
@@ -165,7 +165,7 @@ class SubscriptionHandlers:
     async def daily_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_unsub [城市] - 取消订阅"""
         if not context.args:
-            await send_text(update, context, "用法：/daily_unsub 城市\n也可以在 /daily_my 里点按钮取消。")
+            await send_personal_text(update, context, "用法：/daily_unsub 城市\n也可以在 /daily_my 里点按钮取消。")
             return
 
         location = self._location_from_args(context)
@@ -178,45 +178,45 @@ class SubscriptionHandlers:
                 matched = self._find_subscribed(subs, resolved)
         if matched:
             remove_subscription_entry(context.chat_data, "daily", subs.index(matched))
-            await send_text(update, context, f"✅ 已取消 {matched} 的订阅。")
+            await send_personal_text(update, context, f"✅ 已取消 {matched} 的订阅。")
         else:
-            await send_text(update, context, f"你没有订阅 {location}。")
+            await send_personal_text(update, context, f"你没有订阅 {location}。")
 
     async def daily_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_my - 查看我的订阅"""
         text, keyboard = render_subscription_list(context.chat_data, "daily")
         if text is None:
-            await send_text(update, context, "📭 你还没有订阅任何早安简报。")
+            await send_personal_text(update, context, "📭 你还没有订阅任何早安简报。")
             return
-        await send_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_personal_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
     async def rain_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_sub [城市] - 订阅降雨提醒"""
         if not context.args:
-            await send_text(update, context, "用法：/rain_sub 城市\n例：/rain_sub 北京")
+            await send_personal_text(update, context, "用法：/rain_sub 城市\n例：/rain_sub 北京")
             return
 
         raw = self._location_from_args(context)
         location = await self._resolve_location(raw)
         if not location:
-            await send_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
+            await send_personal_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
             return
 
         subs = context.chat_data.setdefault("subs", [])
         if self._find_subscribed(subs, location):
-            await send_text(update, context, f"已订阅过 {location} 的降雨提醒。管理订阅：/rain_my")
+            await send_personal_text(update, context, f"已订阅过 {location} 的降雨提醒。管理订阅：/rain_my")
             return
         if subscription_limit_reached(subs):
-            await send_text(update, context, subscription_limit_message("/rain_my"))
+            await send_personal_text(update, context, subscription_limit_message("/rain_my"))
             return
 
         subs.append(location)
-        await send_text(update, context, f"✅ 已订阅 {location} 的降雨提醒。\n{rain_alert_expectation()}")
+        await send_personal_text(update, context, f"✅ 已订阅 {location} 的降雨提醒。\n{rain_alert_expectation()}")
 
     async def rain_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_unsub [城市] - 取消降雨提醒"""
         if not context.args:
-            await send_text(update, context, "用法：/rain_unsub 城市\n也可以在 /rain_my 里点按钮取消。")
+            await send_personal_text(update, context, "用法：/rain_unsub 城市\n也可以在 /rain_my 里点按钮取消。")
             return
 
         location = self._location_from_args(context)
@@ -229,14 +229,14 @@ class SubscriptionHandlers:
                 matched = self._find_subscribed(subs, resolved)
         if matched:
             remove_subscription_entry(context.chat_data, "rain", subs.index(matched))
-            await send_text(update, context, f"✅ 已取消 {matched} 的降雨提醒。")
+            await send_personal_text(update, context, f"✅ 已取消 {matched} 的降雨提醒。")
         else:
-            await send_text(update, context, f"你没有订阅 {location} 的降雨提醒。")
+            await send_personal_text(update, context, f"你没有订阅 {location} 的降雨提醒。")
 
     async def rain_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_my - 查看我的降雨提醒"""
         text, keyboard = render_subscription_list(context.chat_data, "rain")
         if text is None:
-            await send_text(update, context, "📭 你还没有订阅任何降雨提醒。")
+            await send_personal_text(update, context, "📭 你还没有订阅任何降雨提醒。")
             return
-        await send_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_personal_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)

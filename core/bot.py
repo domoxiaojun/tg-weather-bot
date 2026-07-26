@@ -43,6 +43,27 @@ async def _register_bot_commands(application: Application):
         BotCommand("rain_my", "我的降雨提醒 - 查看已订阅城市"),
         BotCommand("rain_unsub", "取消降雨提醒 - /rain_unsub [城市]"),
     ]
+
+    # Bot API 10.2: mark the personal bookkeeping commands so Telegram knows
+    # their replies are ephemeral. Sent via api_kwargs because PTB 22.8's
+    # BotCommand has no is_ephemeral field yet; ignored by older servers.
+    if settings.enable_ephemeral_messages:
+        ephemeral_commands = {"daily_sub", "daily_my", "daily_unsub", "rain_sub", "rain_my", "rain_unsub"}
+        payload = [
+            {
+                "command": command.command,
+                "description": command.description,
+                **({"is_ephemeral": True} if command.command in ephemeral_commands else {}),
+            }
+            for command in commands
+        ]
+        try:
+            await application.bot.do_api_request("setMyCommands", api_kwargs={"commands": payload})
+            logger.info("✅ Bot命令已注册到Telegram（含 ephemeral 标记）")
+            return
+        except Exception as error:
+            logger.warning(f"设置 ephemeral 命令标记失败，回退标准注册: {error}")
+
     await application.bot.set_my_commands(commands)
     logger.info("✅ Bot命令已注册到Telegram")
 

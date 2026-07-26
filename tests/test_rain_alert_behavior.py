@@ -140,8 +140,10 @@ class SubscriptionLimitTests(unittest.IsolatedAsyncioTestCase):
         bot = FakeBot()
         existing = [f"城市{i}, 测试省" for i in range(settings.max_subscriptions_per_chat)]
         update = SimpleNamespace(
-            effective_chat=SimpleNamespace(id=1),
+            effective_chat=SimpleNamespace(id=1, type="private"),
             effective_message=None,
+            effective_user=SimpleNamespace(id=99),
+            callback_query=None,
         )
         context = SimpleNamespace(args=["新城"], chat_data={"subs": list(existing)}, bot=bot)
 
