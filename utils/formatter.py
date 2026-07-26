@@ -525,32 +525,54 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
     }.get(data.source, data.source.title())
     return f"{header}\n\n{body}\n\n_数据源: {escape_v2(source_label)}_"
 
-def get_weather_keyboard(location_query: str, mode: str = "default", show_charts: bool = True) -> InlineKeyboardMarkup:
+# Telegram limits callback_data to 64 bytes; the longest pattern here is
+# "chart|{location}|temp", so the location token itself must stay small.
+_CALLBACK_LOCATION_MAX_BYTES = 50
+
+
+def callback_location_token(location_query: str, coords: Optional[str] = None) -> str:
+    """Return a callback-safe location token, falling back to coordinates."""
+    if len(location_query.encode("utf-8")) <= _CALLBACK_LOCATION_MAX_BYTES:
+        return location_query
+    if coords and len(coords.encode("utf-8")) <= _CALLBACK_LOCATION_MAX_BYTES:
+        return coords
+    encoded = location_query.encode("utf-8")[:_CALLBACK_LOCATION_MAX_BYTES]
+    return encoded.decode("utf-8", errors="ignore")
+
+
+def get_weather_keyboard(
+    location_query: str,
+    mode: str = "default",
+    show_charts: bool = True,
+    coords: Optional[str] = None,
+) -> InlineKeyboardMarkup:
     """
     生成天气消息的按钮键盘
     :param mode: 'default' (文本模式), 'chart' (图表模式，显示返回按钮)
     :param show_charts: 是否显示图表切换按钮 (Inline模式下因无法切图，建议关闭)
+    :param coords: 坐标字符串，地名过长超出 callback_data 限制时作为回退
     """
+    token = callback_location_token(location_query, coords)
     if mode == "chart":
         # 图表模式：保留图表切换。Inline 图表消息无法可靠恢复成纯文本。
         keyboard = [[
-            InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{location_query}|temp"),
-            InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{location_query}|rain")
+            InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
+            InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain")
         ]]
     else:
         # 默认文本模式：功能按钮
         # 第一排：基础功能
         row1 = [
-            InlineKeyboardButton("🔄 刷新", callback_data=f"refresh|{location_query}"),
-            InlineKeyboardButton("🔔 降雨提醒", callback_data=f"sub|{location_query}")
+            InlineKeyboardButton("🔄 刷新", callback_data=f"refresh|{token}"),
+            InlineKeyboardButton("🔔 降雨提醒", callback_data=f"sub|{token}")
         ]
         keyboard = [row1]
-        
+
         # 第二排：图表按钮 (可选)
         if show_charts:
             row2 = [
-                InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{location_query}|temp"),
-                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{location_query}|rain")
+                InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
+                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain")
             ]
             keyboard.append(row2)
 

@@ -1,7 +1,9 @@
+import asyncio
 import hashlib
 import io
 import json
-from typing import Literal, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Literal, Optional
 
 from loguru import logger
 from telegram import InputFile
@@ -13,6 +15,18 @@ from utils.cache import cache
 
 ChartType = Literal["temp", "rain", "daily"]
 CHART_CACHE_TTL = 1800
+CHART_FAILURE_TTL = 120
+_CHART_FAILURE_SENTINEL = "__chart_failed__"
+
+# Matplotlib rendering is CPU-bound and pyplot's global state is not
+# thread-safe, so all chart drawing is serialized on one worker thread to
+# keep it off the asyncio event loop.
+_RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chart-render")
+
+
+async def run_chart_render(func: Callable[..., Any], *args: Any) -> Any:
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_RENDER_EXECUTOR, func, *args)
 
 
 def normalize_chart_type(chart_type: str) -> ChartType:
@@ -39,6 +53,10 @@ def render_chart_bytes(weather_data: WeatherData, chart_type: str) -> Optional[b
     if normalized == "daily":
         return Visualizer.draw_daily_temp_chart(weather_data)
     return Visualizer.draw_hourly_temp_chart(weather_data)
+
+
+async def render_chart_bytes_async(weather_data: WeatherData, chart_type: str) -> Optional[bytes]:
+    return await run_chart_render(render_chart_bytes, weather_data, chart_type)
 
 
 def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
@@ -75,6 +93,8 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
 
 async def get_cached_chart_file_id(weather_data: WeatherData, chart_type: str) -> Optional[str]:
     cached = await cache.get(chart_cache_key(weather_data, chart_type))
+    if cached == _CHART_FAILURE_SENTINEL:
+        return None
     return cached if isinstance(cached, str) and cached else None
 
 
@@ -90,9 +110,11 @@ async def get_or_create_chart_file_id(bot, weather_data: WeatherData, chart_type
     key = chart_cache_key(weather_data, chart_type)
 
     async def upload_chart() -> Optional[str]:
-        img_bytes = render_chart_bytes(weather_data, chart_type)
+        # Failures are cached briefly so a persistently failing chart does not
+        # re-render (CPU) and re-upload on every request.
+        img_bytes = await render_chart_bytes_async(weather_data, chart_type)
         if not img_bytes:
-            return None
+            return _CHART_FAILURE_SENTINEL
         try:
             msg = await bot.send_photo(
                 chat_id=settings.super_admin_id,
@@ -107,7 +129,12 @@ async def get_or_create_chart_file_id(bot, weather_data: WeatherData, chart_type
             return file_id
         except Exception as e:
             logger.error(f"Failed to upload chart for file_id cache: {e}")
-            return None
+            return _CHART_FAILURE_SENTINEL
 
-    value = await cache.get_or_set(key, upload_chart, ttl=CHART_CACHE_TTL)
+    def resolve_ttl(value: str) -> int:
+        return CHART_FAILURE_TTL if value == _CHART_FAILURE_SENTINEL else CHART_CACHE_TTL
+
+    value = await cache.get_or_set(key, upload_chart, ttl=resolve_ttl)
+    if value == _CHART_FAILURE_SENTINEL:
+        return None
     return value if isinstance(value, str) and value else None

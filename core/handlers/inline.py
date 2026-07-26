@@ -89,8 +89,9 @@ class InlineHandlers:
             text_24h = format_weather_response(data, view_type="hourly", days=24)
 
             summary_short = data.summary.split("\n")[0] if data.summary else ""
-            keyboard = get_weather_keyboard(data.location_name, show_charts=True)
+            keyboard = get_weather_keyboard(data.location_name, show_charts=True, coords=data.coords)
 
+            tags = ["default", "daily3", "daily7", "hourly12", "hourly24"]
             results = [
                 InlineQueryResultArticle(
                     id=str(uuid4()),
@@ -145,6 +146,7 @@ class InlineHandlers:
             ]
 
             if data.minutely:
+                tags.append("rain")
                 text_rain = format_weather_response(data, view_type="rain")
                 results.append(
                     InlineQueryResultArticle(
@@ -160,6 +162,7 @@ class InlineHandlers:
                 )
 
             if data.indices:
+                tags.append("indices")
                 text_indices = format_weather_response(data, view_type="indices")
                 results.append(
                     InlineQueryResultArticle(
@@ -174,11 +177,27 @@ class InlineHandlers:
                     )
                 )
 
+            # Honor the requested view (e.g. "广州 24h") by promoting the
+            # matching result to the top of the list.
+            preferred = None
+            if view_type == "daily":
+                preferred = "daily7" if (days or 0) >= 7 else "daily3"
+            elif view_type == "hourly":
+                preferred = "hourly24" if (days or 24) >= 24 else "hourly12"
+            elif view_type in {"rain", "indices"}:
+                preferred = view_type
+            if preferred in tags:
+                index = tags.index(preferred)
+                if index > 0:
+                    results.insert(0, results.pop(index))
+
             loading_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⏳ 生成中...", callback_data="noop")]])
+            # result_id is limited to 64 bytes, so use coordinates instead of
+            # a potentially long location name; the report handler geocodes it.
             results.insert(
                 1,
                 InlineQueryResultArticle(
-                    id=f"ai_report:{data.location_name}",
+                    id=f"ai_report:{data.coords}",
                     title=f"🤖 {data.location_name} · AI 天气日报",
                     description="点击发送，Bot 将实时生成日报",
                     input_message_content=InputTextMessageContent(

@@ -1,11 +1,13 @@
+import asyncio
 from datetime import datetime, timedelta, time
 from functools import partial
 from html import escape
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 from telegram.constants import ParseMode
+from telegram.error import Forbidden
 from telegram.ext import Application, ContextTypes
-from tenacity import retry, stop_after_attempt, wait_fixed
 
 from core.config import settings
 from services.fusion import WeatherFusionService
@@ -51,8 +53,28 @@ def will_rain_soon(weather, minutes: int = 30) -> bool:
     return False
 
 
-async def job_error_handler(context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Job failed: {context.error}")
+# Per-location ceilings so one stuck upstream call cannot stall a whole job
+# round (max_instances=1 would then skip the following runs entirely).
+LOCATION_WEATHER_TIMEOUT = 30.0
+LOCATION_REPORT_TIMEOUT = 90.0
+
+
+def _remove_subscription(chat_data: dict, list_key: str, location: str) -> None:
+    subs = chat_data.get(list_key)
+    if isinstance(subs, list) and location in subs:
+        subs.remove(location)
+
+
+async def _persist_chat_data(app: Application, chat_ids: set) -> None:
+    """JobQueue callbacks bypass update processing, so flush chat_data manually."""
+    if not chat_ids:
+        return
+    try:
+        for chat_id in chat_ids:
+            app.mark_data_for_update_persistence(chat_ids=chat_id)
+        await app.update_persistence()
+    except Exception as error:
+        logger.error(f"Failed to persist chat_data from job: {error}")
 
 
 async def send_daily_brief(
@@ -70,20 +92,26 @@ async def send_daily_brief(
     for chat_id, data in app.chat_data.items():
         for location in data.get("daily_subs", []):
             key = _location_key(location)
-            entry = grouped.setdefault(key, {"location": location, "chat_ids": []})
-            if chat_id not in entry["chat_ids"]:
-                entry["chat_ids"].append(chat_id)
+            entry = grouped.setdefault(key, {"location": location, "subscribers": []})
+            entry["subscribers"].append((chat_id, data, location))
 
+    dirty_chats: set = set()
     logger.debug(f"Running Daily Brief for {len(grouped)} unique locations")
     for entry in grouped.values():
         location = entry["location"]
         try:
-            weather = await weather_service.get_fused_weather(location, profile="full")
+            weather = await asyncio.wait_for(
+                weather_service.get_fused_weather(location, profile="full"),
+                timeout=LOCATION_WEATHER_TIMEOUT,
+            )
             if not weather:
                 continue
-            report_text = await llm_service.generate_weather_report(weather)
+            report_text = await asyncio.wait_for(
+                llm_service.generate_weather_report(weather),
+                timeout=LOCATION_REPORT_TIMEOUT,
+            )
             header = f"☀️ <b>早安！{escape(location)}</b>\n------------------\n"
-            for chat_id in entry["chat_ids"]:
+            for chat_id, chat_data, subscribed_location in entry["subscribers"]:
                 try:
                     await context.bot.send_message(
                         chat_id=chat_id,
@@ -91,15 +119,24 @@ async def send_daily_brief(
                         parse_mode=ParseMode.HTML,
                     )
                     logger.info(f"Sent Daily Brief to {chat_id} for {location}")
+                except Forbidden:
+                    _remove_subscription(chat_data, "daily_subs", subscribed_location)
+                    dirty_chats.add(chat_id)
+                    logger.info(
+                        f"Removed daily subscription for blocked chat {chat_id}/{subscribed_location}"
+                    )
                 except Exception as error:
                     logger.error(
                         f"Daily Brief delivery failed for {chat_id}/{location}: {error}"
                     )
+        except asyncio.TimeoutError:
+            logger.error(f"Daily Brief timed out for {location}")
         except Exception as error:
             logger.error(f"Daily Brief generation failed for {location}: {error}")
 
+    await _persist_chat_data(app, dirty_chats)
 
-@retry(stop=stop_after_attempt(2), wait=wait_fixed(5))
+
 async def check_rain_alerts(
     context: ContextTypes.DEFAULT_TYPE,
     *,
@@ -117,11 +154,15 @@ async def check_rain_alerts(
             entry = grouped.setdefault(key, {"location": location, "subscribers": []})
             entry["subscribers"].append((chat_id, data, location))
 
+    dirty_chats: set = set()
     logger.debug(f"Running rain check for {len(grouped)} unique locations")
     for entry in grouped.values():
         location = entry["location"]
         try:
-            weather = await weather_service.get_fused_weather(location, profile="rain")
+            weather = await asyncio.wait_for(
+                weather_service.get_fused_weather(location, profile="rain"),
+                timeout=LOCATION_WEATHER_TIMEOUT,
+            )
             if not weather or not will_rain_soon(weather):
                 continue
 
@@ -142,13 +183,24 @@ async def check_rain_alerts(
                     )
                     last_alert[subscribed_location] = datetime.now()
                     chat_data["last_rain_alert"] = last_alert
+                    dirty_chats.add(chat_id)
                     logger.info(f"Sent rain alert to {chat_id} for {subscribed_location}")
+                except Forbidden:
+                    _remove_subscription(chat_data, "subs", subscribed_location)
+                    dirty_chats.add(chat_id)
+                    logger.info(
+                        f"Removed rain subscription for blocked chat {chat_id}/{subscribed_location}"
+                    )
                 except Exception as error:
                     logger.error(
                         f"Rain alert delivery failed for {chat_id}/{subscribed_location}: {error}"
                     )
+        except asyncio.TimeoutError:
+            logger.error(f"Rain check timed out for {location}")
         except Exception as error:
             logger.error(f"Rain check failed for {location}: {error}")
+
+    await _persist_chat_data(app, dirty_chats)
 
 
 def setup_scheduler(
@@ -181,7 +233,7 @@ def setup_scheduler(
                 weather_service=weather_service,
                 llm_service=llm_service,
             ),
-            time=time(8, 0),
+            time=time(8, 0, tzinfo=ZoneInfo(settings.timezone)),
             name="daily-brief",
         )
         daily_status = "ON"

@@ -23,8 +23,10 @@ class ReportHandlers:
 
         location = join_location_args(list(context.args))
 
+        message = update.effective_message
         try:
-            await update.message.set_reaction("👀")
+            if message:
+                await message.set_reaction("👀")
         except Exception:
             pass
 
@@ -41,8 +43,18 @@ class ReportHandlers:
                 return
 
             async def keep_typing():
+                # Purely cosmetic: any failure here must never surface and
+                # discard an already generated report.
                 while True:
-                    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+                    try:
+                        await context.bot.send_chat_action(
+                            chat_id=update.effective_chat.id, action=ChatAction.TYPING
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        logger.debug(f"keep_typing failed: {e}")
+                        return
                     await asyncio.sleep(4)
 
             typing_task = asyncio.create_task(keep_typing())
@@ -50,7 +62,7 @@ class ReportHandlers:
                 report_text = await self.deps.llm_service.generate_weather_report(weather_data)
             finally:
                 typing_task.cancel()
-                with suppress(asyncio.CancelledError):
+                with suppress(Exception):
                     await typing_task
 
             title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"

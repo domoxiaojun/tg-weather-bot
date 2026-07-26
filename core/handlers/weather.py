@@ -12,7 +12,8 @@ from services.chart_cache import (
     get_cached_chart_file_id,
     get_chart_caption,
     normalize_chart_type,
-    render_chart_bytes,
+    render_chart_bytes_async,
+    run_chart_render,
 )
 from services.visualizer import Visualizer
 from utils.formatter import format_weather_response, get_weather_keyboard
@@ -84,7 +85,7 @@ class WeatherHandlers:
             )
             return
 
-        img_bytes = render_chart_bytes(data, chart_type)
+        img_bytes = await render_chart_bytes_async(data, chart_type)
         if not img_bytes:
             await send_text(update, context, f"⚠️ 暂无{caption.split(' ', 1)[-1]}数据，无法绘制图表")
             return
@@ -98,25 +99,29 @@ class WeatherHandlers:
 
     async def handle_weather_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tq and location weather requests."""
+        message = update.effective_message
+        if message is None:
+            return
+
         location_query = None
         view_type = "default"
         start_day = 0
         limit = None
 
-        if update.message.location:
-            location_query = f"{update.message.location.longitude},{update.message.location.latitude}"
+        if message.location:
+            location_query = f"{message.location.longitude},{message.location.latitude}"
         elif context.args:
             location_query, view_type, start_day, limit = parse_location_and_view(list(context.args))
         else:
-            await send_text(update, context, "请提供城市名称或定位，例如 `/tq 北京`。")
+            await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京")
             return
 
         if not location_query:
-            await send_text(update, context, "请提供城市名称或定位，例如 `/tq 北京`。")
+            await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京")
             return
 
         try:
-            await update.message.set_reaction("👀")
+            await message.set_reaction("👀")
         except Exception:
             pass
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
@@ -137,21 +142,35 @@ class WeatherHandlers:
             return
 
         text = format_weather_response(data, view_type=view_type, days=limit, start_day=start_day)
-        keyboard = get_weather_keyboard(location_query)
+        keyboard = get_weather_keyboard(location_query, coords=data.coords)
 
         chart_bytes = None
         if settings.enable_weather_plots:
             should_plot = view_type == "rain" or data.is_raining
             if should_plot:
-                chart_bytes = Visualizer.draw_hourly_rain_chart(data)
+                chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
 
         try:
-            if chart_bytes:
+            # Telegram caption limit is 1024 chars; fall back to photo + text.
+            if chart_bytes and len(text) <= 1000:
                 await send_photo(
                     update,
                     context,
                     photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
                     caption=text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+            elif chart_bytes:
+                await send_photo(
+                    update,
+                    context,
+                    photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
+                )
+                await send_text(
+                    update,
+                    context,
+                    text,
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
