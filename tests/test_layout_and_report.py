@@ -116,6 +116,40 @@ class RealtimeLayoutTests(unittest.TestCase):
         self.assertIn("实时", str(blocks[1]))
 
 
+class AirQualityExplainTests(unittest.TestCase):
+    """A bare concentration means nothing to a layperson — level + what-it-is do."""
+
+    def test_pollutant_rows_carry_level_and_explanation(self):
+        from utils.rich_formatter import build_air_quality_blocks
+
+        data = make_weather(air_quality=AirQuality(aqi=23, category="优", pm2p5=16))
+        blocks = build_air_quality_blocks(data)
+        flat = str(blocks)
+        self.assertIn("水平", flat)
+        self.assertIn("说明", flat)
+        self.assertIn("细颗粒物", flat)
+        self.assertIn("优", flat)
+
+    def test_bad_levels_are_highlighted(self):
+        from utils.rich_formatter import build_air_quality_blocks
+
+        data = make_weather(air_quality=AirQuality(aqi=200, category="重度", pm2p5=200))
+        flat = str(build_air_quality_blocks(data))
+        self.assertIn("'type': 'marked'", flat)
+        self.assertIn("重度", flat)
+
+    def test_level_ladder_boundaries(self):
+        from utils.rich_formatter import pollutant_level
+
+        self.assertEqual(pollutant_level("PM2.5", 35), "优")
+        self.assertEqual(pollutant_level("PM2.5", 75), "良")
+        self.assertEqual(pollutant_level("PM2.5", 116), "中度")
+        self.assertEqual(pollutant_level("PM2.5", 999), "严重")
+        self.assertEqual(pollutant_level("CO", 3), "优")  # CO 用 mg/m³ 阶梯
+        self.assertIsNone(pollutant_level("PM2.5", None))
+        self.assertIsNone(pollutant_level("氡气", 10))
+
+
 class ReportBlocksTests(unittest.TestCase):
     REPORT = (
         "🕐 数据时间：07月27日 01:04\n\n"

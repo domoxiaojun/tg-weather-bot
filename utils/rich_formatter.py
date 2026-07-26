@@ -173,6 +173,32 @@ def build_period_matrix(data: WeatherData) -> List[dict]:
     ]
 
 
+# What each pollutant is, plus 国标单项指数分级限值 (HJ 633: 1h values for
+# gases, 24h for particulates — the closest published ladder for realtime
+# numbers). A bare concentration means nothing to a layperson; the level and
+# the one-line "what is this" are the actual information.
+_POLLUTANT_META = {
+    "PM2.5": ("细颗粒物，可深入肺部", (35, 75, 115, 150, 250)),
+    "PM10": ("可吸入颗粒物（扬尘）", (50, 150, 250, 350, 420)),
+    "O₃": ("臭氧，晴热午后偏高", (160, 200, 300, 400, 800)),
+    "NO₂": ("二氧化氮，多来自尾气", (100, 200, 700, 1200, 2340)),
+    "SO₂": ("二氧化硫，燃煤排放", (150, 500, 650, 800, 1600)),
+    "CO": ("一氧化碳，通风不良时危险", (5, 10, 35, 60, 90)),
+}
+_POLLUTANT_LEVELS = ("优", "良", "轻度", "中度", "重度", "严重")
+
+
+def pollutant_level(name: str, value) -> Optional[str]:
+    """优/良/轻度/中度/重度/严重 for one pollutant concentration."""
+    meta = _POLLUTANT_META.get(name)
+    if meta is None or value is None:
+        return None
+    for limit, label in zip(meta[1], _POLLUTANT_LEVELS):
+        if value <= limit:
+            return label
+    return _POLLUTANT_LEVELS[-1]
+
+
 def build_air_quality_blocks(data: WeatherData) -> List[dict]:
     """Collapsible pollutant breakdown — six fields the text views cannot fit."""
     air = data.air_quality
@@ -187,11 +213,16 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         ("SO₂", air.so2),
         ("CO", air.co),
     )
-    rows = [
-        [name, format_weather_number(value)]
-        for name, value in pollutants
-        if value is not None
-    ]
+    rows = []
+    for name, value in pollutants:
+        if value is None:
+            continue
+        level = pollutant_level(name, value)
+        # Levels beyond 良 are highlighted — that is the "should I care" bit.
+        level_cell = (
+            marked(level) if level and level not in ("优", "良") else (level or "—")
+        )
+        rows.append([name, format_weather_number(value), level_cell, _POLLUTANT_META[name][0]])
     if not rows and not air.description and not air.primary:
         return []
 
@@ -200,9 +231,9 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         inner.append(
             table(
                 rows,
-                headers=["污染物", "浓度"],
-                aligns=["left", "right"],
-                caption="浓度单位 μg/m³（CO 为 mg/m³）",
+                headers=["污染物", "浓度", "水平", "说明"],
+                aligns=["left", "right", "center", "left"],
+                caption="浓度单位 μg/m³（CO 为 mg/m³）· 水平按国标单项指数分级",
             )
         )
     if air.primary:
