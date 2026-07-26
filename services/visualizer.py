@@ -36,12 +36,34 @@ class Visualizer:
         "muted": "#9AACBF",
         "subtle": "#61758C",
         "temperature": "#FFB454",
-        "feels_like": "#52D3F5",
+        # 体感与概率蓝曾经 ΔE 6.7（正常视力都难分辨），验证后改粉
+        "feels_like": "#F472B6",
+        "water": "#52D3F5",       # 潮汐水位（原体感色的正确归宿）
+        "track": "#FB923C",       # 台风路径
         "probability": "#38BDF8",
-        "amount": "#A78BFA",
-        "intensity": "#FB923C",
+        # 概率柱按可能性分三档亮度（同色相顺序渐变，色弱安全）
+        "pop_low": "#26547A",
+        "pop_mid": "#2E8FC7",
+        "pop_high": "#4FC3FF",
+        "amount": "#4FC3FF",
+        "intensity": "#A5D8FF",
         "missing": "#73859A",
     }
+
+    @staticmethod
+    def _rain_rate_word(rate_mm_h: float) -> str:
+        """雨势的白话说法（界面不出现 mm/h，与全项目原则一致）。"""
+        if rate_mm_h >= 16:
+            return "暴雨"
+        if rate_mm_h >= 8:
+            return "大雨"
+        if rate_mm_h >= 2.5:
+            return "中雨"
+        if rate_mm_h >= 1:
+            return "小雨"
+        if rate_mm_h > 0:
+            return "毛毛雨"
+        return "无降水"
 
     @staticmethod
     def _strip_tz(times: List) -> List:
@@ -435,14 +457,14 @@ class Visualizer:
         ax.set_ylim(float(np.min(heights)) - span * 0.2, float(np.max(heights)) + span * 0.25)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value, 1)))
-        ax.tick_params(axis="y", colors=cls._THEME["feels_like"])
+        ax.tick_params(axis="y", colors=cls._THEME["water"])
         ax.text(-0.05, 1.02, "m", transform=ax.transAxes,
                 color=cls._THEME["subtle"], fontsize=8.5, ha="left")
 
         for smooth_x, smooth_y in cls._smooth_segments(x, heights):
             ax.fill_between(smooth_x, smooth_y, ax.get_ylim()[0],
-                            color=cls._THEME["feels_like"], alpha=0.14, zorder=2)
-            ax.plot(smooth_x, smooth_y, color=cls._THEME["feels_like"], linewidth=2.6, zorder=4)
+                            color=cls._THEME["water"], alpha=0.14, zorder=2)
+            ax.plot(smooth_x, smooth_y, color=cls._THEME["water"], linewidth=2.6, zorder=4)
 
         # Mark the reported high/low moments on the curve.
         stamp_to_index = {moment.strftime("%Y%m%d%H%M"): index for index, moment in enumerate(times)}
@@ -475,7 +497,7 @@ class Visualizer:
                            color=cls._THEME["muted"], fontsize=9)
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["feels_like"], linewidth=2.6),
+            Line2D([0], [0], color=cls._THEME["water"], linewidth=2.6),
             Line2D([0], [0], color=cls._THEME["temperature"], marker="^", linestyle="none"),
             Line2D([0], [0], color=cls._THEME["probability"], marker="v", linestyle="none"),
         ]
@@ -530,9 +552,9 @@ class Visualizer:
         if forecast:
             start = [current] if current else []
             fx, fy = zip(*(start + forecast))
-            ax.plot(fx, fy, color=cls._THEME["intensity"], linewidth=2.6, zorder=5)
+            ax.plot(fx, fy, color=cls._THEME["track"], linewidth=2.6, zorder=5)
             ax.scatter(fx[1:], fy[1:], s=26, color=cls._THEME["card"],
-                       edgecolor=cls._THEME["intensity"], linewidth=1.6, zorder=6)
+                       edgecolor=cls._THEME["track"], linewidth=1.6, zorder=6)
         if current:
             ax.scatter([current[0]], [current[1]], s=170, marker="*",
                        color=cls._THEME["temperature"], zorder=8)
@@ -553,7 +575,7 @@ class Visualizer:
         ax.set_aspect("equal", adjustable="datalim")
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["intensity"], linewidth=2.6),
+            Line2D([0], [0], color=cls._THEME["track"], linewidth=2.6),
             Line2D([0], [0], color=cls._THEME["subtle"], linewidth=1.8, linestyle=(0, (3, 3))),
         ]
         labels = ["预测路径", "已走路径"]
@@ -591,54 +613,59 @@ class Visualizer:
             return None
 
         x = np.arange(len(times))
-        peak = float(np.nanmax(values))
-        total = float(np.nansum(values))
         kind = entries[0].precip_kind or "amount"
-        unit = "mm/h" if kind == "intensity" else "mm"
+        interval = entries[0].interval_minutes or 5
+        # Normalize to mm/h internally, then SHOW words, not numbers: raw
+        # "mm per 5 minutes" on an axis means nothing to a layperson.
+        rates = values if kind == "intensity" else values * (60.0 / float(interval))
+        peak_rate = float(np.nanmax(rates))
+        total = float(np.nansum(values)) if kind != "intensity" else None
 
         fig = cls._create_card_figure()
-        metrics = [("峰值", f"{cls._format_number(peak, 2)} {unit}")]
-        if kind != "intensity":
-            metrics.append(("累计", f"{cls._format_number(total, 2)} mm"))
+        metrics = [("峰值雨势", cls._rain_rate_word(peak_rate))]
+        if total is not None:
+            metrics.append(("累计雨量", f"{cls._format_number(total, 1)} mm"))
         cls._add_header(
             fig,
             data,
-            kicker=f"未来 {len(times) * 5} 分钟 · 5 分钟粒度",
+            kicker=f"未来 {len(times) * interval} 分钟",
             title="分钟级降水",
             metrics=metrics,
         )
 
         ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
-        cls._style_axis(ax)
+        cls._style_axis(ax, grid=False)
         ax.set_xlim(-0.55, len(times) - 0.45)
-        ax.set_ylim(0, max(0.5, peak * 1.35))
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=2))
-        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value, 2)))
-        ax.tick_params(axis="y", colors=cls._THEME["probability"])
-        ax.text(
-            -0.05,
-            1.02,
-            unit,
-            transform=ax.transAxes,
-            color=cls._THEME["subtle"],
-            fontsize=8.5,
-            ha="left",
-        )
+        top = max(3.2, peak_rate * 1.35)
+        ax.set_ylim(0, top)
+        ax.set_yticks([])
 
-        for smooth_x, smooth_y in cls._smooth_segments(x, values):
-            ax.fill_between(smooth_x, smooth_y, 0, color=cls._THEME["probability"], alpha=0.16, zorder=2)
-            ax.plot(smooth_x, smooth_y, color=cls._THEME["probability"], linewidth=2.6, zorder=4)
-        wet = values > 0
-        if np.any(wet):
-            ax.scatter(
-                x[wet],
-                values[wet],
-                s=18,
-                color=cls._THEME["surface"],
-                edgecolor=cls._THEME["probability"],
-                linewidth=1.2,
-                zorder=5,
+        # Intensity ladder instead of numbers: reaching a line = that much rain.
+        for threshold, word in ((2.5, "中雨"), (8.0, "大雨"), (16.0, "暴雨")):
+            if threshold >= top:
+                continue
+            ax.axhline(
+                threshold,
+                color=cls._THEME["grid"],
+                linewidth=0.9,
+                linestyle=(0, (3, 4)),
+                alpha=0.9,
+                zorder=1,
             )
+            ax.text(
+                1.004,
+                threshold,
+                word,
+                transform=ax.get_yaxis_transform(),
+                color=cls._THEME["subtle"],
+                fontsize=8.5,
+                va="center",
+                ha="left",
+            )
+
+        for smooth_x, smooth_y in cls._smooth_segments(x, rates):
+            ax.fill_between(smooth_x, smooth_y, 0, color=cls._THEME["probability"], alpha=0.22, zorder=2)
+            ax.plot(smooth_x, smooth_y, color=cls._THEME["probability"], linewidth=2.6, zorder=4)
 
         step = max(1, len(times) // 8)
         ticks = list(range(0, len(times), step))
@@ -651,11 +678,11 @@ class Visualizer:
             fontsize=9,
         )
 
-        if peak > 0:
-            peak_index = int(np.nanargmax(values))
+        if peak_rate > 0:
+            peak_index = int(np.nanargmax(rates))
             ax.annotate(
-                f"{cls._format_number(peak, 2)}{unit}",
-                (x[peak_index], values[peak_index]),
+                f"{times[peak_index].strftime('%H:%M')} {cls._rain_rate_word(peak_rate)}",
+                (x[peak_index], rates[peak_index]),
                 xytext=(0, 10),
                 textcoords="offset points",
                 ha="center",
@@ -773,13 +800,14 @@ class Visualizer:
                 solid_capstyle="round",
                 zorder=5,
             )
+        skeleton = x[::3]
         ax.scatter(
-            x,
-            actual,
-            s=24,
+            skeleton,
+            actual[skeleton],
+            s=22,
             color=cls._THEME["surface"],
             edgecolor=cls._THEME["temperature"],
-            linewidth=1.4,
+            linewidth=1.3,
             zorder=6,
         )
 
@@ -794,18 +822,13 @@ class Visualizer:
                     dash_capstyle="round",
                     zorder=4,
                 )
-            valid_feels = np.isfinite(feels_like)
-            ax.scatter(
-                x[valid_feels],
-                feels_like[valid_feels],
-                s=18,
-                color=cls._THEME["surface"],
-                edgecolor=cls._THEME["feels_like"],
-                linewidth=1.2,
-                zorder=5,
-            )
 
-        for index in cls._label_indices(actual):
+        # Label only what people look for: the high, the low, and "now".
+        # Periodic labels made chips collide and buried the two that matter.
+        key_indices = {int(np.nanargmax(actual)), int(np.nanargmin(actual))}
+        if all(abs(0 - keyed) > 1 for keyed in key_indices):
+            key_indices.add(0)
+        for index in sorted(key_indices):
             ax.annotate(
                 cls._format_temperature(actual[index]),
                 (x[index], actual[index]),
@@ -814,16 +837,37 @@ class Visualizer:
                 ha="center",
                 va="bottom",
                 color=cls._THEME["text"],
-                fontsize=8.5,
+                fontsize=9.5,
                 fontweight=600,
                 bbox={
-                    "boxstyle": "round,pad=0.24",
+                    "boxstyle": "round,pad=0.26",
                     "facecolor": cls._THEME["card"],
                     "edgecolor": cls._THEME["border"],
                     "linewidth": 0.7,
                     "alpha": 0.94,
                 },
                 zorder=8,
+            )
+
+        # Rain context: faint probability bars along the bottom, because the
+        # person checking temperature is usually also deciding about rain.
+        pops = np.array(
+            [float(h.pop) if h.pop is not None else np.nan for h in data.hourly[:len(times)]],
+            dtype=float,
+        )
+        has_pop_context = bool(np.any(np.isfinite(pops) & (pops >= 30)))
+        if has_pop_context:
+            span = y_top - y_bottom
+            bar_heights = np.where(np.isfinite(pops), pops, 0) / 100.0 * span * 0.22
+            ax.bar(
+                x,
+                bar_heights,
+                bottom=y_bottom,
+                width=0.62,
+                color=cls._THEME["probability"],
+                alpha=0.28,
+                edgecolor="none",
+                zorder=1.5,
             )
 
         handles = [
@@ -838,19 +882,14 @@ class Visualizer:
                     color=cls._THEME["feels_like"],
                     linewidth=2,
                     linestyle=(0, (5, 4)),
-                    marker="o",
-                    markerfacecolor=cls._THEME["card"],
-                    markersize=4,
                 )
             )
-            labels.append("体感（API 原值）")
+            labels.append("体感")
+        if has_pop_context:
+            handles.append(Patch(facecolor=cls._THEME["probability"], alpha=0.28))
+            labels.append("降雨概率")
 
-        if not has_feels_like:
-            footer = "小时体感：API 未返回，未做本地估算"
-        elif np.any(~np.isfinite(feels_like)):
-            footer = "体感折线在 API 缺失处断开；未使用气温估算"
-        else:
-            footer = "体感温度仅展示 API 原值"
+        footer = "体感折线在数据缺口处断开" if has_feels_like and np.any(~np.isfinite(feels_like)) else ""
         cls._add_footer(fig, footer, handles, labels)
         return cls._render_figure(fig)
 
@@ -869,7 +908,7 @@ class Visualizer:
     ):
         """降水量(bar)与降水强度(dashed line)面板共用的绘制逻辑。"""
         color = cls._THEME[style]
-        label = "降水量 · mm" if style == "amount" else "降水强度 · mm/h"
+        label = "每小时雨量 (mm)" if style == "amount" else "雨势"
         unit = "mm" if style == "amount" else "mm/h"
 
         ax = fig.add_axes(rect)
@@ -1052,15 +1091,52 @@ class Visualizer:
 
         valid_probability = np.isfinite(probability)
         if np.any(valid_probability):
+            # Sequential single-hue tiers: brightness = likelihood, so the
+            # "when does it actually rain" answer pops without reading numbers.
+            bar_colors = [
+                cls._THEME["pop_high"] if value >= 60
+                else cls._THEME["pop_mid"] if value >= 30
+                else cls._THEME["pop_low"]
+                for value in probability[valid_probability]
+            ]
             probability_ax.bar(
                 x[valid_probability],
                 probability[valid_probability],
                 width=0.62,
-                color=cls._THEME["probability"],
-                alpha=0.82,
+                color=bar_colors,
                 edgecolor="none",
                 zorder=3,
             )
+            # Mark the dry→wet turn: first hour crossing 50% after a drier one.
+            crossing = None
+            for index in range(len(probability)):
+                if not np.isfinite(probability[index]) or probability[index] < 50:
+                    continue
+                if index == 0:
+                    break  # already wet from the start; nothing "turns"
+                previous = probability[index - 1]
+                if np.isfinite(previous) and previous < 50:
+                    crossing = index
+                break
+            if crossing is not None:
+                probability_ax.axvline(
+                    crossing - 0.5,
+                    color=cls._THEME["pop_high"],
+                    linewidth=1.2,
+                    linestyle=(0, (4, 3)),
+                    alpha=0.9,
+                    zorder=4,
+                )
+                probability_ax.text(
+                    crossing - 0.28,
+                    92,
+                    f"{times[crossing].strftime('%H:%M')} 转雨",
+                    color=cls._THEME["pop_high"],
+                    fontsize=9,
+                    fontweight=600,
+                    ha="left",
+                    zorder=6,
+                )
             zero_probability = valid_probability & (probability == 0)
             if np.any(zero_probability):
                 probability_ax.scatter(
@@ -1194,32 +1270,20 @@ class Visualizer:
         handles = []
         labels = []
         if has_probability_data:
-            handles.append(Patch(facecolor=cls._THEME["probability"], alpha=0.82))
-            labels.append("降水概率")
+            handles.append(Patch(facecolor=cls._THEME["pop_high"]))
+            labels.append("降雨概率")
         if has_amount:
             handles.append(Patch(facecolor=cls._THEME["amount"], alpha=0.78))
-            labels.append("降水量（mm）")
+            labels.append("雨量")
         if has_intensity:
             handles.append(
-                Line2D(
-                    [0],
-                    [0],
-                    color=cls._THEME["intensity"],
-                    linewidth=2,
-                    linestyle=(0, (5, 3)),
-                    marker="o",
-                    markersize=4,
-                )
+                Line2D([0], [0], color=cls._THEME["intensity"], linewidth=2, linestyle=(0, (5, 3)))
             )
-            labels.append("降水强度（mm/h）")
+            labels.append("雨势")
 
-        footer_notes = []
+        footer_notes = ["柱越亮，下雨的可能性越大"]
         if np.any(missing_probability) or np.any(missing_precipitation):
-            footer_notes.append("× 表示 API 未返回，缺失值未按 0 处理")
-        else:
-            footer_notes.append("概率与降水值分别使用独立尺度")
-        if np.any(unknown_unit):
-            footer_notes.append("单位缺失的降水值未绘制")
+            footer_notes.append("× 处无数据")
         cls._add_footer(fig, " · ".join(footer_notes), handles, labels)
         return cls._render_figure(fig)
 
@@ -1267,48 +1331,65 @@ class Visualizer:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
 
-        ax.fill_between(x, lows, highs, color=cls._THEME["temperature"], alpha=0.08, zorder=2)
-        for values, color in (
-            (highs, cls._THEME["temperature"]),
-            (lows, cls._THEME["feels_like"]),
-        ):
+        # Range bars — one rounded bar per day, low to high. The line pair
+        # with 30 value chips buried the answer; bars + extremes read at a glance.
+        for index in range(len(days)):
             ax.plot(
-                x,
-                values,
-                color=color,
-                linewidth=2.4,
-                marker="o",
-                markersize=5,
-                markerfacecolor=cls._THEME["surface"],
-                markeredgecolor=color,
-                markeredgewidth=1.4,
+                [x[index], x[index]],
+                [lows[index], highs[index]],
                 solid_capstyle="round",
-                zorder=5,
+                linewidth=9,
+                color=cls._THEME["temperature"],
+                alpha=0.88,
+                zorder=4,
             )
 
-        for index in range(len(days)):
+        # Label only the extremes (and today for orientation) — a number on
+        # every point is exactly the clutter the redesign removes.
+        hottest = int(np.argmax(highs))
+        coolest = int(np.argmin(lows))
+        for index, value, above, emphasized in {
+            (hottest, highs[hottest], True, True),
+            (coolest, lows[coolest], False, True),
+            (0, highs[0], True, hottest == 0),
+            (0, lows[0], False, coolest == 0),
+        }:
             ax.annotate(
-                cls._format_temperature(highs[index]),
-                (x[index], highs[index]),
-                xytext=(0, 9),
+                cls._format_temperature(value),
+                (x[index], value),
+                xytext=(0, 10 if above else -10),
                 textcoords="offset points",
                 ha="center",
-                va="bottom",
-                color=cls._THEME["text"],
-                fontsize=8.5,
+                va="bottom" if above else "top",
+                color=cls._THEME["text"] if emphasized else cls._THEME["muted"],
+                fontsize=9.5 if emphasized else 8.5,
                 fontweight=600,
                 zorder=8,
             )
-            ax.annotate(
-                cls._format_temperature(lows[index]),
-                (x[index], lows[index]),
-                xytext=(0, -9),
-                textcoords="offset points",
-                ha="center",
-                va="top",
-                color=cls._THEME["muted"],
-                fontsize=8.5,
-                zorder=8,
+
+        # Rain days get a blue dot under the bar — "which days rain" is the
+        # question a 15-day view exists to answer, and it was invisible before.
+        info_by_date = {
+            forecast.date.date(): forecast
+            for forecast in data.daily
+            if forecast.date is not None
+        }
+        y_bottom_line = float(np.floor(data_min - padding))
+        rainy_x = []
+        for index, day in enumerate(days):
+            forecast = info_by_date.get(day.date())
+            if forecast is None:
+                continue
+            texts = f"{forecast.text_day or ''}{forecast.text_night or ''}"
+            if any(marker in texts for marker in ("雨", "雪")) or (forecast.precip or 0) > 0:
+                rainy_x.append(index)
+        if rainy_x:
+            ax.scatter(
+                rainy_x,
+                [y_bottom_line + (float(np.ceil(data_max + padding)) - y_bottom_line) * 0.022] * len(rainy_x),
+                s=34,
+                color=cls._THEME["pop_high"],
+                zorder=6,
             )
 
         ax.set_xticks(x)
@@ -1319,8 +1400,13 @@ class Visualizer:
         )
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.4, marker="o", markersize=4),
-            Line2D([0], [0], color=cls._THEME["feels_like"], linewidth=2.4, marker="o", markersize=4),
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=6, solid_capstyle="round"),
         ]
-        cls._add_footer(fig, "逐日最高 / 最低温度趋势", handles, ["最高", "最低"])
+        labels = ["当天低温→高温"]
+        if rainy_x:
+            handles.append(
+                Line2D([0], [0], color=cls._THEME["pop_high"], marker="o", linestyle="none", markersize=6)
+            )
+            labels.append("有雨")
+        cls._add_footer(fig, "", handles, labels)
         return cls._render_figure(fig)
