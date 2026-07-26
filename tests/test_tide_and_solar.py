@@ -2,8 +2,9 @@
 
 Verified field names: tide returns tideTable[]{fxTime,height,type H/L} plus
 tideHourly[]{fxTime,height} and needs a tide-station id from POI lookup
-(type=TSTA). Solar radiation returns forecasts[]{forecastTime,ghi,dhi,ni} —
-note the direct component is "ni", not "dni".
+(type=TSTA, array key "poi"). Solar radiation returns
+forecasts[]{forecastTime,ghi,dhi,dni,solarAngle} — the published docs call the
+direct component "ni" but the live API returns "dni"; only ghi is consumed.
 """
 
 import os

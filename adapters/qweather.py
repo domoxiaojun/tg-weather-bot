@@ -644,8 +644,10 @@ class QWeatherAdapter(WeatherAdapter):
     def _map_solar_radiation(cls, solar_data: Optional[Dict[str, Any]]) -> Dict[tuple, float]:
         """GHI per hour, keyed like the hourly forecast for fill-only merging.
 
-        Response shape (verified): forecasts[] with forecastTime, ghi, dhi and
-        ni (note: "ni", not "dni"), all W/m².
+        Response shape (verified against the live API): forecasts[] with
+        forecastTime, ghi, dhi, dni and solarAngle, all W/m². The published
+        docs call the direct component "ni"; the API actually returns "dni".
+        Only ghi is used here.
         """
         if not isinstance(solar_data, dict) or cls._is_unavailable_marker(solar_data):
             return {}

@@ -16,6 +16,7 @@ from services.telegram_rich import (
     footer,
     heading,
     italic,
+    link,
     marked,
     paragraph,
     table,
@@ -67,10 +68,15 @@ def _source_label(data: WeatherData) -> str:
 def build_footer(data: WeatherData) -> dict:
     text = f"数据源: {_source_label(data)} · {data.update_time.strftime('%m-%d %H:%M')} 更新"
     attribution = format_attribution(data)
-    if attribution:
-        # Attribution is a licensing requirement, not an optional credit.
-        text = f"{text}\n{attribution}"
-    return footer(text)
+    if not attribution:
+        return footer(text)
+
+    # Attribution is a licensing requirement, not an optional credit. Rich
+    # messages disable entity detection, so a bare URL would not be tappable —
+    # wrap it in an explicit link.
+    if attribution.startswith("http") and " " not in attribution:
+        return footer([f"{text}\n", link("数据来源声明", attribution)])
+    return footer(f"{text}\n{attribution}")
 
 
 def build_header(data: WeatherData, subtitle: Optional[str] = None) -> List[dict]:

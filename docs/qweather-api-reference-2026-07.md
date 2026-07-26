@@ -281,7 +281,22 @@ v1 空气质量统一结构：
 ### 潮汐与辐射接入要点（对照官方文档核实）
 
 - 潮汐必须两步：`/geo/v2/poi/lookup?location=lon,lat&type=TSTA` 找站点（返回数组文档写作 `poi`，代码同时兼容 `location` 键），再 `/v7/ocean/tide?location={站点id}&date=yyyyMMdd`（最多未来 10 天）。响应含 `tideTable[]{fxTime,height,type H/L}` 与 `tideHourly[]{fxTime,height}`。
-- 太阳辐射路径 `/solarradiation/v1/forecast/{lat}/{lon}`，参数 `hours`(1-60)/`interval`(15/30/60)/`localTime`；响应数组名 `forecasts`，字段 `forecastTime`、`ghi`、`dhi`、**`ni`（直接辐射，注意不是 `dni`）**、`solarAngle{azimuth,elevation}`。本项目只取 `ghi`，按 fill-only 规则补 `radiation`，绝不覆盖彩云已提供的值。
+- 太阳辐射路径 `/solarradiation/v1/forecast/{lat}/{lon}`，参数 `hours`(1-60)/`interval`(15/30/60)/`localTime`；响应数组名 `forecasts`，字段 `forecastTime`、`ghi`、`dhi`、`dni`、`solarAngle{azimuth,elevation}`。本项目只取 `ghi`，按 fill-only 规则补 `radiation`，绝不覆盖彩云已提供的值。
+
+### 真机验证结论（2026-07-26，JWT 认证下实测）
+
+用真实凭据逐个打过一遍，与文档的差异记录在此：
+
+| 端点 | 结论 |
+| --- | --- |
+| `/v7/grid-weather/24h` | 字段与城市天气一致且**确实没有** `pop`/`vis`/`feelsLike`；现有 `_map_hourly` 直接复用无误 |
+| `/solarradiation/v1/forecast` | 数组名 `forecasts` 正确；直接辐射实际字段名是 **`dni`**，文档写的 `ni` 有误（本项目只用 `ghi`，未受影响） |
+| `/v7/tropical/storm-list` | 数组名 `storm` 正确，`isActive` 为字符串；实际 id 形如 `NP_2601`（文档示例写作 `NP2018`） |
+| `/geo/v2/poi/lookup?type=TSTA` | 数组名确认为 **`poi`**（代码同时兼容 `location` 的回退分支可保留但用不到） |
+| `/v7/historical/weather` | `weatherDaily` + `weatherHourly` 均存在，映射正确 |
+| `/v7/indices/3d` | 确实返回 3 天 × 每类一条（16 类共 48 条），验证了视图必须按天筛选 |
+| `/v7/ocean/tide` | 上海最近站为 `P2447 黄浦公园`（2.2km），返回 4 条高低潮 + 24 点曲线 |
+| 认证 | `Authorization: Bearer <Ed25519 JWT>` 在 `https://api.qweather.com` 上直接可用 |
 | 天文 | `/v7/astronomy/*` | 不接入：日月升落与月相逐日预报已提供，重复 |
 
 ### 热带气旋接入要点（对照官方文档核实）

@@ -18,6 +18,13 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
+def public_key_fingerprint(public_pem: bytes) -> str:
+    """SHA-256 the console displays: the PEM text minus the trailing newline."""
+    import hashlib
+
+    return hashlib.sha256(public_pem.decode().strip().encode()).hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out-dir", default="secrets", help="where to write the key pair")
@@ -53,6 +60,10 @@ def main() -> int:
     print()
     print(f"private key: {private_path} (mode 0600, keep it secret)")
     print(f"public key:  {public_path} — paste this into the QWeather console")
+    # The console shows SHA-256 of the PEM text without its trailing newline;
+    # compare it to confirm the right key landed there.
+    print(f"SHA-256:     {public_key_fingerprint(public_pem)}")
+    print("             (compare with the fingerprint shown in the console)")
     print()
     print("then set in .env:")
     print(f"  QWEATHER_JWT_PRIVATE_KEY_FILE={private_path}")
