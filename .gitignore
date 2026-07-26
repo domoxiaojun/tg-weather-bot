@@ -53,3 +53,6 @@ data/bot_data.pickle
 .claude/
 .idea/
 CLAUDE.md
+
+# macOS
+.DS_Store
