@@ -205,3 +205,17 @@
       逐小时"更多指标"折叠表新增辐射列，AI payload 自动带上；不新增独立界面
 - [x] P4 新增 16 项测试（共 216 项）：GHI 按小时聚合取最强、fill-only 不覆盖、TSTA 站点排序与兼容 poi/location 键、
       潮汐表脏数据跳过、潮位曲线渲染
+
+## 第十二轮 — 和风 Ed25519 JWT 认证迁移（2026-07-26）
+
+- [x] Q1 services/qweather_auth.py：Ed25519 签名 + token 缓存（到期前 60s 重签）+ TTL 钳制到官方上限 86400
+- [x] Q2 config：QWEATHER_AUTH_MODE(auto/jwt/api_key) + JWT 三项凭据（支持内联 PEM 的 \n 转义或文件路径）；
+      qweather_api_key 改为可选，并用 model_validator 保证"至少一种凭据存在"
+- [x] Q3 adapter：_auth_headers() 优先 Bearer，签名失败且有 API Key 时回退，无 Key 才抛出
+- [x] Q4 scripts/generate_qweather_key.py 生成密钥对；secrets/ 与 *.pem 加入 .gitignore（生成前就加）
+- [x] Q5 新增 31 项测试（共 247 项）：header/payload 结构、公钥验签、篡改验签失败、base64url 无 padding、
+      非 Ed25519 密钥拒绝、TTL 钳制、缓存与重签、三种模式选择、坏密钥在 auto 下降级、适配器请求头
+- [x] Q6 文档：README 认证章节、CLAUDE.md、API 文档更正（官方是"限制每日请求量"而非停用 API Key）
+
+### 待用户完成
+- [ ] 把公钥填入和风控制台，拿到 Credential ID(kid) 与 Project ID(sub) 后写入 .env，真机验证一次

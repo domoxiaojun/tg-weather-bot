@@ -56,3 +56,6 @@ CLAUDE.md
 
 # macOS
 .DS_Store
+# 私钥等本地凭据（切勿提交）
+secrets/
+*.pem

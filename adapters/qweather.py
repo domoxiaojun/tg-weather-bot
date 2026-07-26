@@ -43,9 +43,26 @@ class QWeatherAdapter(WeatherAdapter):
     _UNAVAILABLE_MARKER = "__qweather_data_unavailable__"
 
     def __init__(self):
+        from services.qweather_auth import build_signer
+
         self.api_key = settings.qweather_api_key
         self.base_url = settings.qweather_api_host.rstrip("/")
         self.client = httpx.AsyncClient(timeout=10.0, http2=True)
+        # JWT when credentials are configured, otherwise the long-lived API key.
+        self._jwt_signer = build_signer()
+        if self._jwt_signer is None:
+            logger.info("QWeather auth: API key")
+
+    def _auth_headers(self) -> Dict[str, str]:
+        if self._jwt_signer is not None:
+            try:
+                return {"Authorization": f"Bearer {self._jwt_signer.token()}"}
+            except Exception as error:
+                # Never lose weather data over a signing hiccup if a key exists.
+                logger.error(f"QWeather JWT signing failed: {error}")
+                if not self.api_key:
+                    raise
+        return {"X-QW-Api-Key": self.api_key or ""}
 
     async def aclose(self):
         await self.client.aclose()
@@ -82,7 +99,7 @@ class QWeatherAdapter(WeatherAdapter):
 
         request_params = dict(params or {})
         request_params.setdefault("lang", "zh")
-        headers = {"X-QW-Api-Key": self.api_key}
+        headers = self._auth_headers()
         url = f"{self.base_url}{endpoint}"
 
         try:

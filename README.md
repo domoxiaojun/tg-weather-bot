@@ -113,6 +113,24 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - Subscription locations are geocoded and normalized on subscribe; chats that block the bot are removed from push lists automatically.
 - Ambiguous city names (e.g. 朝阳) prompt an inline chooser instead of silently picking the first match.
 
+## 🔐 QWeather Authentication (API Key or Ed25519 JWT)
+
+QWeather accepts either a long-lived API key or a short-lived Ed25519-signed JWT. The API key is **not** removed, but its daily request volume gets limited from 2027-01-01, so JWT is the better long-term choice.
+
+```bash
+uv run python scripts/generate_qweather_key.py     # writes secrets/ (gitignored)
+```
+
+Upload the printed **public** key to the QWeather console, then set the Credential ID and Project ID it returns:
+
+```env
+QWEATHER_JWT_PRIVATE_KEY_FILE=secrets/qweather_ed25519_private.pem
+QWEATHER_JWT_KID=<Credential ID>
+QWEATHER_JWT_SUB=<Project ID>
+```
+
+`QWEATHER_AUTH_MODE=auto` (the default) signs JWTs as soon as those three are present and keeps using the API key otherwise, so migration needs no code change. Tokens are cached and re-signed 60s before expiry (`QWEATHER_JWT_TTL_SECONDS`, default 900, max 86400). Set `jwt` to make a misconfiguration fail loudly, or `api_key` to pin the old scheme.
+
 ## 🧭 Discovery & buttons
 
 - The bot registers **scoped command lists**: private chats get `/start` plus everything, groups get a shorter menu (the `/start` location keyboard is private-only). Personal bookkeeping commands carry the Bot API 10.2 `is_ephemeral` flag.

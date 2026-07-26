@@ -22,7 +22,61 @@ class Settings(BaseSettings):
     super_admin_id: Optional[int] = Field(None, description="Admin User ID for critical alerts")
     
     # Weather APIs
-    qweather_api_key: str = Field(..., description="HeFeng Weather API Key")
+    # Either an API key or a full JWT credential set must be present; the
+    # model validator below enforces that.
+    qweather_api_key: Optional[str] = Field(None, description="HeFeng Weather API Key")
+    qweather_auth_mode: str = Field(
+        "auto",
+        description="QWeather auth: 'auto' (JWT when configured, else API key), 'jwt', or 'api_key'",
+    )
+    qweather_jwt_private_key: Optional[str] = Field(
+        None, description="Ed25519 private key (PKCS8 PEM); \\n escapes are accepted"
+    )
+    qweather_jwt_private_key_file: Optional[str] = Field(
+        None, description="Path to the Ed25519 private key PEM file"
+    )
+    qweather_jwt_kid: Optional[str] = Field(None, description="QWeather credential ID (JWT 'kid')")
+    qweather_jwt_sub: Optional[str] = Field(None, description="QWeather project ID (JWT 'sub')")
+    qweather_jwt_ttl_seconds: int = Field(
+        900, description="JWT lifetime in seconds; QWeather allows at most 86400"
+    )
+
+    @field_validator("qweather_auth_mode")
+    @classmethod
+    def validate_qweather_auth_mode(cls, value: str) -> str:
+        value = value.strip().lower()
+        allowed = {"auto", "jwt", "api_key"}
+        if value not in allowed:
+            raise ValueError(f"qweather_auth_mode must be one of: {', '.join(sorted(allowed))}")
+        return value
+
+    @field_validator("qweather_jwt_ttl_seconds")
+    @classmethod
+    def validate_qweather_jwt_ttl(cls, value: int) -> int:
+        if not 60 <= value <= 86400:
+            raise ValueError("qweather_jwt_ttl_seconds must be between 60 and 86400")
+        return value
+
+    @model_validator(mode="after")
+    def require_some_qweather_credential(self):
+        has_jwt = bool(
+            (self.qweather_jwt_private_key or self.qweather_jwt_private_key_file)
+            and self.qweather_jwt_kid
+            and self.qweather_jwt_sub
+        )
+        if self.qweather_auth_mode == "jwt" and not has_jwt:
+            raise ValueError(
+                "qweather_auth_mode=jwt requires qweather_jwt_private_key (or _file), "
+                "qweather_jwt_kid and qweather_jwt_sub"
+            )
+        if self.qweather_auth_mode == "api_key" and not self.qweather_api_key:
+            raise ValueError("qweather_auth_mode=api_key requires qweather_api_key")
+        if not self.qweather_api_key and not has_jwt:
+            raise ValueError(
+                "QWeather needs credentials: set QWEATHER_API_KEY, or the JWT trio "
+                "QWEATHER_JWT_PRIVATE_KEY/_FILE + QWEATHER_JWT_KID + QWEATHER_JWT_SUB"
+            )
+        return self
     qweather_api_host: str = Field("https://api.qweather.com", description="QWeather API root host")
     qweather_daily_days: str = Field("15d", description="QWeather daily forecast range: 3d, 7d, 10d, 15d, 30d")
     qweather_hourly_hours: str = Field("72h", description="QWeather hourly forecast range: 24h, 72h, 168h")
@@ -250,13 +304,29 @@ class Settings(BaseSettings):
             return value or None
         return value
 
-    @field_validator("bot_token", "qweather_api_key", mode="before")
+    @field_validator("bot_token", mode="before")
     @classmethod
     def validate_required_non_empty_string(cls, value):
         if isinstance(value, str):
             value = value.strip()
         if not value:
             raise ValueError("value must not be empty")
+        return value
+
+    @field_validator(
+        "qweather_api_key",
+        "qweather_jwt_private_key",
+        "qweather_jwt_private_key_file",
+        "qweather_jwt_kid",
+        "qweather_jwt_sub",
+        mode="before",
+    )
+    @classmethod
+    def normalize_optional_credential(cls, value):
+        """Blank credentials mean "not configured", not "empty string"."""
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
         return value
 
     @field_validator("llm_weather_report_prompt", mode="before")

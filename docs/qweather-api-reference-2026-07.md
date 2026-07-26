@@ -320,7 +320,9 @@ QWEATHER_ENABLE_MINUTELY=true
 
 - WebAPI v7 旧空气质量、旧天气预警和旧太阳辐射已经进入弃用区，官方标记自 2026-06-01 起 EOL。
 - 本项目空气质量和预警已迁移到 v1 新接口。
-- 当前仍使用 API Key，应在 2027-01-01 前实现 Ed25519 JWT。
+- **认证已支持 Ed25519 JWT**（`services/qweather_auth.py`）：header `{"alg":"EdDSA","kid":<Credential ID>}`，payload `{"sub":<Project ID>,"iat","exp"}`，请求头 `Authorization: Bearer <token>`，官方有效期上限 86400 秒（本项目默认 900 秒并在到期前 60 秒重签）。
+  用 `scripts/generate_qweather_key.py` 生成密钥对，公钥上传控制台。`QWEATHER_AUTH_MODE=auto` 在三项凭据齐备时才启用 JWT，否则继续用 API Key。
+  注意官方原文是"自 2027-01-01 起**限制 API Key 的每日请求量**"，并非停用该方式。
 - attribution 是许可要求，不是可选展示字段，应进入后续模型改造。
 
 ## 12. 官方资料
