@@ -115,6 +115,15 @@ class CallbackHandlers:
             await self._refresh_subscription_list(query, context, data_parts[1])
             return
 
+        if action == "submy" and len(data_parts) >= 2 and data_parts[1] in {"daily", "rain"}:
+            # ⚙️ button on push messages: open the subscription card without
+            # touching the push itself (there is nothing to edit in place).
+            await self._safe_answer(query)
+            from core.handlers.subscriptions import send_subscription_card
+
+            await send_subscription_card(update, context, data_parts[1])
+            return
+
         await query.answer()
 
     async def _handle_weather_choice(
@@ -153,11 +162,19 @@ class CallbackHandlers:
             start_day=start_day,
             limit=limit or None,
         )
-        # Retire the chooser buttons so the list cannot be tapped repeatedly.
-        try:
-            await query.edit_message_reply_markup(reply_markup=None)
-        except Exception:
-            pass
+        # Retire chooser buttons so the list cannot be tapped repeatedly —
+        # but only on pure choosers. Push messages and chart cards carry a
+        # tq| button next to others that must stay usable.
+        markup = getattr(query.message, "reply_markup", None) if query.message else None
+        rows = getattr(markup, "inline_keyboard", None) or []
+        only_tq = bool(rows) and all(
+            (button.callback_data or "").startswith("tq|") for row in rows for button in row
+        )
+        if only_tq:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
 
     async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
         query = update.callback_query

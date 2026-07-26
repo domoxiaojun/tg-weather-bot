@@ -8,7 +8,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 from loguru import logger
-from telegram import InputFile
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 from telegram.constants import ParseMode
 from telegram.error import Forbidden
 from telegram.ext import Application, ContextTypes
@@ -24,7 +24,7 @@ from services.llm import LLMService
 from domain.models import normalize_warning_level
 from services.telegram_rich import FEATURE_SEND, photo_block, rich
 from services.typhoon import assess_storms, format_threat_summary
-from utils.formatter import format_weather_response
+from utils.formatter import callback_location_token, format_weather_response
 from utils.rich_formatter import (
     build_alert_push_blocks,
     build_event_push_blocks,
@@ -239,6 +239,20 @@ WEEKDAYS_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周�
 _daily_brief_last_check: dict[int, datetime] = {}
 
 
+def push_keyboard(location: str, coords, kind: str) -> InlineKeyboardMarkup:
+    """Buttons on push messages — a push must be actionable, not a dead end.
+
+    kind: 'rain' (rain alerts, warnings, typhoon — they share the rain
+    subscription list) or 'daily'. ``submy|kind`` opens the subscription card.
+    """
+    token = callback_location_token(location, coords)
+    manage_label = "⚙️ 管理提醒" if kind == "rain" else "⚙️ 管理简报"
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📊 查看完整天气", callback_data=f"tq|{token}|default|0|0"),
+        InlineKeyboardButton(manage_label, callback_data=f"submy|{kind}"),
+    ]])
+
+
 def zone_for(tz_name):
     """Subscription timezone with a graceful fall back to the global default."""
     for candidate in (tz_name, settings.timezone):
@@ -359,15 +373,21 @@ async def dispatch_daily_briefs(
                     f"{brief_date.strftime('%m月%d日')} {weekday}\n\n"
                 )
                 thread_id = chat_data.get("push_thread_id")
+                keyboard = push_keyboard(location, weather.coords, "daily")
                 try:
                     if await rich.send_rich(
-                        context.bot, chat_id, html=header + report_text, message_thread_id=thread_id
+                        context.bot,
+                        chat_id,
+                        html=header + report_text,
+                        message_thread_id=thread_id,
+                        reply_markup=keyboard,
                     ) is None:
                         await context.bot.send_message(
                             chat_id=chat_id,
                             text=header + report_text,
                             parse_mode=ParseMode.HTML,
                             message_thread_id=thread_id,
+                            reply_markup=keyboard,
                         )
                     chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = (
                         brief_date.strftime("%Y-%m-%d")
@@ -476,6 +496,8 @@ async def check_rain_alerts(
                 if not chart_file_id:
                     chart_bytes = await render_chart_bytes_async(weather, chart_type)
 
+            keyboard = push_keyboard(location, weather.coords, "rain")
+
             async def deliver(chat_id, thread_id=None):
                 nonlocal chart_file_id, chart_bytes
                 # A rich message carries the chart AND the full text together,
@@ -485,7 +507,11 @@ async def check_rain_alerts(
                     caption = "未来 2 小时分钟级降水" if chart_type == "minutely" else "逐小时降水"
                     blocks.insert(2, photo_block(chart_file_id, caption))
                     if await rich.send_rich(
-                        context.bot, chat_id, blocks=blocks, message_thread_id=thread_id
+                        context.bot,
+                        chat_id,
+                        blocks=blocks,
+                        message_thread_id=thread_id,
+                        reply_markup=keyboard,
                     ) is not None:
                         return
 
@@ -498,6 +524,8 @@ async def check_rain_alerts(
                         caption=alert_text if caption_fits else None,
                         parse_mode=ParseMode.MARKDOWN_V2 if caption_fits else None,
                         message_thread_id=thread_id,
+                        # Overflow text follows below; buttons ride on the last message.
+                        reply_markup=keyboard if caption_fits else None,
                     )
                     if chart_file_id is None:
                         # Reuse Telegram's upload for the remaining subscribers.
@@ -512,6 +540,7 @@ async def check_rain_alerts(
                             text=alert_text,
                             parse_mode=ParseMode.MARKDOWN_V2,
                             message_thread_id=thread_id,
+                            reply_markup=keyboard,
                         )
                 else:
                     await context.bot.send_message(
@@ -519,6 +548,7 @@ async def check_rain_alerts(
                         text=alert_text,
                         parse_mode=ParseMode.MARKDOWN_V2,
                         message_thread_id=thread_id,
+                        reply_markup=keyboard,
                     )
 
             for chat_id, chat_data, subscribed_location, zone, level in entry["subscribers"]:
@@ -731,6 +761,7 @@ async def check_weather_alerts(
                 return
 
             active_keys = {key for key, _level, _blocks, _html in pending}
+            alert_keyboard = push_keyboard(location, weather.coords, "rain")
             for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
                 seen_map = chat_data.setdefault("alert_seen", {})
                 seen = set(seen_map.get(subscribed_location, []))
@@ -748,7 +779,11 @@ async def check_weather_alerts(
                         continue
                     try:
                         sent = await rich.send_rich(
-                            context.bot, chat_id, blocks=blocks, message_thread_id=thread_id
+                            context.bot,
+                            chat_id,
+                            blocks=blocks,
+                            message_thread_id=thread_id,
+                            reply_markup=alert_keyboard,
                         )
                         if sent is None:
                             await context.bot.send_message(
@@ -756,6 +791,7 @@ async def check_weather_alerts(
                                 text=html or _alert_fallback_text(weather, blocks),
                                 parse_mode=ParseMode.HTML,
                                 message_thread_id=thread_id,
+                                reply_markup=alert_keyboard,
                             )
                         delivered.add(key)
                         logger.info(f"Sent weather alert to {chat_id} for {subscribed_location}: {key}")

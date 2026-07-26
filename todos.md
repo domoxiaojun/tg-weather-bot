@@ -278,3 +278,17 @@ mm/h 只作为实现细节；档位存 chat_data["rain_level"][location]，不�
 - [x] T6 全部命令确认（订阅/改档/改时/退订/重复订阅）都带管理按钮；富文本编辑仅私聊启用，
       群内 ephemeral 编辑失败不会打击 FEATURE_EDIT 全局能力
 - [x] T7 新增 18 项卡片交互测试（tests/test_subscription_cards.py），全量 307 项通过
+
+## 第十六轮 — 推送消息可操作化 + 交互面复查（2026-07-26，用户问"都优化了吗"触发的审计）
+
+审计方法：全量测试 + 回调 producer/dispatcher 交叉核对（12 个前缀全对上）+ 逐条走查交互面。
+发现的缺口：推送消息本身没有任何按钮，是最后一处"死"输出。
+
+- [x] U1 scheduler.push_keyboard()：所有推送尾部挂 [📊 查看完整天气 (tq|token)] [⚙️ 管理提醒/简报 (submy|kind)]；
+      覆盖 降雨提醒（rich/图+文/纯文本三条路径，按钮挂在最后一条可见消息上）、早安简报、
+      官方预警/衍生事件/台风推送
+- [x] U2 callbacks: submy|{kind} 回调从推送直接打开订阅卡片（不动推送本身）
+- [x] U3 修复：点「查看完整天气/文字天气」后 edit_message_reply_markup(None) 会把推送和图表卡的按钮剥掉——
+      现在仅当整张键盘都是 tq| 按钮（纯歧义选择列表）才收回按钮
+- [x] U4 /start 订阅一行改为提示卡片交互
+- [x] U5 新增 7 项推送按钮测试（tests/test_push_buttons.py），全量 314 项通过
