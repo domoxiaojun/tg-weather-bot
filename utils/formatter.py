@@ -77,6 +77,21 @@ def format_precip_value(value: Optional[Number], kind: Optional[str], decimals: 
     return f"{format_weather_number(value, decimals=decimals)}{unit}"
 
 
+def format_attribution(data, limit: int = 2) -> str:
+    """Provider attribution line.
+
+    QWeather's terms make attribution a licensing requirement, not an optional
+    credit, so every weather surface must carry it (see
+    docs/qweather-api-reference-2026-07.md).
+    """
+    entries = [entry.strip() for entry in (getattr(data, "attributions", None) or []) if entry.strip()]
+    if not entries:
+        return ""
+    shown = entries[:limit]
+    suffix = " 等" if len(entries) > limit else ""
+    return f"{' · '.join(shown)}{suffix}"
+
+
 def weather_icon(icon: str) -> str:
     """Support both QWeather icon codes and Caiyun emoji fallbacks."""
     if not icon:
@@ -548,7 +563,11 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
         "caiyun": "彩云天气",
         "fusion": "和风天气 & 彩云天气",
     }.get(data.source, data.source.title())
-    return f"{header}\n\n{body}\n\n_数据源: {escape_v2(source_label)}_"
+    footer_text = f"数据源: {source_label}"
+    attribution = format_attribution(data)
+    if attribution:
+        footer_text = f"{footer_text} · {attribution}"
+    return f"{header}\n\n{body}\n\n_{escape_v2(footer_text)}_"
 
 # Telegram limits callback_data to 64 bytes; the longest pattern is
 # "refresh|{token}|indices|0|24", so the location token itself must stay small.

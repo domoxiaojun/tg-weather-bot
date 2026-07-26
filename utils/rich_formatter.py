@@ -26,6 +26,7 @@ from utils.formatter import (
     INDICES_EMOJI,
     _display_summary_lines,
     _weekday_cn,
+    format_attribution,
     format_precip_value,
     format_weather_number,
     normalize_warning_level,
@@ -63,9 +64,12 @@ def _source_label(data: WeatherData) -> str:
 
 
 def build_footer(data: WeatherData) -> dict:
-    return footer(
-        f"数据源: {_source_label(data)} · {data.update_time.strftime('%m-%d %H:%M')} 更新"
-    )
+    text = f"数据源: {_source_label(data)} · {data.update_time.strftime('%m-%d %H:%M')} 更新"
+    attribution = format_attribution(data)
+    if attribution:
+        # Attribution is a licensing requirement, not an optional credit.
+        text = f"{text}\n{attribution}"
+    return footer(text)
 
 
 def build_header(data: WeatherData, subtitle: Optional[str] = None) -> List[dict]:
@@ -522,8 +526,14 @@ def build_alert_push_blocks(data: WeatherData, alert) -> List[dict]:
         heading(f"⚠️ {title}", size=2),
         paragraph([bold(data.location_name), f" · {alert.source or '官方预警'}"]),
     ]
+    timing = []
     if alert.pub_time:
-        blocks.append(paragraph(italic(f"发布时间 {alert.pub_time.strftime('%m-%d %H:%M')}")))
+        timing.append(f"发布 {alert.pub_time.strftime('%m-%d %H:%M')}")
+    if alert.expire_time:
+        # "How long does this last" is the second question after "what is it".
+        timing.append(f"有效期至 {alert.expire_time.strftime('%m-%d %H:%M')}")
+    if timing:
+        blocks.append(paragraph(italic(" · ".join(timing))))
 
     text = (alert.text or "").strip()
     if text:

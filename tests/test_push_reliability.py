@@ -332,6 +332,62 @@ class ThreadTargetTests(unittest.IsolatedAsyncioTestCase):
             settings.rain_alert_quiet_hours = settings_quiet
 
 
+class AttributionComplianceTests(unittest.TestCase):
+    """QWeather requires attribution to be displayed, not merely stored."""
+
+    def test_attribution_appears_in_text_and_rich_footers(self):
+        from utils.formatter import format_attribution, format_weather_response
+        from utils.rich_formatter import build_footer
+
+        weather = make_weather()
+        weather.attributions = ["QWeather https://qweather.com"]
+
+        self.assertIn("QWeather", format_attribution(weather))
+        self.assertIn("QWeather", format_weather_response(weather))
+        self.assertIn("QWeather", str(build_footer(weather)["text"]))
+
+    def test_multiple_attributions_are_truncated_with_a_marker(self):
+        from utils.formatter import format_attribution
+
+        weather = make_weather()
+        weather.attributions = ["A", "B", "C"]
+        rendered = format_attribution(weather, limit=2)
+        self.assertIn("A", rendered)
+        self.assertIn("B", rendered)
+        self.assertTrue(rendered.endswith("等"))
+
+    def test_no_attribution_adds_nothing(self):
+        from utils.formatter import format_attribution
+
+        weather = make_weather()
+        weather.attributions = []
+        self.assertEqual(format_attribution(weather), "")
+
+
+class AlertValidityTests(unittest.TestCase):
+    def test_warning_push_shows_publish_and_expiry(self):
+        from utils.rich_formatter import build_alert_push_blocks
+
+        warning = alert()
+        warning.expire_time = datetime(2026, 7, 27, 6, 0, tzinfo=TZ)
+        rendered = str(build_alert_push_blocks(make_weather(alerts=[warning]), warning))
+        self.assertIn("发布 07-26 15:00", rendered)
+        self.assertIn("有效期至 07-27 06:00", rendered)
+
+
+class LifeIndexCoverageTests(unittest.TestCase):
+    def test_all_sixteen_chinese_indices_are_requested_and_renderable(self):
+        from utils.formatter import CATEGORIES
+
+        requested = {part for part in settings.qweather_indices_types.split(",")}
+        self.assertEqual(requested, {str(i) for i in range(1, 17)})
+
+        # Every requested type must have a display group, or it would be fetched
+        # and then silently dropped.
+        grouped = {type_id for ids in CATEGORIES.values() for type_id in ids}
+        self.assertTrue(requested <= grouped, requested - grouped)
+
+
 class PersistenceBackupTests(unittest.TestCase):
     def test_rotation_keeps_generations_in_order(self):
         with TemporaryDirectory() as tmp:

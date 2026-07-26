@@ -26,7 +26,12 @@ class Settings(BaseSettings):
     qweather_api_host: str = Field("https://api.qweather.com", description="QWeather API root host")
     qweather_daily_days: str = Field("15d", description="QWeather daily forecast range: 3d, 7d, 10d, 15d, 30d")
     qweather_hourly_hours: str = Field("72h", description="QWeather hourly forecast range: 24h, 72h, 168h")
-    qweather_indices_types: str = Field("1,2,3,5,9", description="QWeather life index type ids")
+    # All 16 Chinese life indices: the renderers already group every type and
+    # QWeather is free, so requesting a subset only hid data from users.
+    qweather_indices_types: str = Field(
+        "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16",
+        description="QWeather life index type ids (China supports 1-16)",
+    )
     qweather_enable_minutely: bool = Field(True, description="Enable QWeather minutely precipitation")
     caiyun_api_token: Optional[str] = Field(None, description="Caiyun Weather API Token")
     caiyun_cache_ttl_seconds: int = Field(3600, description="Caiyun successful response cache TTL")

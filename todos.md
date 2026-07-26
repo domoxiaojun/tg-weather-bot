@@ -146,3 +146,19 @@
 - [x] L9 论坛话题订阅（记住 message_thread_id 并用于推送）
 - [x] L10 GitHub Actions CI：测试/编译/ruff + 容器内 CJK 字体渲染断言；compose healthcheck
 - [x] L11 测试与文档（新增 18 项，共 149 项），全量验证并提交
+
+## 第九轮 — 自查发现的合规与数据缺口（2026-07-26，用户要求：不用子代理，自己核）
+
+自己逐条核对 docs/ 与官方 10.2 规格后的发现与修复：
+
+- [x] M1 合规：attributions 一直只收集不展示，而和风文档明确"attribution 是许可要求，不是可选展示字段"——文本与富文本 footer 现在都展示（含测试防回归）
+- [x] M2 生活指数只请求 5/16 类，而 formatter 的 CATEGORIES 早已覆盖全部 16 类（11 类有展示逻辑但永远无数据）→ 默认改为 1-16（和风免费）
+- [x] M3 预警推送补充"有效期至"（alert.expire_time 此前完全未展示）
+- [x] M4 修正 .env.example 四处过时注释（每 5 分钟 rain check、免打扰按全局时区、提示词要求输出时间戳行）
+- [x] M5 新增 5 项测试（共 154 项）
+
+### 已核实但未做（见分析报告）
+- 和风未接入端点：历史天气、格点天气、台风、天文（日月升落/太阳高度角）、潮汐、POI、监测站、indices/3d
+- 认证仍用 API Key；官方要求 2027-01-01 前迁 Ed25519 JWT
+- Telegram 未用：setMyDescription/setMyShortDescription（发现性）、BotCommandScope 分场景命令、按钮 style 配色、switch_inline_query 分享按钮
+- 数据未展示：露点、逐小时/逐日的气压云量能见度、月升月落、日均温、白天/夜间降水量
