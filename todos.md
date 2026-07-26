@@ -49,3 +49,15 @@
 ## 决策跳过（不修）
 
 - P1-8 QWeather 失败冷却、P1-9 刷新按钮限流 —— 用户确认和风基本免费，无成本压力
+
+## 第二轮 — AI 日报优化（2026-07-26，用户决策）
+
+决策：effort 保持 medium；提示词不限字数、追求最佳总结；payload 字段保持全量；日报缓存 TTL 4h（预警/降雨信号变化自动失效）；超时 60s；流式输出。
+
+- [x] E1 config: 超时默认 60s；max_output_tokens 默认不限制；新增 LLM_STREAMING 与 LLM_REPORT_CACHE_TTL_SECONDS
+- [x] E2 llm: 提示词放开字数限制并允许"未来几天"块
+- [x] E3 llm: OpenAI Responses/Chat Completions 流式输出（Gemini 回退整段）
+- [x] E4 llm: 日报缓存（coords+模型+预警/降雨指纹+提示词哈希，TTL 可配）
+- [x] E5 handlers: /report 与 inline 日报渐进编辑消息（节流），替换 keep_typing
+- [x] E6 tests: 流式聚合、缓存命中、OpenAI 流事件解析；更新 900 token 断言
+- [x] E7 .env.example / README 同步；全量验证并提交

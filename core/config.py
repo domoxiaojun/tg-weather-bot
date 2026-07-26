@@ -61,13 +61,18 @@ class Settings(BaseSettings):
     openai_reasoning_effort: str = Field("medium", description="OpenAI reasoning effort")
     openai_verbosity: str = Field("medium", description="OpenAI response verbosity")
     openai_temperature: Optional[float] = Field(None, description="Optional OpenAI temperature")
-    openai_timeout_seconds: float = Field(40.0, description="OpenAI HTTP request timeout in seconds")
-    openai_max_output_tokens: Optional[int] = Field(900, description="Optional OpenAI max output tokens for weather reports")
+    openai_timeout_seconds: float = Field(60.0, description="OpenAI HTTP request timeout in seconds")
+    openai_max_output_tokens: Optional[int] = Field(None, description="Optional OpenAI max output tokens for weather reports; empty = provider default")
     gemini_api_key: Optional[str] = Field(None, description="Google Gemini API Key")
     gemini_api_base: Optional[str] = Field(None, description="Google Gemini API Base URL")
     gemini_model: Optional[str] = Field(None, description="Google Gemini model name")
     gemini_timeout_seconds: float = Field(60.0, description="Gemini HTTP request timeout in seconds")
-    llm_report_timeout_seconds: float = Field(35.0, description="AI weather report generation timeout in seconds")
+    llm_report_timeout_seconds: float = Field(60.0, description="AI weather report generation timeout in seconds")
+    llm_streaming: bool = Field(True, description="Stream AI reports and progressively edit the Telegram message")
+    llm_report_cache_ttl_seconds: int = Field(
+        14400,
+        description="AI weather report cache TTL in seconds; 0 disables the cache",
+    )
     llm_weather_report_prompt: Optional[str] = Field(None, description="Custom system prompt for AI weather reports")
     llm_weather_report_prompt_file: Optional[str] = Field(None, description="Path to a custom AI weather report prompt file")
 
@@ -229,6 +234,13 @@ class Settings(BaseSettings):
     def validate_positive_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("timeout must be greater than 0")
+        return value
+
+    @field_validator("llm_report_cache_ttl_seconds")
+    @classmethod
+    def validate_report_cache_ttl(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("llm_report_cache_ttl_seconds must be >= 0 (0 disables the cache)")
         return value
 
     @field_validator("timezone")

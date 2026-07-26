@@ -53,7 +53,9 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - For GPT-5.6, tune reasoning with `OPENAI_REASONING_EFFORT=none|low|medium|high|xhigh|max` and output length tendency with `OPENAI_VERBOSITY=low|medium|high`; the migration baseline remains `medium`.
 - OpenAI defaults to `OPENAI_API_MODE=responses`; set `OPENAI_API_MODE=chat_completions` only for compatible proxies or legacy flows.
 - AI weather report style can be overridden with `LLM_WEATHER_REPORT_PROMPT` or `LLM_WEATHER_REPORT_PROMPT_FILE`; the built-in prompt already asks the LLM to use Telegram HTML, emoji headers, and blank-line sectioning.
-- If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and reduce `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` controls when the bot gives up. Gemini HTTP timeout is configured with `GEMINI_TIMEOUT_SECONDS`.
+- AI reports stream by default: the bot progressively edits the Telegram message while GPT generates (`LLM_STREAMING=true`). Gemini falls back to single-shot output.
+- Reports are cached per location for `LLM_REPORT_CACHE_TTL_SECONDS` (default 4h, 0 disables); new weather alerts or rain onset invalidate the cache automatically.
+- If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and set `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` (default 60s) controls when the bot gives up. Gemini HTTP timeout is configured with `GEMINI_TIMEOUT_SECONDS`.
 
 ## Telegram Bot API Compatibility
 

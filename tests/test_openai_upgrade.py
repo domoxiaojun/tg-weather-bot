@@ -64,7 +64,8 @@ class OpenAIProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(request["model"], "gpt-5.6-sol")
         self.assertEqual(request["reasoning"], {"effort": "medium"})
         self.assertEqual(request["text"], {"verbosity": "medium"})
-        self.assertEqual(request["max_output_tokens"], 900)
+        # 用户决策：默认不限制输出长度，交给提示词与 3800 字符安全截断兜底。
+        self.assertNotIn("max_output_tokens", request)
         self.assertNotIn("temperature", request)
 
 

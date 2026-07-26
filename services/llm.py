@@ -1,5 +1,6 @@
-from typing import Optional, Any
+from typing import Awaitable, Callable, Optional, Any
 from abc import ABC, abstractmethod
+import hashlib
 import json
 import asyncio
 import re
@@ -35,18 +36,20 @@ DEFAULT_WEATHER_REPORT_PROMPT = (
     "推荐版式：\n"
     "当前时间：MM月DD日 HH:MM\n\n"
     "🌤️ <b>现在</b>\n"
-    "用 1-2 句概括当前天气、体感、湿度、风、空气质量，只保留对用户有用的数字。\n\n"
+    "概括当前天气、体感、湿度、风、能见度和空气质量；把对用户有价值的数字讲全，没有信息量的省略。\n\n"
     "⏱️ <b>接下来</b>\n"
-    "用 1-2 句说明未来 2-6 小时趋势、今晚/明天变化；有雨说清时间和强度，没雨不要强行提醒带伞。\n\n"
+    "结合分钟级降水与逐小时预报，说明未来 2-6 小时以及今晚/明天的变化；有雨说清开始时间和强度，没雨不要强行提醒带伞。\n\n"
+    "📅 <b>未来几天</b>\n"
+    "如果 daily_forecast 显示明显的升降温、雨雪或空气质量变化，用 1-3 句点出来；天气平稳时可省略此块。\n\n"
     "👕 <b>建议</b>\n"
-    "用 2-3 个短建议覆盖穿衣、出行/运动、防晒/健康；必须基于 life_indices、risk_signals、空气质量和预警。\n\n"
+    "3-5 个短建议，覆盖穿衣、出行/运动、防晒/健康；必须基于 life_indices、risk_signals、空气质量和预警。\n\n"
     "🌈 最后一行给一句简短收尾，不要鸡汤过度。\n\n"
     "事实规则：\n"
     "1. 优先依据 risk_signals、预警、分钟级降水、逐小时预报、空气质量和生活指数；不要编造 JSON 没有的数据。\n"
     "2. 如果 risk_signals.avoid_unfounded_rain_advice 为 true，不要提醒带伞、洗车会被雨打湿或今晚下雨，除非日预报明确有雨。\n"
     "3. 如果有预警，必须在当前时间之后第一块用 ⚠️ <b>预警</b> 单独突出。\n"
     "4. 不要自行估算、推导或补写 API 没有返回的体感温度或其他字段。\n"
-    "5. 控制在 260-420 个中文字符；可幽默，但每个玩笑都要服务于天气判断。"
+    "5. 篇幅不设固定字数：以信息价值为准，把值得说的说清楚、说全，但不要注水凑字，总长度必须低于 3500 字符。可幽默，但每个玩笑都要服务于天气判断。"
 )
 
 class LLMProvider(ABC):
@@ -54,6 +57,10 @@ class LLMProvider(ABC):
     async def generate_report(self, system_prompt: str, user_prompt: str) -> str:
         """Generate a complete response from the LLM"""
         pass
+
+    async def generate_report_stream(self, system_prompt: str, user_prompt: str):
+        """Yield report text incrementally; providers without streaming yield once."""
+        yield await self.generate_report(system_prompt, user_prompt)
 
     async def aclose(self) -> None:
         """Release provider resources."""
@@ -70,8 +77,8 @@ class OpenAIProvider(LLMProvider):
         reasoning_effort: str = "medium",
         verbosity: str = "medium",
         temperature: Optional[float] = None,
-        timeout_seconds: float = 40.0,
-        max_output_tokens: Optional[int] = 900,
+        timeout_seconds: float = 60.0,
+        max_output_tokens: Optional[int] = None,
     ):
         self.client = openai.AsyncClient(
             api_key=api_key,
@@ -90,48 +97,108 @@ class OpenAIProvider(LLMProvider):
             return await self._generate_report_chat_completions(system_prompt, user_prompt)
         return await self._generate_report_responses(system_prompt, user_prompt)
 
+    async def generate_report_stream(self, system_prompt: str, user_prompt: str):
+        if self.api_mode == "chat_completions":
+            async for delta in self._stream_chat_completions(system_prompt, user_prompt):
+                yield delta
+            return
+        async for delta in self._stream_responses(system_prompt, user_prompt):
+            yield delta
+
     async def aclose(self) -> None:
         await self.client.close()
 
+    def _responses_request_kwargs(self, system_prompt: str, user_prompt: str) -> dict:
+        request_kwargs = {
+            "model": self.model,
+            "instructions": system_prompt,
+            "input": user_prompt,
+            "text": {"verbosity": self.verbosity},
+        }
+        if self.reasoning_effort != "none":
+            request_kwargs["reasoning"] = {"effort": self.reasoning_effort}
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
+        if self.max_output_tokens is not None:
+            request_kwargs["max_output_tokens"] = self.max_output_tokens
+        return request_kwargs
+
     async def _generate_report_responses(self, system_prompt: str, user_prompt: str) -> str:
         try:
-            request_kwargs = {
-                "model": self.model,
-                "instructions": system_prompt,
-                "input": user_prompt,
-                "text": {"verbosity": self.verbosity},
-            }
-            if self.reasoning_effort != "none":
-                request_kwargs["reasoning"] = {"effort": self.reasoning_effort}
-            if self.temperature is not None:
-                request_kwargs["temperature"] = self.temperature
-            if self.max_output_tokens is not None:
-                request_kwargs["max_output_tokens"] = self.max_output_tokens
-
-            response = await self.client.responses.create(**request_kwargs)
+            response = await self.client.responses.create(
+                **self._responses_request_kwargs(system_prompt, user_prompt)
+            )
             return self._extract_responses_text(response)
         except Exception as e:
             logger.error(f"OpenAI Responses API Error: {e}")
             raise
 
+    async def _stream_responses(self, system_prompt: str, user_prompt: str):
+        try:
+            stream = await self.client.responses.create(
+                **self._responses_request_kwargs(system_prompt, user_prompt),
+                stream=True,
+            )
+            final_response = None
+            yielded = False
+            async for event in stream:
+                event_type = getattr(event, "type", "")
+                if event_type == "response.output_text.delta":
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        yielded = True
+                        yield delta
+                elif event_type == "response.completed":
+                    final_response = getattr(event, "response", None)
+                elif event_type in {"response.failed", "error"}:
+                    raise RuntimeError(f"OpenAI stream reported failure: {event_type}")
+            # Defensive: some proxies only send the terminal response object.
+            if not yielded and final_response is not None:
+                text = self._extract_responses_text(final_response)
+                if text:
+                    yield text
+        except Exception as e:
+            logger.error(f"OpenAI Responses stream error: {e}")
+            raise
+
+    async def _stream_chat_completions(self, system_prompt: str, user_prompt: str):
+        try:
+            request_kwargs = self._chat_request_kwargs(system_prompt, user_prompt)
+            stream = await self.client.chat.completions.create(**request_kwargs, stream=True)
+            async for chunk in stream:
+                choices = getattr(chunk, "choices", None) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                content = getattr(delta, "content", None) if delta is not None else None
+                if content:
+                    yield content
+        except Exception as e:
+            logger.error(f"OpenAI Chat Completions stream error: {e}")
+            raise
+
+    def _chat_request_kwargs(self, system_prompt: str, user_prompt: str) -> dict:
+        request_kwargs = {
+            "model": self.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "verbosity": self.verbosity,
+        }
+        if self.reasoning_effort != "none":
+            request_kwargs["reasoning_effort"] = self.reasoning_effort
+        if self.temperature is not None:
+            request_kwargs["temperature"] = self.temperature
+        if self.max_output_tokens is not None:
+            request_kwargs["max_completion_tokens"] = self.max_output_tokens
+        return request_kwargs
+
     async def _generate_report_chat_completions(self, system_prompt: str, user_prompt: str) -> str:
         try:
-            request_kwargs = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "verbosity": self.verbosity,
-            }
-            if self.reasoning_effort != "none":
-                request_kwargs["reasoning_effort"] = self.reasoning_effort
-            if self.temperature is not None:
-                request_kwargs["temperature"] = self.temperature
-            if self.max_output_tokens is not None:
-                request_kwargs["max_completion_tokens"] = self.max_output_tokens
-
-            response = await self.client.chat.completions.create(**request_kwargs)
+            response = await self.client.chat.completions.create(
+                **self._chat_request_kwargs(system_prompt, user_prompt)
+            )
             return response.choices[0].message.content or ""
         except TypeError as e:
             logger.error(
@@ -551,29 +618,80 @@ class LLMService:
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
-    async def generate_weather_report(self, data: WeatherData) -> str:
-        """Generate a complete AI weather report"""
+    def _report_cache_key(self, data: WeatherData) -> str:
+        """Cache reports per location; alerts and rain-onset changes bust the key."""
+        alert_fp = ",".join(
+            sorted(str(alert.alert_id or alert.title) for alert in data.alerts)
+        )
+        signals = self._build_risk_signals(data)
+        prompt_fp = hashlib.sha256(self._build_system_prompt().encode("utf-8")).hexdigest()[:8]
+        raw = "|".join(
+            (
+                data.coords,
+                str(self.provider.model if self.provider else ""),
+                alert_fp,
+                f"rain={int(bool(signals['rain_now_or_soon']))}",
+                prompt_fp,
+            )
+        )
+        digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+        return f"llmreport:v1:{digest}"
+
+    def preview_stream_text(self, partial: str) -> str:
+        """Make an in-flight stream chunk safe to render as Telegram HTML."""
+        return self._truncate_report(self._fix_telegram_html(partial))
+
+    async def generate_weather_report(
+        self,
+        data: WeatherData,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
+        """Generate a complete AI weather report.
+
+        on_progress receives the accumulated raw text as the stream advances
+        (never called on cache hits or when streaming is disabled).
+        """
         if not self.provider:
             logger.warning("No LLM Provider Configured")
             return "⚠️ AI 天气日报功能尚未配置"
 
+        from utils.cache import cache
+
+        cache_key = self._report_cache_key(data)
+        if settings.llm_report_cache_ttl_seconds > 0:
+            cached = await cache.get(cache_key)
+            if isinstance(cached, str) and cached:
+                logger.info(f"LLM report cache hit for {data.location_name}")
+                return cached
+
         system_prompt = self._build_system_prompt()
         user_prompt = self._format_weather_data(data)
         started_at = time.perf_counter()
-        
+
+        async def consume() -> str:
+            if not settings.llm_streaming:
+                return await self.provider.generate_report(system_prompt, user_prompt)
+            parts: list[str] = []
+            async for delta in self.provider.generate_report_stream(system_prompt, user_prompt):
+                parts.append(delta)
+                if on_progress is not None:
+                    try:
+                        await on_progress("".join(parts))
+                    except Exception as e:
+                        logger.debug(f"Report progress callback failed: {e}")
+            return "".join(parts)
+
         try:
             timeout_seconds = settings.llm_report_timeout_seconds
             logger.info(
-                "Generating LLM report for {} using {} model={} timeout={}s...",
+                "Generating LLM report for {} using {} model={} timeout={}s streaming={}...",
                 data.location_name,
                 settings.llm_provider,
                 self.provider.model,
                 timeout_seconds,
+                settings.llm_streaming,
             )
-            text = await asyncio.wait_for(
-                self.provider.generate_report(system_prompt, user_prompt), 
-                timeout=timeout_seconds,
-            )
+            text = await asyncio.wait_for(consume(), timeout=timeout_seconds)
             elapsed = time.perf_counter() - started_at
             logger.info(
                 "LLM report generated for {} in {:.1f}s ({} chars).",
@@ -581,13 +699,16 @@ class LLMService:
                 elapsed,
                 len(text),
             )
-            
+
             # 清理HTML标签确保兼容性，并移除模型可能误加的标题。
             text = self._fix_telegram_html(text)
             text = self._strip_report_title(text, data.location_name)
             text = self._truncate_report(text)
 
             text += f"\n\n🤖 Generated by {self.provider.model}"
+
+            if text.strip() and settings.llm_report_cache_ttl_seconds > 0:
+                await cache.set(cache_key, text, ttl=settings.llm_report_cache_ttl_seconds)
             return text
 
         except asyncio.TimeoutError:

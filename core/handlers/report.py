@@ -1,5 +1,4 @@
-import asyncio
-from contextlib import suppress
+import time
 from html import escape
 
 from loguru import logger
@@ -14,6 +13,31 @@ from core.handlers.messages import send_text
 class ReportHandlers:
     def __init__(self, deps: BotDependencies):
         self.deps = deps
+
+    def _make_stream_editor(self, edit_func, title: str, min_interval: float = 2.0):
+        """Build a throttled on_progress callback that live-edits one message.
+
+        Telegram rate-limits message edits, so partial output is flushed at
+        most every min_interval seconds; chunks are HTML-sanitized first.
+        """
+        state = {"last_time": 0.0, "last_text": ""}
+        svc = self.deps.llm_service
+
+        async def on_progress(partial: str):
+            now = time.monotonic()
+            if now - state["last_time"] < min_interval:
+                return
+            preview = svc.preview_stream_text(partial)
+            if not preview or preview == state["last_text"]:
+                return
+            state["last_time"] = now
+            state["last_text"] = preview
+            try:
+                await edit_func(f"{title}\n\n{preview} ⏳")
+            except Exception as e:
+                logger.debug(f"Stream edit failed: {e}")
+
+        return on_progress
 
     async def report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report command for AI-generated summary."""
@@ -42,45 +66,46 @@ class ReportHandlers:
                 await send_text(update, context, f"❌ 未找到城市：{location}")
                 return
 
-            async def keep_typing():
-                # Purely cosmetic: any failure here must never surface and
-                # discard an already generated report.
-                while True:
-                    try:
-                        await context.bot.send_chat_action(
-                            chat_id=update.effective_chat.id, action=ChatAction.TYPING
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as e:
-                        logger.debug(f"keep_typing failed: {e}")
-                        return
-                    await asyncio.sleep(4)
-
-            typing_task = asyncio.create_task(keep_typing())
-            try:
-                report_text = await self.deps.llm_service.generate_weather_report(weather_data)
-            finally:
-                typing_task.cancel()
-                with suppress(Exception):
-                    await typing_task
-
             title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"
-            try:
-                await send_text(
-                    update,
-                    context,
-                    text=f"{title}\n\n{report_text}",
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception as e:
-                logger.warning(f"HTML parsing failed, using plain text: {e}")
-                await send_text(
-                    update,
-                    context,
-                    text=f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}",
-                    parse_mode=None,
-                )
+            placeholder = await send_text(
+                update,
+                context,
+                f"{title}\n\n⏳ 正在生成 AI 天气日报...",
+                parse_mode=ParseMode.HTML,
+            )
+
+            on_progress = None
+            if placeholder is not None:
+                async def edit_placeholder(text_html: str):
+                    await placeholder.edit_text(text_html, parse_mode=ParseMode.HTML)
+
+                on_progress = self._make_stream_editor(edit_placeholder, title)
+
+            report_text = await self.deps.llm_service.generate_weather_report(
+                weather_data,
+                on_progress=on_progress,
+            )
+
+            final_html = f"{title}\n\n{report_text}"
+            final_plain = f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}"
+            if placeholder is not None:
+                try:
+                    await placeholder.edit_text(final_html, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    if "Message is not modified" in str(e):
+                        return
+                    logger.warning(f"HTML edit failed, using plain text: {e}")
+                    try:
+                        await placeholder.edit_text(final_plain)
+                    except Exception as edit_error:
+                        logger.error(f"Report final edit failed: {edit_error}")
+                        await send_text(update, context, final_plain, parse_mode=None)
+            else:
+                try:
+                    await send_text(update, context, final_html, parse_mode=ParseMode.HTML)
+                except Exception as e:
+                    logger.warning(f"HTML parsing failed, using plain text: {e}")
+                    await send_text(update, context, final_plain, parse_mode=None)
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
             try:
@@ -120,8 +145,22 @@ class ReportHandlers:
                 )
                 return
 
-            report_text = await self.deps.llm_service.generate_weather_report(weather_data)
             title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"
+
+            async def edit_inline(text_html: str):
+                await context.bot.edit_message_text(
+                    inline_message_id=inline_message_id,
+                    text=text_html,
+                    parse_mode=ParseMode.HTML,
+                )
+
+            # Inline edits share stricter rate limits; throttle harder.
+            on_progress = self._make_stream_editor(edit_inline, title, min_interval=2.5)
+
+            report_text = await self.deps.llm_service.generate_weather_report(
+                weather_data,
+                on_progress=on_progress,
+            )
             try:
                 await context.bot.edit_message_text(
                     inline_message_id=inline_message_id,
@@ -129,6 +168,8 @@ class ReportHandlers:
                     parse_mode=ParseMode.HTML,
                 )
             except Exception as e:
+                if "Message is not modified" in str(e):
+                    return
                 logger.warning(f"HTML parsing failed in inline mode, using plain text: {e}")
                 await context.bot.edit_message_text(
                     inline_message_id=inline_message_id,
