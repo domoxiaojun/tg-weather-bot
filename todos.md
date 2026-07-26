@@ -218,7 +218,12 @@
 - [x] Q6 文档：README 认证章节、CLAUDE.md、API 文档更正（官方是"限制每日请求量"而非停用 API Key）
 
 ### 待用户完成
-- [ ] 把公钥填入和风控制台，拿到 Credential ID(kid) 与 Project ID(sub) 后写入 .env，真机验证一次
+- [x] 把公钥填入和风控制台，拿到 Credential ID(kid) 与 Project ID(sub) 后写入 .env，真机验证一次
+      （2026-07-27 完成：本地 .env 已写入三件套，auto 模式选中 JWT，真机 geo 查询 200；
+      docker-compose 已挂 ./secrets:/app/secrets:ro）
+- [ ] 部署机：.env 补 JWT 三件套 + scp 传 secrets/ 目录（保持 600 权限）
+- [ ] 私钥备份到密码管理器或离线介质（丢了只能在控制台重建凭据）
+- [ ] 部署后真机冒烟：/tq 北京 看富文本卡片与按钮、/rain_my 卡片操作、等第一轮推送看按钮
 
 ## 第十三轮 — 降雨阈值 + 过度设计排查（2026-07-26）
 
