@@ -2,7 +2,7 @@
 
 Verified field names: tide returns tideTable[]{fxTime,height,type H/L} plus
 tideHourly[]{fxTime,height} and needs a tide-station id from POI lookup
-(type=TSTA, array key "poi"). Solar radiation returns
+(type=TSTA, array key "poi", verified live). Solar radiation returns
 forecasts[]{forecastTime,ghi,dhi,dni,solarAngle} — the published docs call the
 direct component "ni" but the live API returns "dni"; only ghi is consumed.
 """
@@ -109,14 +109,6 @@ class TideAdapterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.requested[0][1]["type"], "TSTA")
         self.assertIsNotNone(stations[0].distance_km)
 
-    async def test_station_lookup_accepts_location_key_too(self):
-        # Defensive: GeoAPI city lookup uses "location"; POI docs say "poi".
-        adapter = FakeAdapter({
-            "/geo/v2/poi/lookup": {"location": [{"id": "P1", "name": "站", "lon": "121.5", "lat": "31.2"}]}
-        })
-        stations = await adapter.get_tide_stations(121.47, 31.23)
-        self.assertEqual(len(stations), 1)
-
     async def test_no_stations_returns_empty(self):
         adapter = FakeAdapter({"/geo/v2/poi/lookup": None})
         self.assertEqual(await adapter.get_tide_stations(121.47, 31.23), [])
@@ -205,8 +197,9 @@ class TideRenderingTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_new_capabilities_default_on(self):
-        self.assertTrue(settings.enable_solar_radiation)
+    def test_tide_command_is_enabled_by_default(self):
+        # Solar radiation and history have no flag: they only fill existing
+        # fields and degrade silently, so a switch would be dead config.
         self.assertTrue(settings.enable_tide)
 
 

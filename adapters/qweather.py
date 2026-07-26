@@ -743,9 +743,9 @@ class QWeatherAdapter(WeatherAdapter):
         if not data or self._is_unavailable_marker(data):
             return []
 
-        # GeoAPI returns city matches under "location"; POI lookup is documented
-        # as "poi". Accept either so a naming difference cannot silently break.
-        records = data.get("poi") or data.get("location") or []
+        # Verified against the live API: POI lookup returns "poi" (city lookup
+        # is the one that uses "location").
+        records = data.get("poi") or []
         stations = []
         for raw in records if isinstance(records, list) else []:
             if not isinstance(raw, dict) or not raw.get("id"):
@@ -1011,7 +1011,7 @@ class QWeatherAdapter(WeatherAdapter):
         # keep the user's own coordinates.
         requested_coords = self._parse_coords(location)
         grid_location = None
-        if settings.enable_grid_weather and requested_coords is not None:
+        if requested_coords is not None:
             try:
                 offset_km = self._distance_km(
                     requested_coords[0], requested_coords[1], float(lon), float(lat)
@@ -1148,7 +1148,7 @@ class QWeatherAdapter(WeatherAdapter):
                 ttl=seconds_until_midnight,
                 force_refresh=refresh_qweather,
             )
-        if "solar" in components and settings.enable_solar_radiation:
+        if "solar" in components:
             requests["solar"] = self._cached_request(
                 f"qw:solar:{coord_location}",
                 f"/solarradiation/v1/forecast/{lat}/{lon}",
@@ -1158,7 +1158,7 @@ class QWeatherAdapter(WeatherAdapter):
                 allow_data_unavailable=True,
                 force_refresh=refresh_qweather,
             )
-        if "history" in components and settings.enable_history_comparison:
+        if "history" in components:
             # Yesterday's summary powers "warmer/cooler than yesterday" in the
             # AI report. LocationID only, and today is not available.
             history_date = (

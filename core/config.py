@@ -88,23 +88,13 @@ class Settings(BaseSettings):
     )
     qweather_enable_minutely: bool = Field(True, description="Enable QWeather minutely precipitation")
     qweather_indices_days: str = Field("3d", description="QWeather life index range: 1d or 3d")
-    enable_grid_weather: bool = Field(
-        True,
-        description="Use QWeather grid (numerical model) weather when the nearest city is too far from the requested coordinates",
-    )
+    # Also acts as the kill switch: a very large value keeps every request on
+    # city weather, so a separate enable flag would be redundant.
     grid_weather_distance_km: float = Field(
         15.0,
-        description="Switch to grid weather when the geocoded city is farther than this from the requested coordinates",
-    )
-    enable_solar_radiation: bool = Field(
-        True,
-        description="Fetch QWeather solar radiation (GHI) to fill the hourly radiation field",
+        description="Switch to grid weather when the geocoded city is farther than this from the requested coordinates; set very large to always use city weather",
     )
     enable_tide: bool = Field(True, description="Enable /tide (GeoAPI POI type=TSTA + /v7/ocean/tide)")
-    enable_history_comparison: bool = Field(
-        True,
-        description="Fetch yesterday's observed summary (Time Machine) so the AI report can compare day over day",
-    )
 
     @field_validator("qweather_indices_days")
     @classmethod
@@ -161,6 +151,29 @@ class Settings(BaseSettings):
     )
     max_subscriptions_per_chat: int = Field(3, description="Max subscribed cities per chat per subscription type")
     rain_check_interval_minutes: int = Field(30, description="Minutes between scheduled rain checks")
+    # Trace precipitation used to trigger the same alert as a downpour. Values
+    # are mm/h after normalising each source's unit (see rate_mm_per_hour).
+    # Reference: 小雨 <2.5 · 中雨 2.5-8 · 大雨 8-16 · 暴雨 >=16 mm/h
+    rain_alert_min_rate_mm_h: float = Field(
+        1.0, description="Minimum precipitation rate (mm/h) that triggers a rain alert"
+    )
+    rain_alert_min_pop_pct: float = Field(
+        60.0, description="Minimum precipitation probability (%) that triggers a rain alert on its own"
+    )
+
+    @field_validator("rain_alert_min_rate_mm_h")
+    @classmethod
+    def validate_rain_min_rate(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("rain_alert_min_rate_mm_h must be >= 0")
+        return value
+
+    @field_validator("rain_alert_min_pop_pct")
+    @classmethod
+    def validate_rain_min_pop(cls, value: float) -> float:
+        if not 0 <= value <= 100:
+            raise ValueError("rain_alert_min_pop_pct must be between 0 and 100")
+        return value
     enable_alert_push: bool = Field(True, description="Push official weather warnings to rain-alert subscribers")
     alert_check_interval_minutes: int = Field(10, description="Minutes between official warning / derived event checks")
     alert_quiet_hours_exempt_levels: str = Field(

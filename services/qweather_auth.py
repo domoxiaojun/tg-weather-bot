@@ -106,12 +106,6 @@ def _read_private_key() -> Optional[str]:
     return None
 
 
-def jwt_config_complete() -> bool:
-    return bool(
-        _read_private_key() and settings.qweather_jwt_kid and settings.qweather_jwt_sub
-    )
-
-
 def build_signer() -> Optional[QWeatherJWTSigner]:
     """Signer for the configured mode, or None to fall back to the API key.
 

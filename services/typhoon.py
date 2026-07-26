@@ -7,7 +7,7 @@ that report no radii.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from math import asin, atan2, cos, degrees, radians, sin, sqrt
 from typing import List, Optional
 
@@ -170,6 +170,3 @@ def format_threat_summary(threat: StormThreat) -> str:
         return f"{storm.display_name} · 你在{threat.wind_label}内（{label}）"
     return f"{storm.display_name} · 最近约 {threat.distance_km:.0f}km（{label}）"
 
-
-def utc_now() -> datetime:
-    return datetime.now(timezone.utc)

@@ -219,3 +219,24 @@
 
 ### 待用户完成
 - [ ] 把公钥填入和风控制台，拿到 Credential ID(kid) 与 Project ID(sub) 后写入 .env，真机验证一次
+
+## 第十三轮 — 降雨阈值 + 过度设计排查（2026-07-26）
+
+用户质疑上一轮方案过度设计，复核后确认成立，砍掉大部分并只做真正修缺陷的部分。
+
+- [x] R1 降雨阈值可配：新增 rate_mm_per_hour() 统一单位（分钟级 5 分钟累积 ×12、intensity 已是 mm/h），
+      evaluate_rain() 返回峰值速率/概率/等级，痕量降水不再触发；is_raining 不再短路绕过阈值；
+      推送文案带上「中雨 约 6.0mm/h」；新增 20 项测试专门覆盖单位换算
+- [x] R2 删除 6 处死代码：telegram_rich 的 preformatted/ordered_list/checklist、typhoon.utc_now、
+      qweather_auth.jwt_config_complete、rich_formatter.build_report_blocks（都是"以防万一"建的，从未被调用）
+- [x] R3 删除 3 个多余开关：ENABLE_GRID_WEATHER / ENABLE_SOLAR_RADIATION / ENABLE_HISTORY_COMPARISON
+      —— 它们只控制不可见的数据补全、失败已优雅降级，且与"和风免费不做省调用机制"的决策矛盾；
+      格点的关闭需求由 GRID_WEATHER_DISTANCE_KM 设大值等效满足。配置项 81→78
+- [x] R4 移除已被实测证伪的推测性防御：POI 数组名确认为 poi，删掉兼容 location 的分支
+- [x] R5 全量 265 项测试通过
+
+### 复核后主动放弃的设计（等有证据再做）
+- 数据模型整并（8 个平行字典 → 嵌套记录）：对用户零价值却要动线上订阅数据；
+  我原先拿"已有 pickle 备份"当理由是反向论证——备份是兜意外，不是给不必要风险发许可
+- 按聊天免打扰、简报数据模式、合并推送、群聊归属、运维汇总、暂停时长解析：均为替用户想象的需求
+- 触发条件：群里真出现互删 → 做归属；有人抱怨小雨仍烦 → 加档位；订阅涨到几十城 → 做合并与整并

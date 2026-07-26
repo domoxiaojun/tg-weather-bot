@@ -141,7 +141,6 @@ class RichMessagePayloadTests(unittest.TestCase):
         self.assertEqual(tr.divider()["type"], "divider")
         self.assertEqual(tr.footer("x")["type"], "footer")
         self.assertEqual(tr.thinking("x")["type"], "thinking")
-        self.assertEqual(tr.preformatted("x")["type"], "pre")
         self.assertEqual(tr.blockquote([tr.paragraph("x")])["type"], "blockquote")
         self.assertEqual(tr.details("s", [tr.paragraph("x")])["type"], "details")
         self.assertEqual(tr.bullet_list(["a"])["type"], "list")
@@ -174,11 +173,6 @@ class RichMessagePayloadTests(unittest.TestCase):
         for item in block["items"]:
             self.assertEqual(item["blocks"][0]["type"], "paragraph")
 
-    def test_checklist_marks_checked_items(self):
-        block = tr.checklist(["a", "b"], checked=[True, False])
-        self.assertTrue(block["items"][0]["has_checkbox"])
-        self.assertTrue(block["items"][0]["is_checked"])
-        self.assertNotIn("is_checked", block["items"][1])
 
     def test_photo_block_wraps_input_media_photo(self):
         block = tr.photo_block("FILE123", "标题", credit="来源")

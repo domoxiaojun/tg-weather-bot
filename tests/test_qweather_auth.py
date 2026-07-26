@@ -24,7 +24,6 @@ from cryptography.exceptions import InvalidSignature
 from pydantic import ValidationError
 
 from core.config import Settings, settings
-from services import qweather_auth
 from services.qweather_auth import MAX_TOKEN_TTL_SECONDS, QWeatherJWTSigner, build_signer
 
 
@@ -205,7 +204,6 @@ class ModeSelectionTests(unittest.TestCase):
             path = handle.name
         try:
             settings.qweather_jwt_private_key_file = path
-            self.assertTrue(qweather_auth.jwt_config_complete())
             self.assertIsNotNone(build_signer())
         finally:
             os.unlink(path)

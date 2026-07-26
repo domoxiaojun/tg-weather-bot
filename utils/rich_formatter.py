@@ -20,7 +20,6 @@ from services.telegram_rich import (
     marked,
     paragraph,
     table,
-    thinking,
 )
 from utils.formatter import (
     CATEGORIES,
@@ -755,16 +754,3 @@ def build_typhoon_push_blocks(threat, location_name: str) -> List[dict]:
     return blocks
 
 
-def build_report_blocks(title: str, report_html: str, *, in_progress: bool = False) -> List[dict]:
-    """AI report as rich blocks.
-
-    The report body is already Telegram HTML, so it rides in a paragraph-free
-    ``html`` payload elsewhere; here we only need the streaming variant, which
-    uses the dedicated "thinking" block while text is still arriving.
-    """
-    blocks: List[dict] = [heading(title, size=2)]
-    if in_progress:
-        blocks.append(thinking(report_html))
-    else:
-        blocks.append(paragraph(report_html))
-    return blocks

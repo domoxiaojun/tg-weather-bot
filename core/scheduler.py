@@ -1,8 +1,10 @@
 import asyncio
 import io
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from html import escape
+from typing import Optional
 from zoneinfo import ZoneInfo
 
 from loguru import logger
@@ -33,6 +35,9 @@ from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_
 
 __all__ = [
     "DEFAULT_DAILY_BRIEF_TIME",
+    "RainSignal",
+    "evaluate_rain",
+    "rate_mm_per_hour",
     "check_rain_alerts",
     "check_weather_alerts",
     "dispatch_daily_briefs",
@@ -50,14 +55,80 @@ def _location_key(location: str) -> str:
     return " ".join(location.split()).casefold()
 
 
-def will_rain_soon(weather, minutes: int = 30) -> bool:
-    """Check current/minutely/hourly rain signals with provider-neutral rules."""
-    if weather.is_raining:
-        return True
+# Chinese short-duration rain classes, in mm/h. Used only for labelling.
+RAIN_RATE_LABELS = ((16.0, "暴雨"), (8.0, "大雨"), (2.5, "中雨"), (0.0, "小雨"))
+
+
+def rate_mm_per_hour(precip, kind=None, interval_minutes=None):
+    """Normalise a precipitation value to mm/h.
+
+    The three sources use three different units and mixing them up is a silent
+    12x error: minutely values are millimetres accumulated over
+    ``interval_minutes`` (5 by default), hourly ``amount`` is millimetres over
+    that hour, and ``intensity`` (Caiyun) is already mm/h.
+    """
+    if precip is None:
+        return None
+    if kind == "intensity":
+        return float(precip)
+    if interval_minutes:
+        return float(precip) * 60.0 / float(interval_minutes)
+    return float(precip)
+
+
+def rain_rate_label(rate) -> str:
+    if rate is None:
+        return ""
+    for threshold, label in RAIN_RATE_LABELS:
+        if rate >= threshold:
+            return label
+    return ""
+
+
+@dataclass
+class RainSignal:
+    """Whether rain is imminent, and how hard, for one location."""
+    will_rain: bool
+    rate_mm_h: Optional[float] = None
+    pop: Optional[float] = None
+    at: Optional[datetime] = None
+    reason: str = ""
+
+    @property
+    def label(self) -> str:
+        return rain_rate_label(self.rate_mm_h)
+
+
+def evaluate_rain(weather, minutes: int = 30, min_rate=None, min_pop=None) -> RainSignal:
+    """Rain signal for the next ``minutes``, honouring the alert thresholds.
+
+    Trace precipitation used to fire an alert exactly like a downpour; the rate
+    floor filters that out. ``is_raining`` no longer short-circuits, otherwise
+    the floor could never apply.
+    """
+    min_rate = settings.rain_alert_min_rate_mm_h if min_rate is None else min_rate
+    min_pop = settings.rain_alert_min_pop_pct if min_pop is None else min_pop
 
     now = datetime.now()
     deadline = now + timedelta(minutes=minutes)
     stale_before = now - timedelta(minutes=2)
+
+    peak_rate = None
+    peak_at = None
+    peak_pop = None
+    reason = ""
+
+    def consider_rate(value, moment, source):
+        nonlocal peak_rate, peak_at, reason
+        if value is None:
+            return
+        if peak_rate is None or value > peak_rate:
+            peak_rate, peak_at, reason = value, moment, source
+
+    # Observed rain right now counts as being in the window.
+    consider_rate(
+        rate_mm_per_hour(weather.now_precip, weather.now_precip_kind), now, "实况"
+    )
 
     has_usable_minutely = False
     for item in weather.minutely:
@@ -65,19 +136,37 @@ def will_rain_soon(weather, minutes: int = 30) -> bool:
         if item_time < stale_before or item_time > deadline:
             continue
         has_usable_minutely = True
-        if item.precip > 0:
-            return True
-        if item.probability is not None and item.probability > 0.5:
-            return True
+        consider_rate(
+            rate_mm_per_hour(item.precip, item.precip_kind, item.interval_minutes),
+            item_time,
+            "分钟级降水",
+        )
+        if item.probability is not None:
+            probability = item.probability * 100 if item.probability <= 1 else item.probability
+            peak_pop = probability if peak_pop is None else max(peak_pop, probability)
 
     if not has_usable_minutely:
         for hour in weather.hourly[:6]:
-            if (hour.precip or 0) > 0:
-                return True
-            if hour.pop is not None and hour.pop >= 50:
-                return True
+            consider_rate(
+                rate_mm_per_hour(hour.precip, hour.precip_kind), _naive_dt(hour.time), "逐小时预报"
+            )
+            if hour.pop is not None:
+                peak_pop = hour.pop if peak_pop is None else max(peak_pop, hour.pop)
 
-    return False
+    if peak_rate is not None and peak_rate >= min_rate:
+        return RainSignal(True, peak_rate, peak_pop, peak_at, reason)
+    if peak_pop is not None and peak_pop >= min_pop:
+        return RainSignal(True, peak_rate, peak_pop, peak_at, "降水概率")
+    # No measurable rate anywhere but the provider still reports rain: trust it
+    # rather than stay silent on unmeasurable data.
+    if weather.is_raining and peak_rate is None:
+        return RainSignal(True, None, peak_pop, now, "实况")
+    return RainSignal(False, peak_rate, peak_pop, peak_at, "")
+
+
+def will_rain_soon(weather, minutes: int = 30) -> bool:
+    """Boolean form of :func:`evaluate_rain`."""
+    return evaluate_rain(weather, minutes=minutes).will_rain
 
 
 # Per-location ceilings so one stuck upstream call cannot stall a whole job
@@ -293,8 +382,8 @@ async def check_rain_alerts(
                 # Fetch failure: keep the previous state rather than guessing.
                 return
 
-            raining = will_rain_soon(weather, minutes=_rain_lookahead_minutes())
-            if not raining:
+            signal = evaluate_rain(weather, minutes=_rain_lookahead_minutes())
+            if not signal.will_rain:
                 # Episode over: reset every subscriber so the next rain alerts.
                 for chat_id, chat_data, subscribed_location, _zone in entry["subscribers"]:
                     episodes = chat_data.get("rain_episode", {})
@@ -304,7 +393,12 @@ async def check_rain_alerts(
                         dirty_chats.add(chat_id)
                 return
 
-            alert_text = "🚨 *自动降雨提醒*\n\n" + format_weather_response(
+            headline = "🚨 *自动降雨提醒*"
+            if signal.rate_mm_h is not None:
+                headline += f" · {signal.label} 约 {signal.rate_mm_h:.1f}mm/h"
+            elif signal.pop is not None:
+                headline += f" · 降水概率 {signal.pop:.0f}%"
+            alert_text = headline + "\n\n" + format_weather_response(
                 weather,
                 view_type="rain",
             )

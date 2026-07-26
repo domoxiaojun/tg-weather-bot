@@ -101,11 +101,6 @@ def thinking(text: RichText) -> dict:
     return {"type": "thinking", "text": text}
 
 
-def preformatted(text: RichText, language: Optional[str] = None) -> dict:
-    block = {"type": "pre", "text": text}
-    if language:
-        block["language"] = language
-    return block
 
 
 def blockquote(blocks: list, credit: Optional[RichText] = None) -> dict:
@@ -163,25 +158,8 @@ def bullet_list(items: list) -> dict:
     return {"type": "list", "items": [{"blocks": _as_blocks(item)} for item in items]}
 
 
-def ordered_list(items: list, *, label_type: Optional[str] = None, start: int = 1) -> dict:
-    entries = []
-    for offset, item in enumerate(items):
-        entry: dict = {"blocks": _as_blocks(item), "value": start + offset}
-        if label_type:
-            entry["type"] = label_type
-        entries.append(entry)
-    return {"type": "list", "items": entries}
 
 
-def checklist(items: list, checked: Optional[list] = None) -> dict:
-    flags = checked or []
-    entries = []
-    for index, item in enumerate(items):
-        entry: dict = {"blocks": _as_blocks(item), "has_checkbox": True}
-        if index < len(flags) and flags[index]:
-            entry["is_checked"] = True
-        entries.append(entry)
-    return {"type": "list", "items": entries}
 
 
 def cell(
