@@ -194,6 +194,11 @@
 - [x] O7 文档：docs/qweather-api-reference-2026-07.md 记录格点字段差异与接入状态、.env.example 新增三项配置
 
 ### 下一批（尚未做）
-- [ ] P1 台风：storm-list(basin=NP only) → storm-forecast(stormid) → 路径点与订阅地点距离 → 复用预警推送框架；需新模型+路径图
+- [x] P1 台风：已完成
+      · 模型 TropicalStorm/TyphoonPoint/TyphoonWindRadius；adapter get_storm_list/get_storm_detail/get_active_storms
+      · services/typhoon.py：方位角选风圈象限 → 7/10/12 级风圈判定（黄/橙/红），无风圈数据时按距离关注
+      · 复用 check_weather_alerts 的去重/免打扰豁免/Forbidden 清理；活跃台风每轮只取一次，全地点共享
+      · 富文本推送块（当前强度/气压/移动 + 预测路径表）+ 路径图（历史虚线/预测实线/当前★/用户▲，等比例坐标）
+      · /typhoon [城市] 命令；新增 22 项测试（共 200 项）
 - [ ] P2 潮汐：必须先 /geo/v2/poi/lookup?type=TSTA 找潮汐站，再 /v7/ocean/tide；仅对沿海用户有意义
 - [ ] P3 太阳辐射：/solarradiation/v1/forecast，垂类（光伏），建议仅进 AI payload 或不做

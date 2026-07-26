@@ -644,6 +644,72 @@ def build_event_push_blocks(data: WeatherData, title: str, detail: str) -> List[
     ]
 
 
+def build_typhoon_push_blocks(threat, location_name: str) -> List[dict]:
+    """Tropical cyclone alert: what it is, where it is, and where it goes next."""
+    from services.typhoon import format_threat_summary, hours_until, storm_type_label
+
+    storm = threat.storm
+    now_point = storm.now
+
+    blocks: List[dict] = [heading(f"🌀 {format_threat_summary(threat)}", size=2)]
+    blocks.append(paragraph([bold(location_name), f" · 距中心约 {threat.distance_km:.0f}km"]))
+    if threat.inside_circle:
+        blocks.append(paragraph(marked(f"⚠️ 已进入{threat.wind_label}，请做好防风准备")))
+
+    if now_point is not None:
+        rows = [["🌀 强度", storm_type_label(now_point.type)]]
+        if now_point.wind_speed is not None:
+            rows.append(["💨 中心风速", f"{format_weather_number(now_point.wind_speed)} km/h"])
+        if now_point.pressure is not None:
+            rows.append(["📉 中心气压", f"{format_weather_number(now_point.pressure)} hPa"])
+        if now_point.move_dir or now_point.move_speed is not None:
+            move = " ".join(
+                part
+                for part in (
+                    now_point.move_dir,
+                    f"{format_weather_number(now_point.move_speed)} km/h"
+                    if now_point.move_speed is not None
+                    else None,
+                )
+                if part
+            )
+            rows.append(["➡️ 移动", move])
+        rows.append(["📍 当前位置", f"{now_point.lat:.1f}°N, {now_point.lon:.1f}°E"])
+        if now_point.time:
+            rows.append(["🕐 观测时间", now_point.time.strftime("%m-%d %H:%M")])
+        blocks.append(table(rows, aligns=["left", "left"]))
+
+    if storm.forecast:
+        rows = []
+        for point in storm.forecast[:8]:
+            eta = hours_until(point.time)
+            rows.append([
+                point.time.strftime("%m-%d %H:%M") if point.time else "—",
+                f"+{eta:.0f}h" if eta else "—",
+                storm_type_label(point.type),
+                f"{format_weather_number(point.wind_speed)}" if point.wind_speed is not None else "—",
+                f"{point.lat:.1f},{point.lon:.1f}",
+            ])
+        blocks.append(
+            details(
+                "🧭 预测路径",
+                [
+                    table(
+                        rows,
+                        headers=["时间", "时距", "强度", "风速", "位置"],
+                        aligns=["left", "right", "left", "right", "right"],
+                        bordered=True,
+                        caption="风速单位 km/h · 数据源 和风天气",
+                    )
+                ],
+                is_open=True,
+            )
+        )
+
+    blocks.append(footer("数据源: 和风天气热带气旋 · 以官方预警为准"))
+    return blocks
+
+
 def build_report_blocks(title: str, report_html: str, *, in_progress: bool = False) -> List[dict]:
     """AI report as rich blocks.
 

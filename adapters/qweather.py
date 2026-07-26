@@ -15,6 +15,9 @@ from domain.models import (
     HourlyForecast,
     LifeIndex,
     MinutelyPrecipitation,
+    TropicalStorm,
+    TyphoonPoint,
+    TyphoonWindRadius,
     WarningAlert,
     WeatherData,
     normalize_warning_level,
@@ -674,6 +677,159 @@ class QWeatherAdapter(WeatherAdapter):
             except (KeyError, TypeError, ValueError) as e:
                 logger.warning(f"Skipping malformed QWeather index record: {e}")
         return indices
+
+    # ------------------------------------------------------------------ #
+    # Tropical cyclones (basin NP only, per QWeather)
+    # ------------------------------------------------------------------ #
+
+    @classmethod
+    def _map_wind_radius(cls, raw: Any) -> Optional[TyphoonWindRadius]:
+        if not isinstance(raw, dict):
+            return None
+        radius = TyphoonWindRadius(
+            ne=cls._optional_float(raw.get("neRadius")),
+            se=cls._optional_float(raw.get("seRadius")),
+            sw=cls._optional_float(raw.get("swRadius")),
+            nw=cls._optional_float(raw.get("nwRadius")),
+        )
+        if all(value is None for value in (radius.ne, radius.se, radius.sw, radius.nw)):
+            return None
+        return radius
+
+    @classmethod
+    def _map_storm_point(cls, raw: Any) -> Optional[TyphoonPoint]:
+        if not isinstance(raw, dict):
+            return None
+        lat = cls._optional_float(raw.get("lat"))
+        lon = cls._optional_float(raw.get("lon"))
+        if lat is None or lon is None:
+            return None
+        # Observed points use "time"/"pubTime"; forecast points use "fxTime".
+        stamp = raw.get("fxTime") or raw.get("time") or raw.get("pubTime")
+        return TyphoonPoint(
+            time=cls._parse_datetime(stamp),
+            lat=lat,
+            lon=lon,
+            type=cls._as_text(raw.get("type")),
+            pressure=cls._optional_float(raw.get("pressure")),
+            wind_speed=cls._optional_float(raw.get("windSpeed")),
+            move_dir=raw.get("moveDir") or None,
+            move_speed=cls._optional_float(raw.get("moveSpeed")),
+            radius30=cls._map_wind_radius(raw.get("windRadius30")),
+            radius50=cls._map_wind_radius(raw.get("windRadius50")),
+            radius64=cls._map_wind_radius(raw.get("windRadius64")),
+        )
+
+    async def get_storm_list(self, basin: str = "NP", year: Optional[str] = None) -> List[dict]:
+        """Storms for a basin. QWeather currently only supports NP (西北太平洋)."""
+        year = year or str(datetime.now().year)
+        data = await self._cached_request(
+            f"qw:storm-list:{basin}:{year}",
+            "/v7/tropical/storm-list",
+            {"basin": basin, "year": year},
+            ttl=3600,
+            unavailable_ttl=3600,
+            allow_data_unavailable=True,
+        )
+        if not data or self._is_unavailable_marker(data):
+            return []
+        storms = []
+        for raw in data.get("storm") or []:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            storms.append({
+                "id": str(raw["id"]),
+                "name": str(raw.get("name") or ""),
+                "basin": str(raw.get("basin") or basin),
+                "year": str(raw.get("year") or year),
+                "is_active": str(raw.get("isActive") or "0") == "1",
+            })
+        return storms
+
+    async def get_storm_detail(self, storm_meta: dict) -> Optional[TropicalStorm]:
+        """Current position + history + forecast track for one storm."""
+        storm_id = storm_meta["id"]
+        track_data, forecast_data = await asyncio.gather(
+            self._cached_request(
+                f"qw:storm-track:{storm_id}",
+                "/v7/tropical/storm-track",
+                {"stormid": storm_id},
+                ttl=1800,
+                unavailable_ttl=3600,
+                allow_data_unavailable=True,
+            ),
+            self._cached_request(
+                f"qw:storm-forecast:{storm_id}",
+                "/v7/tropical/storm-forecast",
+                {"stormid": storm_id},
+                ttl=1800,
+                unavailable_ttl=3600,
+                allow_data_unavailable=True,
+            ),
+            return_exceptions=True,
+        )
+
+        def usable(value):
+            return value if isinstance(value, dict) and not self._is_unavailable_marker(value) else None
+
+        track_data = usable(track_data)
+        forecast_data = usable(forecast_data)
+        if track_data is None and forecast_data is None:
+            return None
+
+        now_point = self._map_storm_point((track_data or {}).get("now"))
+        track = [
+            point
+            for point in (self._map_storm_point(raw) for raw in (track_data or {}).get("track") or [])
+            if point is not None
+        ]
+        forecast = [
+            point
+            for point in (
+                self._map_storm_point(raw) for raw in (forecast_data or {}).get("forecast") or []
+            )
+            if point is not None
+        ]
+        if now_point is None and track:
+            now_point = track[-1]
+        if now_point is None and forecast:
+            now_point = forecast[0]
+        if now_point is None:
+            return None
+
+        # storm-track carries its own isActive; trust it over the list snapshot.
+        is_active = storm_meta.get("is_active", True)
+        if track_data and track_data.get("isActive") is not None:
+            is_active = str(track_data.get("isActive")) == "1"
+
+        return TropicalStorm(
+            id=storm_id,
+            # The forecast endpoint does not return a name, so it comes from the list.
+            name=storm_meta.get("name", ""),
+            basin=storm_meta.get("basin", ""),
+            year=storm_meta.get("year", ""),
+            is_active=is_active,
+            now=now_point,
+            track=track,
+            forecast=forecast,
+        )
+
+    async def get_active_storms(self, basin: str = "NP") -> List[TropicalStorm]:
+        """Every currently active storm in the basin, with tracks resolved."""
+        metas = [meta for meta in await self.get_storm_list(basin) if meta["is_active"]]
+        if not metas:
+            return []
+        details = await asyncio.gather(
+            *(self.get_storm_detail(meta) for meta in metas), return_exceptions=True
+        )
+        storms = []
+        for meta, detail in zip(metas, details):
+            if isinstance(detail, Exception):
+                logger.error(f"Storm detail failed for {meta['id']}: {type(detail).__name__}")
+                continue
+            if detail is not None and detail.is_active:
+                storms.append(detail)
+        return storms
 
     async def get_weather(
         self,

@@ -21,11 +21,13 @@ from services.fusion import WeatherFusionService
 from services.llm import LLMService
 from domain.models import normalize_warning_level
 from services.telegram_rich import FEATURE_SEND, photo_block, rich
+from services.typhoon import assess_storms, format_threat_summary
 from utils.formatter import format_weather_response
 from utils.rich_formatter import (
     build_alert_push_blocks,
     build_event_push_blocks,
     build_rain_alert_blocks,
+    build_typhoon_push_blocks,
 )
 from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_quiet_hours
 
@@ -490,6 +492,22 @@ async def check_weather_alerts(
     if not grouped:
         return
 
+    # Active storms are basin-wide, so fetch once per round and reuse for every
+    # location instead of per-subscriber.
+    storms = []
+    if settings.enable_typhoon_alerts:
+        try:
+            storms = await asyncio.wait_for(
+                weather_service.qweather.get_active_storms(settings.typhoon_basin),
+                timeout=LOCATION_WEATHER_TIMEOUT,
+            )
+            if storms:
+                logger.info(f"Active tropical cyclones: {[s.display_name for s in storms]}")
+        except asyncio.TimeoutError:
+            logger.error("Tropical cyclone lookup timed out")
+        except Exception as error:
+            logger.error(f"Tropical cyclone lookup failed: {error}")
+
     dirty_chats: set = set()
     logger.debug(f"Running alert check for {len(grouped)} unique locations")
 
@@ -520,6 +538,20 @@ async def check_weather_alerts(
                     build_event_push_blocks(weather, title, detail),
                     f"<b>{escape(title)}</b>\n{escape(detail)}\n\n{escape(weather.location_name)}",
                 ))
+
+            # Tropical cyclones: wind-circle membership decides severity, so a
+            # storm that actually reaches the user bypasses quiet hours.
+            if storms:
+                coords = weather_service.qweather._parse_coords(weather.coords)
+                if coords is not None:
+                    for threat in assess_storms(storms, coords[0], coords[1]):
+                        pending.append((
+                            threat.key,
+                            threat.level,
+                            build_typhoon_push_blocks(threat, weather.location_name),
+                            f"🌀 <b>{escape(format_threat_summary(threat))}</b>\n"
+                            f"{escape(weather.location_name)} · 距中心约 {threat.distance_km:.0f}km",
+                        ))
 
             if not pending:
                 # Nothing active: forget history so a re-issue alerts again.

@@ -273,7 +273,16 @@ v1 空气质量统一结构：
 | 历史天气 | `/v7/historical/weather` | 已接入（仅取昨日 weatherDaily，喂 AI 日报与"比昨天"对比；LocationID only，不含今天） |
 | 格点天气 | `/v7/grid-weather/now|{hours}|{days}` | 已接入（坐标与最近城市相距超 GRID_WEATHER_DISTANCE_KM 时启用；无 vis/feelsLike/pop） |
 | 监测站 | 复用实时空气质量响应的 `stations[]` 名称 | 已接入（未单独调 `/airquality/v1/stations/`） |
-| 气旋、海洋、辐射、天文、控制台 | 对应官方 endpoint | 未接入（天文与逐日预报重复，无需接入） |
+| 热带气旋 | `/v7/tropical/storm-list` + `storm-track` + `storm-forecast` | 已接入（仅 basin=NP；list 提供 name，forecast 不返回 name） |
+| 海洋、辐射、控制台 | 对应官方 endpoint | 未接入 |
+| 天文 | `/v7/astronomy/*` | 不接入：日月升落与月相逐日预报已提供，重复 |
+
+### 热带气旋接入要点（对照官方文档核实）
+
+- `storm-list?basin=NP&year=YYYY` → `storm[]{id,name,basin,year,isActive}`；**basin 目前仅支持 NP（西北太平洋）**。
+- `storm-track?stormid=` → `now{pubTime,lat,lon,type,pressure,windSpeed,moveSpeed,moveDir,move360,windRadius30/50/64{neRadius,seRadius,swRadius,nwRadius}}` + `track[]`（同结构，时间字段为 `time`）+ 顶层 `isActive`。
+- `storm-forecast?stormid=` → 预测点使用 `fxTime`，**不返回台风名**，名称必须从 list 带入。
+- 风圈半径按四象限给出，因此判定"是否受影响"应先算方位角选象限、再比较距离，而不是只看到中心距离。
 
 ### 格点天气字段差异（对照官方文档核实）
 

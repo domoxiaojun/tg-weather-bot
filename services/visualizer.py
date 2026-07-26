@@ -399,6 +399,98 @@ class Visualizer:
         return cls._draw_safely(cls._render_minutely_rain_chart, data)
 
     @classmethod
+    def draw_typhoon_track_chart(cls, storm, user_lon=None, user_lat=None) -> Optional[bytes]:
+        """Storm track relative to the user. No basemap dependency — the useful
+        information is the geometry (where it has been, where it is going, and
+        how that relates to you), not coastlines."""
+        try:
+            return cls._render_typhoon_track_chart(storm, user_lon, user_lat)
+        except Exception:
+            logger.exception("Typhoon track rendering failed")
+            return None
+
+    @classmethod
+    def _render_typhoon_track_chart(cls, storm, user_lon, user_lat) -> Optional[bytes]:
+        history = [(point.lon, point.lat) for point in storm.track]
+        forecast = [(point.lon, point.lat) for point in storm.forecast]
+        current = (storm.now.lon, storm.now.lat) if storm.now else None
+        if not forecast and not history and current is None:
+            return None
+
+        fig = cls._create_card_figure()
+        metrics = []
+        if storm.now is not None:
+            if storm.now.wind_speed is not None:
+                metrics.append(("中心风速", f"{cls._format_number(storm.now.wind_speed)} km/h"))
+            if storm.now.pressure is not None:
+                metrics.append(("中心气压", f"{cls._format_number(storm.now.pressure)} hPa"))
+        cls._add_header_text(
+            fig,
+            kicker="热带气旋路径 · 和风天气",
+            title=storm.display_name or "热带气旋",
+            subtitle=(
+                storm.now.time.strftime("%m/%d %H:%M 观测")
+                if storm.now is not None and storm.now.time
+                else ""
+            ),
+            metrics=metrics,
+        )
+
+        ax = fig.add_axes([0.075, 0.14, 0.85, 0.56])
+        cls._style_axis(ax)
+
+        if history:
+            hx, hy = zip(*history)
+            ax.plot(hx, hy, color=cls._THEME["subtle"], linewidth=1.8, linestyle=(0, (3, 3)), zorder=3)
+            ax.scatter(hx, hy, s=12, color=cls._THEME["subtle"], zorder=4)
+        if forecast:
+            start = [current] if current else []
+            fx, fy = zip(*(start + forecast))
+            ax.plot(fx, fy, color=cls._THEME["intensity"], linewidth=2.6, zorder=5)
+            ax.scatter(fx[1:], fy[1:], s=26, color=cls._THEME["card"],
+                       edgecolor=cls._THEME["intensity"], linewidth=1.6, zorder=6)
+        if current:
+            ax.scatter([current[0]], [current[1]], s=170, marker="*",
+                       color=cls._THEME["temperature"], zorder=8)
+            ax.annotate("现在", current, xytext=(0, 12), textcoords="offset points",
+                        ha="center", color=cls._THEME["text"], fontsize=9, fontweight=600, zorder=9)
+        if user_lon is not None and user_lat is not None:
+            ax.scatter([user_lon], [user_lat], s=90, marker="^",
+                       color=cls._THEME["probability"], zorder=8)
+            ax.annotate("你的位置", (user_lon, user_lat), xytext=(0, -18),
+                        textcoords="offset points", ha="center",
+                        color=cls._THEME["probability"], fontsize=9, fontweight=600, zorder=9)
+
+        ax.set_xlabel("东经", color=cls._THEME["muted"], fontsize=9)
+        ax.set_ylabel("北纬", color=cls._THEME["muted"], fontsize=9)
+        ax.tick_params(colors=cls._THEME["muted"], labelsize=9)
+        ax.grid(color=cls._THEME["grid"], alpha=0.35, linewidth=0.7, linestyle=(0, (2, 5)))
+        # Equal aspect keeps the geometry (and therefore distances) honest.
+        ax.set_aspect("equal", adjustable="datalim")
+
+        handles = [
+            Line2D([0], [0], color=cls._THEME["intensity"], linewidth=2.6),
+            Line2D([0], [0], color=cls._THEME["subtle"], linewidth=1.8, linestyle=(0, (3, 3))),
+        ]
+        labels = ["预测路径", "已走路径"]
+        cls._add_footer(fig, "路径为数值预报，实际以官方预警为准", handles, labels)
+        return cls._render_figure(fig)
+
+    @classmethod
+    def _add_header_text(cls, fig, *, kicker: str, title: str, subtitle: str, metrics) -> None:
+        """Header for charts that are not tied to a WeatherData location."""
+        fig.text(0.075, 0.916, kicker, color=cls._THEME["muted"], fontsize=9, fontweight=600)
+        fig.text(0.075, 0.846, title, color=cls._THEME["text"], fontsize=22, fontweight=600)
+        if subtitle:
+            fig.text(0.075, 0.792, subtitle, color=cls._THEME["muted"], fontsize=10)
+        visible = list(metrics)[-2:]
+        positions = [0.925 - 0.145 * (len(visible) - 1 - index) for index in range(len(visible))]
+        for (label, value), x_pos in zip(visible, positions):
+            fig.text(x_pos, 0.899, label, ha="right", color=cls._THEME["muted"], fontsize=8.5)
+            fig.text(x_pos, 0.837, value, ha="right", color=cls._THEME["text"],
+                     fontsize=15, fontweight=600)
+
+    @classmethod
     def _render_minutely_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
         """Next-2h minute-level precipitation — matches the rain-alert question.
 

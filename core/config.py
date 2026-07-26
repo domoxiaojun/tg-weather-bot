@@ -108,6 +108,15 @@ class Settings(BaseSettings):
         "红色,橙色",
         description="Warning levels that ignore quiet hours (life-safety); comma separated, empty means none",
     )
+    enable_typhoon_alerts: bool = Field(
+        True,
+        description="Push tropical cyclone alerts to rain-alert subscribers (QWeather supports basin NP only)",
+    )
+    typhoon_basin: str = Field("NP", description="Tropical cyclone basin; QWeather currently only supports NP")
+    typhoon_watch_distance_km: float = Field(
+        500.0,
+        description="Distance at which a storm with no reported wind circles still triggers a watch notice",
+    )
     enable_derived_event_alerts: bool = Field(
         True,
         description="Also alert on derived events: air quality deterioration, extreme temperature, strong wind",
@@ -122,6 +131,13 @@ class Settings(BaseSettings):
     )
     enable_rate_limiter: bool = Field(True, description="Use PTB's AIORateLimiter to respect Telegram flood limits")
     persistence_backup_count: int = Field(3, description="Rotated copies of the persistence file kept at startup; 0 disables")
+
+    @field_validator("typhoon_watch_distance_km")
+    @classmethod
+    def validate_typhoon_distance(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("typhoon_watch_distance_km must be greater than 0")
+        return value
 
     @field_validator("alert_check_interval_minutes")
     @classmethod

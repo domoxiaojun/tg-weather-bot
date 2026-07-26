@@ -194,6 +194,51 @@ class HistoricalDaySummary(BaseModel):
     source: WeatherProvider = "qweather"
 
 
+class TyphoonWindRadius(BaseModel):
+    """Wind-circle radius per quadrant, in km."""
+    ne: Optional[float] = None
+    se: Optional[float] = None
+    sw: Optional[float] = None
+    nw: Optional[float] = None
+
+    def for_bearing(self, bearing: float) -> Optional[float]:
+        """Radius in the quadrant a location falls into, measured from north."""
+        quadrant = int((bearing % 360) // 90)
+        return (self.ne, self.se, self.sw, self.nw)[quadrant]
+
+
+class TyphoonPoint(BaseModel):
+    """One observed or forecast position of a tropical cyclone."""
+    time: Optional[datetime] = None
+    lat: float
+    lon: float
+    type: str = ""
+    pressure: Optional[float] = None
+    wind_speed: Optional[float] = None
+    move_dir: Optional[str] = None
+    move_speed: Optional[float] = None
+    # 30/50/64 knots ≈ Beaufort 7 / 10 / 12 wind circles
+    radius30: Optional[TyphoonWindRadius] = None
+    radius50: Optional[TyphoonWindRadius] = None
+    radius64: Optional[TyphoonWindRadius] = None
+
+
+class TropicalStorm(BaseModel):
+    """A tropical cyclone with its history and forecast track."""
+    id: str
+    name: str = ""
+    basin: str = ""
+    year: str = ""
+    is_active: bool = True
+    now: Optional[TyphoonPoint] = None
+    track: List[TyphoonPoint] = Field(default_factory=list)
+    forecast: List[TyphoonPoint] = Field(default_factory=list)
+
+    @property
+    def display_name(self) -> str:
+        return f"{self.name}（{self.id}）" if self.name else self.id
+
+
 class WeatherData(BaseModel):
     """
     Unified Weather Data Model.

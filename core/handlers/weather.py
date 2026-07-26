@@ -1,4 +1,5 @@
 import io
+from html import escape
 
 from loguru import logger
 from telegram import (
@@ -13,7 +14,12 @@ from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.ext import ContextTypes
 
 from core.config import settings
-from core.handlers.common import BotDependencies, parse_chart_request, parse_location_and_view
+from core.handlers.common import (
+    BotDependencies,
+    join_location_args,
+    parse_chart_request,
+    parse_location_and_view,
+)
 from core.handlers.messages import send_photo, send_text, send_weather_view
 from services.chart_cache import (
     CHART_PROFILES,
@@ -171,6 +177,87 @@ class WeatherHandlers:
                 return
 
         await self._send_weather(update, context, location_query, view_type, start_day, limit)
+
+    async def typhoon(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/typhoon [城市] - 当前活跃台风，并判断对该地点的影响"""
+        from services.telegram_rich import FEATURE_SEND, rich
+        from services.typhoon import assess_storms, format_threat_summary
+        from utils.rich_formatter import build_typhoon_push_blocks
+
+        if not settings.enable_typhoon_alerts:
+            await send_text(update, context, "⚠️ 台风功能已关闭（ENABLE_TYPHOON_ALERTS=false）。")
+            return
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        try:
+            storms = await self.deps.weather_service.qweather.get_active_storms(settings.typhoon_basin)
+        except Exception as e:
+            logger.error(f"Typhoon lookup failed: {e}")
+            await send_text(update, context, "❌ 台风数据获取失败，请稍后再试。")
+            return
+
+        if not storms:
+            await send_text(
+                update,
+                context,
+                f"🌀 当前 {settings.typhoon_basin} 洋盆没有活跃台风。\n"
+                "（和风天气目前仅提供西北太平洋 NP 洋盆数据）",
+            )
+            return
+
+        # With a location we can say whether it actually reaches the user.
+        location = join_location_args(list(context.args)) if context.args else None
+        if not location and context.chat_data:
+            last = context.chat_data.get("last_location")
+            if isinstance(last, dict):
+                location = last.get("coords")
+
+        threats = []
+        location_name = ""
+        if location:
+            try:
+                data = await self.deps.weather_service.get_fused_weather(location, profile="rain")
+            except Exception as e:
+                logger.debug(f"Typhoon location lookup failed: {e}")
+                data = None
+            if data is not None:
+                location_name = data.location_name
+                coords = self.deps.weather_service.qweather._parse_coords(data.coords)
+                if coords is not None:
+                    threats = assess_storms(storms, coords[0], coords[1])
+
+        if threats:
+            for threat in threats[:2]:
+                blocks = build_typhoon_push_blocks(threat, location_name)
+                if rich.supports(FEATURE_SEND):
+                    sent = await rich.send_rich(
+                        context.bot, update.effective_chat.id, blocks=blocks
+                    )
+                    if sent is not None:
+                        continue
+                await send_text(
+                    update,
+                    context,
+                    f"🌀 <b>{escape(format_threat_summary(threat))}</b>\n"
+                    f"{escape(location_name)} · 距中心约 {threat.distance_km:.0f}km",
+                    parse_mode=ParseMode.HTML,
+                )
+            return
+
+        lines = ["🌀 <b>当前活跃台风</b>"]
+        for storm in storms:
+            bits = [f"• <b>{escape(storm.display_name)}</b>"]
+            if storm.now is not None:
+                from services.typhoon import storm_type_label
+
+                bits.append(storm_type_label(storm.now.type))
+                bits.append(f"{storm.now.lat:.1f}°N {storm.now.lon:.1f}°E")
+            lines.append(" · ".join(bits))
+        if location_name:
+            lines.append(f"\n对 {escape(location_name)} 暂无明显影响。")
+        else:
+            lines.append("\n发送 /typhoon 城市 可判断对该地点的影响。")
+        await send_text(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
 
     async def handle_private_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """私聊里直接发城市名即可查天气（支持"北京 明天"等参数写法）。"""
