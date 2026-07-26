@@ -490,6 +490,44 @@ class WeatherBlockRenderingTests(unittest.TestCase):
         self.assertNotIn("🌫️ 空气", labels)
         self.assertTrue(any(b["type"] == "details" and "空气质量" in b["summary"] for b in walk(blocks)))
 
+    def test_hourly_extras_expose_previously_hidden_metrics(self):
+        data = make_weather()
+        for index, hour in enumerate(data.hourly):
+            hour.dew = 20.0 + index % 3
+            hour.pressure = 1005.0
+            hour.cloud = 30
+            hour.visibility = 25.0
+            hour.aqi = 60
+        blocks = build_hourly_blocks(data, 6)
+        extras = [
+            b for b in walk(blocks) if b["type"] == "details" and "更多逐小时指标" in b["summary"]
+        ]
+        self.assertEqual(len(extras), 1)
+        headers = [c.get("text") for c in [b for b in walk(extras) if b["type"] == "table"][0]["cells"][0]]
+        self.assertEqual(headers, ["时间", "露点", "气压", "云量", "能见度", "AQI"])
+
+    def test_hourly_extras_omitted_when_no_such_data(self):
+        data = make_weather()
+        for hour in data.hourly:
+            hour.dew = hour.pressure = hour.cloud = hour.visibility = hour.aqi = None
+        blocks = build_hourly_blocks(data, 6)
+        self.assertFalse(
+            [b for b in walk(blocks) if b["type"] == "details" and "更多逐小时" in b["summary"]]
+        )
+
+    def test_today_details_include_moonrise_avg_temp_and_split_precip(self):
+        data = make_weather()
+        today = data.daily[0]
+        today.temp_avg = 26.5
+        today.moon_rise = "19:20"
+        today.moon_set = "05:40"
+        today.precip_day = 1.2
+        today.precip_night = 0.4
+        rendered = str(build_realtime_blocks(data))
+        self.assertIn("日均温", rendered)
+        self.assertIn("19:20", rendered)
+        self.assertIn("昼/夜降水", rendered)
+
     def test_rich_text_is_not_markdown_escaped(self):
         blocks = build_realtime_blocks(make_weather())
         rendered = str(blocks)

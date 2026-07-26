@@ -42,9 +42,35 @@ class KeyboardViewTests(unittest.TestCase):
     def test_long_names_stay_under_callback_limit_with_view_suffix(self):
         long_name = "新疆维吾尔自治区某某某某很长很长的地名测试"
         keyboard = get_weather_keyboard(long_name, coords="86.15,41.77", view_type="indices")
+        checked = 0
         for row in keyboard.inline_keyboard:
             for button in row:
+                if button.callback_data is None:
+                    continue  # share button carries switch_inline_query instead
+                checked += 1
                 self.assertLessEqual(len(button.callback_data.encode("utf-8")), 64, button.callback_data)
+        self.assertGreater(checked, 0)
+
+    def test_semantic_actions_are_colour_coded(self):
+        keyboard = get_weather_keyboard("北京", coords="116.4,39.9")
+        buttons = {b.text: b for row in keyboard.inline_keyboard for b in row}
+        self.assertEqual(buttons["🔔 降雨提醒"].to_dict().get("style"), "success")
+        self.assertEqual(buttons["🤖 AI日报"].to_dict().get("style"), "primary")
+        # Neutral navigation stays uncoloured — colouring everything is noise.
+        self.assertIsNone(buttons["🔄 刷新"].to_dict().get("style"))
+
+    def test_share_button_uses_switch_inline_query(self):
+        keyboard = get_weather_keyboard("北京", coords="116.4,39.9")
+        share = [b for row in keyboard.inline_keyboard for b in row if b.text == "📤 分享"]
+        self.assertEqual(len(share), 1)
+        self.assertEqual(share[0].switch_inline_query, "北京")
+
+    def test_unsubscribe_buttons_are_danger_styled(self):
+        from core.handlers.subscriptions import render_subscription_list
+
+        _text, keyboard = render_subscription_list({"subs": ["北京"]}, "rain")
+        button = keyboard.inline_keyboard[0][0]
+        self.assertEqual(button.to_dict().get("style"), "danger")
 
 
 class HourlyCompactFormatTests(unittest.TestCase):

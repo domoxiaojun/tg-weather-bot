@@ -162,3 +162,18 @@
 - 认证仍用 API Key；官方要求 2027-01-01 前迁 Ed25519 JWT
 - Telegram 未用：setMyDescription/setMyShortDescription（发现性）、BotCommandScope 分场景命令、按钮 style 配色、switch_inline_query 分享按钮
 - 数据未展示：露点、逐小时/逐日的气压云量能见度、月升月落、日均温、白天/夜间降水量
+
+## 第十轮 — Telegram 发现性/按钮与隐藏数据展示（2026-07-26，用户：全部做了）
+
+- [x] N1 setMyShortDescription / setMyDescription：Bot 资料页在用户点 Start 前就能说明用途
+- [x] N2 分场景命令注册（BotCommandScopeAllPrivateChats / AllGroupChats / 默认），群聊菜单更短
+- [x] N3 按钮语义配色（订阅=绿 / 退订=红 / AI日报=蓝），经 api_kwargs 透传 style，旧客户端自动忽略
+- [x] N4 📤 分享按钮（switch_inline_query），一键选聊天分享天气卡片
+- [x] N5 逐小时"更多指标"折叠表：露点/气压/云量/能见度/逐小时AQI（此前全部只喂 AI 日报）
+- [x] N6 今日详情补 日均温 / 月升月落 / 昼夜分段降水量
+- [x] N7 新增 6 项测试（共 160 项）；验证 scope 枚举经 json.dumps 正确序列化为 all_private_chats
+
+### 仍未做（需你决策，非补短板）
+- 和风新功能线端点：历史天气、格点天气（任意经纬度）、台风路径、潮汐、POI、监测站、indices/3d
+- 天文端点冗余：日月升落/月相已由逐日预报提供，无需另接
+- Ed25519 JWT 认证迁移（官方要求 2027-01-01 前，需要你在和风控制台生成密钥对）

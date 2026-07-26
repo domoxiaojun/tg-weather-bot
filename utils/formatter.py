@@ -582,6 +582,18 @@ _VIEW_SWITCHES = (
 )
 
 
+def styled_button(text: str, style: Optional[str] = None, **kwargs) -> InlineKeyboardButton:
+    """Inline button with an optional Bot API 10.x colour.
+
+    ``style`` is not typed by PTB 22.8, so it rides along via ``api_kwargs``
+    (verified to reach ``to_dict``); older clients simply ignore it. Only
+    semantic actions get colour — colouring everything is noise.
+    """
+    if style:
+        kwargs["api_kwargs"] = {"style": style}
+    return InlineKeyboardButton(text, **kwargs)
+
+
 def callback_location_token(location_query: str, coords: Optional[str] = None) -> str:
     """Return a callback-safe location token, falling back to coordinates."""
     if len(location_query.encode("utf-8")) <= _CALLBACK_LOCATION_MAX_BYTES:
@@ -631,7 +643,7 @@ def get_weather_keyboard(
             "🔄 刷新",
             callback_data=f"refresh|{token}|{current_args[0]}|{current_args[1]}|{current_args[2]}",
         ),
-        InlineKeyboardButton("🔔 降雨提醒", callback_data=f"sub|{token}"),
+        styled_button("🔔 降雨提醒", style="success", callback_data=f"sub|{token}"),
     ]
     keyboard = [row1]
 
@@ -651,7 +663,10 @@ def get_weather_keyboard(
             InlineKeyboardButton("📆 逐日图", callback_data=f"chart|{token}|daily"),
         ])
 
-    # 第四排：AI 日报
-    keyboard.append([InlineKeyboardButton("🤖 AI日报", callback_data=f"report|{token}")])
+    # 第四排：AI 日报 + 分享给别人（switch_inline_query 让用户选聊天后直接发天气卡片）
+    keyboard.append([
+        styled_button("🤖 AI日报", style="primary", callback_data=f"report|{token}"),
+        InlineKeyboardButton("📤 分享", switch_inline_query=location_query),
+    ])
 
     return InlineKeyboardMarkup(keyboard)

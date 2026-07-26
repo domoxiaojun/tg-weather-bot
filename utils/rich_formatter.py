@@ -258,12 +258,23 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
     )
     rows.append(["☀️ 日间", f"{weather_icon(day.icon_day)} {day.text_day}" + (f"（{day_wind}）" if day_wind else "")])
     rows.append(["🌙 夜间", f"{weather_icon(day.icon_night)} {day.text_night}" + (f"（{night_wind}）" if night_wind else "")])
+    if day.temp_avg is not None:
+        rows.append(["🌡️ 日均温", f"{format_weather_number(day.temp_avg)}°C"])
     if day.sunrise or day.sunset:
         rows.append(["🌅 日出/日落", f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}"])
-    if day.moon_phase:
-        rows.append(["🌙 月相", day.moon_phase])
+    if day.moon_phase or day.moon_rise or day.moon_set:
+        moon_bits = [day.moon_phase] if day.moon_phase else []
+        if day.moon_rise or day.moon_set:
+            moon_bits.append(f"{day.moon_rise or 'N/A'} / {day.moon_set or 'N/A'}")
+        rows.append(["🌙 月相/月升落", " · ".join(moon_bits)])
     if day.uv_index:
         rows.append(["☀️ 紫外线", str(day.uv_index)])
+    if day.precip_day is not None or day.precip_night is not None:
+        rows.append([
+            "☔️ 昼/夜降水",
+            f"{format_precip_value(day.precip_day, day.precip_kind)} / "
+            f"{format_precip_value(day.precip_night, day.precip_kind)}",
+        ])
 
     pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
     if pops:
@@ -376,7 +387,51 @@ def build_hourly_blocks(data: WeatherData, limit: Optional[int] = None) -> List[
     return [
         *build_header(data, f"未来 {len(hours)} 小时 · 当地时间"),
         table(rows, headers=headers, aligns=aligns, bordered=True),
+        *_hourly_extras_blocks(hours),
         build_footer(data),
+    ]
+
+
+def _hourly_extras_blocks(hours: List) -> List[dict]:
+    """Collapsible table for metrics that would make the main table too wide.
+
+    Dew point, pressure, cloud cover, visibility and hourly AQI are all
+    fetched but had no user-visible surface before; a collapsed table keeps the
+    primary view dense while making them reachable.
+    """
+    columns = [
+        ("露点", lambda hour: f"{format_weather_number(hour.dew)}°" if hour.dew is not None else None),
+        ("气压", lambda hour: f"{format_weather_number(hour.pressure)}" if hour.pressure is not None else None),
+        ("云量", lambda hour: f"{hour.cloud}%" if hour.cloud is not None else None),
+        ("能见度", lambda hour: f"{format_weather_number(hour.visibility)}km" if hour.visibility is not None else None),
+        ("AQI", lambda hour: str(hour.aqi) if hour.aqi is not None else None),
+    ]
+    active = [
+        (label, getter)
+        for label, getter in columns
+        if any(getter(hour) is not None for hour in hours)
+    ]
+    if not active:
+        return []
+
+    rows = []
+    for hour in hours:
+        rows.append([
+            hour.time.strftime("%H:%M"),
+            *[getter(hour) or "—" for _label, getter in active],
+        ])
+    return [
+        details(
+            "🔬 更多逐小时指标（露点/气压/云量/能见度/AQI）",
+            [
+                table(
+                    rows,
+                    headers=["时间", *[label for label, _getter in active]],
+                    aligns=["left", *["right"] * len(active)],
+                    caption="气压单位 hPa",
+                )
+            ],
+        )
     ]
 
 

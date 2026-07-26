@@ -2,7 +2,7 @@ from html import escape
 from typing import Optional
 
 from loguru import logger
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -10,6 +10,7 @@ from core.config import settings
 from core.handlers.common import BotDependencies
 from core.handlers.messages import send_personal_text
 from core.scheduler import DEFAULT_DAILY_BRIEF_TIME, parse_brief_time
+from utils.formatter import styled_button
 from utils.schedule_times import parse_quiet_hours
 
 
@@ -64,7 +65,9 @@ def render_subscription_list(chat_data: dict, kind: str):
         else:
             lines.append(f"• {escape(location)}")
         buttons.append(
-            InlineKeyboardButton(f"❌ {location}", callback_data=f"unsub|{kind}|{index}")
+            styled_button(
+                f"❌ {location}", style="danger", callback_data=f"unsub|{kind}|{index}"
+            )
         )
     lines.append("\n点按钮即可取消订阅。")
 

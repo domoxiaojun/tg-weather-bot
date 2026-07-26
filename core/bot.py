@@ -30,45 +30,94 @@ from utils.persistence_backup import rotate_persistence_backups
 PERSISTENCE_PATH = "data/bot_data.pickle"
 
 
-async def _register_bot_commands(application: Application):
-    """Register the command list with Telegram on startup."""
+# Commands whose replies are personal bookkeeping (ephemeral in groups).
+_EPHEMERAL_COMMANDS = {"daily_sub", "daily_my", "daily_unsub", "rain_sub", "rain_my", "rain_unsub"}
+
+# Shown on the bot's profile page before anyone talks to it.
+BOT_SHORT_DESCRIPTION = "全球天气查询 · 降雨提醒 · 官方预警推送 · AI 天气日报"
+BOT_DESCRIPTION = (
+    "🌤 DomoWeather —— 和风天气 + 彩云天气双源融合的天气助手。\n\n"
+    "• 发送城市名或位置即可查天气，支持逐小时 / 未来 15 天 / 生活指数 / 降水趋势图\n"
+    "• 订阅降雨提醒：即将下雨时通知你，并推送官方灾害预警\n"
+    "• 订阅早安简报：每天固定时间收到 AI 撰写的天气日报\n\n"
+    "发送 /start 开始使用。"
+)
+
+
+def _weather_commands():
     from telegram import BotCommand
 
-    commands = [
-        BotCommand("start", "开始使用 - 查看帮助信息"),
+    return [
         BotCommand("tq", "天气查询 - /tq [城市] [参数]"),
-        BotCommand("chart", "温度趋势图 - /chart [城市] [daily|hourly]"),
+        BotCommand("chart", "趋势图 - /chart [城市] [daily|rain|minutely]"),
         BotCommand("report", "AI天气日报 - /report [城市]"),
-        BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市] [HH:MM]"),
-        BotCommand("daily_my", "我的订阅 - 查看已订阅城市"),
-        BotCommand("daily_unsub", "取消订阅 - /daily_unsub [城市]"),
-        BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市]"),
-        BotCommand("rain_my", "我的降雨提醒 - 查看已订阅城市"),
-        BotCommand("rain_unsub", "取消降雨提醒 - /rain_unsub [城市]"),
     ]
 
-    # Bot API 10.2: mark the personal bookkeeping commands so Telegram knows
-    # their replies are ephemeral. Sent via api_kwargs because PTB 22.8's
-    # BotCommand has no is_ephemeral field yet; ignored by older servers.
+
+def _subscription_commands():
+    from telegram import BotCommand
+
+    return [
+        BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市]"),
+        BotCommand("rain_my", "我的降雨提醒 - 查看并取消"),
+        BotCommand("rain_unsub", "取消降雨提醒 - /rain_unsub [城市]"),
+        BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市] [HH:MM]"),
+        BotCommand("daily_my", "我的早安订阅 - 查看并取消"),
+        BotCommand("daily_unsub", "取消早安简报 - /daily_unsub [城市]"),
+    ]
+
+
+async def _set_commands(application: Application, commands, scope=None) -> None:
+    """Register a command list, adding the 10.2 is_ephemeral flag when possible."""
     if settings.enable_ephemeral_messages:
-        ephemeral_commands = {"daily_sub", "daily_my", "daily_unsub", "rain_sub", "rain_my", "rain_unsub"}
         payload = [
             {
                 "command": command.command,
                 "description": command.description,
-                **({"is_ephemeral": True} if command.command in ephemeral_commands else {}),
+                **({"is_ephemeral": True} if command.command in _EPHEMERAL_COMMANDS else {}),
             }
             for command in commands
         ]
+        api_kwargs = {"commands": payload}
+        if scope is not None:
+            api_kwargs["scope"] = scope.to_dict()
         try:
-            await application.bot.do_api_request("setMyCommands", api_kwargs={"commands": payload})
-            logger.info("✅ Bot命令已注册到Telegram（含 ephemeral 标记）")
+            await application.bot.do_api_request("setMyCommands", api_kwargs=api_kwargs)
             return
         except Exception as error:
             logger.warning(f"设置 ephemeral 命令标记失败，回退标准注册: {error}")
 
-    await application.bot.set_my_commands(commands)
-    logger.info("✅ Bot命令已注册到Telegram")
+    await application.bot.set_my_commands(commands, scope=scope)
+
+
+async def _register_bot_commands(application: Application):
+    """Register scoped command lists and the profile descriptions on startup."""
+    from telegram import BotCommand, BotCommandScopeAllGroupChats, BotCommandScopeAllPrivateChats
+
+    start_command = BotCommand("start", "开始使用 - 查看帮助信息")
+    private_commands = [start_command, *_weather_commands(), *_subscription_commands()]
+    # Groups get a shorter menu: /start's location keyboard is private-only and
+    # a long list clutters the group command popup.
+    group_commands = [*_weather_commands(), *_subscription_commands()]
+
+    try:
+        await _set_commands(application, private_commands, BotCommandScopeAllPrivateChats())
+        await _set_commands(application, group_commands, BotCommandScopeAllGroupChats())
+        # Default scope covers channels and anything Telegram adds later.
+        await _set_commands(application, private_commands)
+        logger.info("✅ Bot命令已按私聊/群聊分别注册到Telegram")
+    except Exception as error:
+        logger.warning(f"命令注册失败: {error}")
+
+    # Profile texts: what users see when they find the bot but have not started it.
+    for setter, value, label in (
+        (application.bot.set_my_short_description, BOT_SHORT_DESCRIPTION, "短描述"),
+        (application.bot.set_my_description, BOT_DESCRIPTION, "描述"),
+    ):
+        try:
+            await setter(value)
+        except Exception as error:
+            logger.warning(f"设置 Bot {label} 失败: {error}")
 
 
 def create_app() -> Application:

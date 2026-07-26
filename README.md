@@ -110,6 +110,13 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - Subscription locations are geocoded and normalized on subscribe; chats that block the bot are removed from push lists automatically.
 - Ambiguous city names (e.g. 朝阳) prompt an inline chooser instead of silently picking the first match.
 
+## 🧭 Discovery & buttons
+
+- The bot registers **scoped command lists**: private chats get `/start` plus everything, groups get a shorter menu (the `/start` location keyboard is private-only). Personal bookkeeping commands carry the Bot API 10.2 `is_ephemeral` flag.
+- `setMyShortDescription` / `setMyDescription` are set on startup, so the profile page explains the bot before anyone presses Start.
+- Semantic buttons are colour-coded with the Bot API 10.x `style` field (subscribe = green, unsubscribe = red, AI report = blue); neutral navigation stays uncoloured. Older clients ignore the field.
+- Weather cards carry a **📤 分享** button (`switch_inline_query`) that opens a chat picker and shares the card through inline mode.
+
 ## ⚙️ BotFather Checklist
 
 - **Inline mode**: enable via `/setinline`.
