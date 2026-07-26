@@ -55,10 +55,15 @@ class ReportHandlers:
     async def report(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /report command for AI-generated summary."""
         if not context.args:
-            await send_text(update, context, "请提供城市名称，例如：<code>/report 北京</code>", parse_mode=ParseMode.HTML)
-            return
-
-        location = join_location_args(list(context.args))
+            last = (context.chat_data or {}).get("last_location") or {}
+            if not last.get("coords"):
+                await send_text(
+                    update, context, "请提供城市名称，例如：<code>/report 北京</code>", parse_mode=ParseMode.HTML
+                )
+                return
+            location = last["coords"]
+        else:
+            location = join_location_args(list(context.args))
 
         message = update.effective_message
         if message:
@@ -82,7 +87,20 @@ class ReportHandlers:
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
             try:
-                await send_text(update, context, "❌ 生成日报失败，请稍后重试。")
+                from telegram import InlineKeyboardMarkup
+
+                from utils.formatter import callback_location_token, styled_button
+
+                token = callback_location_token(location)
+                await send_text(
+                    update,
+                    context,
+                    "❌ 生成日报失败。",
+                    reply_markup=InlineKeyboardMarkup([[
+                        styled_button("🔄 重试", callback_data=f"report|{token}"),
+                        styled_button("🌤 普通天气", callback_data=f"tq|{token}|default|0|0"),
+                    ]]),
+                )
             except Exception as fallback_error:
                 logger.error(f"Report fallback send failed: {fallback_error}")
 

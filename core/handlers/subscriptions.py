@@ -58,8 +58,15 @@ def subscription_limit_reached(subs: list) -> bool:
 def subscription_limit_message(manage_command: str) -> str:
     return (
         f"❌ 每个聊天最多订阅 {settings.max_subscriptions_per_chat} 个城市。\n"
-        f"先用 {manage_command} 取消一个，再重新订阅。"
+        f"先取消一个，再重新订阅。"
     )
+
+
+def subscription_limit_keyboard(kind: str) -> InlineKeyboardMarkup:
+    """Limit refusals still hand over the management card in one tap."""
+    return InlineKeyboardMarkup([[
+        styled_button("🗂 管理订阅", callback_data=f"submy|{kind}")
+    ]])
 
 
 DEFAULT_DAILY_BRIEF_TIME_HINT = f"默认每天 {DEFAULT_DAILY_BRIEF_TIME} 推送，点下方时间按钮可改。"
@@ -197,23 +204,20 @@ def build_subscription_blocks(chat_data: dict, kind: str, prefix: Optional[str] 
 
 def render_empty_card(chat_data: dict, kind: str):
     """Empty state that still offers a way forward instead of a dead end."""
-    if kind == "daily":
-        text = (
-            "📭 还没有早安简报订阅。\n"
-            "方式一：/tq 城市 后点「📅 早安简报」按钮\n"
-            "方式二：/daily_sub 城市 HH:MM"
-        )
-    else:
-        text = (
-            "📭 还没有降雨提醒订阅。\n"
-            "方式一：/tq 城市 后点「🔔 降雨提醒」按钮\n"
-            "方式二：/rain_sub 城市 [档位]"
-        )
+    button = "📅 早安简报" if kind == "daily" else "🔔 降雨提醒"
+    what = "早安简报" if kind == "daily" else "降雨提醒"
+    text = (
+        f"📭 还没有{what}订阅。\n"
+        f"先查一次天气（直接发城市名，如「北京」），然后点卡片上的「{button}」即可。"
+    )
     rows = []
     add = _add_city_button(chat_data, kind)
     if add is not None:
         rows.append([add])
-    rows.append(_card_footer_row(chat_data, kind)[:1])  # switch button only
+    rows.append([
+        *_card_footer_row(chat_data, kind)[:1],  # switch button only
+        styled_button("📖 怎么订阅", callback_data="help|push"),
+    ])
     return text, InlineKeyboardMarkup(rows)
 
 
@@ -340,12 +344,11 @@ class SubscriptionHandlers:
     async def daily_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_sub [城市] [HH:MM] - 订阅每日早安简报，可自定义推送时间"""
         if not context.args:
-            await send_personal_text(
+            await send_subscription_card(
                 update,
                 context,
-                "用法：/daily_sub 城市 时间（时间可省略）\n"
-                "例：/daily_sub 北京 07:30\n"
-                "不填时间则默认每天 08:00 推送。",
+                "daily",
+                prefix="订阅新城市：/daily_sub 城市 [HH:MM]（如 /daily_sub 北京 07:30）",
             )
             return
 
@@ -374,7 +377,12 @@ class SubscriptionHandlers:
 
         if not matched:
             if subscription_limit_reached(subs):
-                await send_personal_text(update, context, subscription_limit_message("/daily_my"))
+                await send_personal_text(
+                    update,
+                    context,
+                    subscription_limit_message("/daily_my"),
+                    reply_markup=subscription_limit_keyboard("daily"),
+                )
                 return
             subs.append(location)
             matched = location
@@ -397,7 +405,9 @@ class SubscriptionHandlers:
     async def daily_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_unsub [城市] - 取消订阅"""
         if not context.args:
-            await send_personal_text(update, context, "用法：/daily_unsub 城市\n也可以在 /daily_my 里点按钮取消。")
+            await send_subscription_card(
+                update, context, "daily", prefix="要取消哪个？点下面的 ❌ 即可。"
+            )
             return
 
         location = self._location_from_args(context)
@@ -412,7 +422,9 @@ class SubscriptionHandlers:
             remove_subscription_entry(context.chat_data, "daily", subs.index(matched))
             await send_subscription_card(update, context, "daily", prefix=f"✅ 已取消 {matched} 的订阅。")
         else:
-            await send_personal_text(update, context, f"你没有订阅 {location}。")
+            await send_subscription_card(
+                update, context, "daily", prefix=f"你没有订阅 {location}，当前订阅如下："
+            )
 
     async def daily_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_my - 查看我的订阅"""
@@ -421,15 +433,11 @@ class SubscriptionHandlers:
     async def rain_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_sub [城市] - 订阅降雨提醒"""
         if not context.args:
-            levels = "、".join(label for label, _r, _p, _h in RAIN_LEVELS.values())
-            await send_personal_text(
+            await send_subscription_card(
                 update,
                 context,
-                "用法：/rain_sub 城市 [档位]\n"
-                "例：/rain_sub 北京\n"
-                "　　/rain_sub 北京 仅大雨\n"
-                f"档位可选：{levels}（默认 {rain_level_label(DEFAULT_RAIN_LEVEL)}）\n"
-                "已订阅的城市再执行一次即可改档位。",
+                "rain",
+                prefix="订阅新城市：/rain_sub 城市 [档位]（如 /rain_sub 北京 仅大雨）",
             )
             return
 
@@ -463,7 +471,12 @@ class SubscriptionHandlers:
             )
             return
         if subscription_limit_reached(subs):
-            await send_personal_text(update, context, subscription_limit_message("/rain_my"))
+            await send_personal_text(
+                update,
+                context,
+                subscription_limit_message("/rain_my"),
+                reply_markup=subscription_limit_keyboard("rain"),
+            )
             return
 
         subs.append(location)
@@ -484,7 +497,9 @@ class SubscriptionHandlers:
     async def rain_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_unsub [城市] - 取消降雨提醒"""
         if not context.args:
-            await send_personal_text(update, context, "用法：/rain_unsub 城市\n也可以在 /rain_my 里点按钮取消。")
+            await send_subscription_card(
+                update, context, "rain", prefix="要取消哪个？点下面的 ❌ 即可。"
+            )
             return
 
         location = self._location_from_args(context)
@@ -499,7 +514,9 @@ class SubscriptionHandlers:
             remove_subscription_entry(context.chat_data, "rain", subs.index(matched))
             await send_subscription_card(update, context, "rain", prefix=f"✅ 已取消 {matched} 的降雨提醒。")
         else:
-            await send_personal_text(update, context, f"你没有订阅 {location} 的降雨提醒。")
+            await send_subscription_card(
+                update, context, "rain", prefix=f"你没有订阅 {location}，当前订阅如下："
+            )
 
     async def rain_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_my - 查看我的降雨提醒"""

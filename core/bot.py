@@ -19,6 +19,7 @@ from telegram.ext import (
 
 from core.config import settings
 from core.handlers.callbacks import CallbackHandlers
+from core.handlers.guide import help_command as guide_help_command
 from core.handlers.common import BotDependencies
 from core.handlers.inline import InlineHandlers
 from core.handlers.report import ReportHandlers
@@ -55,6 +56,7 @@ def _weather_commands():
         BotCommand("report", "AI天气日报 - /report [城市]"),
         BotCommand("typhoon", "台风查询 - /typhoon [城市]"),
         BotCommand("tide", "潮汐查询 - /tide [沿海城市]"),
+        BotCommand("help", "使用指南 - 全部玩法与按钮说明"),
     ]
 
 
@@ -185,6 +187,7 @@ def create_app() -> Application:
     subscriptions = SubscriptionHandlers(deps)
 
     app.add_handler(CommandHandler("start", weather.start))
+    app.add_handler(CommandHandler("help", guide_help_command))
     app.add_handler(CommandHandler("tq", weather.handle_weather_request))
     app.add_handler(CommandHandler("chart", weather.chart))
     app.add_handler(CommandHandler("report", reports.report))
@@ -203,6 +206,10 @@ def create_app() -> Application:
             filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
             weather.handle_private_text,
         )
+    )
+    # 私聊打错命令兜底（真命令已被上面的 CommandHandler 消费，不会到这里）
+    app.add_handler(
+        MessageHandler(filters.COMMAND & filters.ChatType.PRIVATE, weather.handle_unknown_command)
     )
     app.add_handler(CallbackQueryHandler(callbacks.handle_callback))
     app.add_handler(InlineQueryHandler(inline.handle_inline_query))

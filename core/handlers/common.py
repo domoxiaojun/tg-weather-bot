@@ -113,10 +113,34 @@ def parse_query_param(param: str) -> tuple[str, int, Optional[int]]:
     return "default", 0, None
 
 
+# Suffixes people glue onto a city without a space: 北京明天 / 上海降水.
+# Pure table lookup — longest match first, and the remainder must keep >=2
+# chars so 大后天 alone or 朝阳 are never mis-split.
+_GLUED_SUFFIXES = sorted(
+    [*RELATIVE_DAY_WORDS, "降水", "降雨", "指数", "预报"], key=len, reverse=True
+)
+
+
+def split_glued_query(token: str) -> list[str]:
+    """Split "北京明天" into ["北京", "明天"]; return [token] when not glued."""
+    for suffix in _GLUED_SUFFIXES:
+        if (
+            token.endswith(suffix)
+            and len(token) - len(suffix) >= 2
+            and not token[: -len(suffix)].isascii()
+        ):
+            return [token[: -len(suffix)], suffix]
+    return [token]
+
+
 def parse_location_and_view(args: list[str]) -> tuple[Optional[str], str, int, Optional[int]]:
     """Parse command or inline text parts into location and view arguments."""
     if not args:
         return None, "default", 0, None
+
+    if len(args) == 1:
+        # 中文输入法里打空格麻烦：单 token 先尝试拆黏连后缀。
+        args = split_glued_query(args[0].strip())
 
     if len(args) >= 3:
         prev = args[-2].strip().lower()

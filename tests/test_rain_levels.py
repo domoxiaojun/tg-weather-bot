@@ -136,7 +136,16 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         await self.handlers.rain_sub(self.update, self.context)
         self.assertEqual(seen, ["New York"])
 
-    async def test_usage_hint_lists_every_level(self):
+    async def test_bare_command_opens_the_card_not_a_usage_wall(self):
+        # No subscriptions yet: the empty-state guidance points at the button.
+        await self.handlers.rain_sub(self.update, self.context)
+        self.assertIn("降雨提醒", self.last_text)
+        self.assertIn("城市名", self.last_text)
+
+    async def test_bare_command_with_subscriptions_lists_levels_on_the_card(self):
+        self.context.args = ["北京"]
+        await self.handlers.rain_sub(self.update, self.context)
+        self.context.args = []
         await self.handlers.rain_sub(self.update, self.context)
         for label, _rate, _pop, _hint in RAIN_LEVELS.values():
             self.assertIn(label, self.last_text)

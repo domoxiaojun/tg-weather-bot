@@ -111,6 +111,25 @@ class CallbackHandlers:
             await self._refresh_subscription_list(query, context, data_parts[1])
             return
 
+        if action == "help" and len(data_parts) >= 2:
+            from core.handlers.guide import build_guide
+
+            await self._safe_answer(query)
+            text, keyboard = build_guide(data_parts[1])
+            try:
+                await query.edit_message_text(
+                    text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                )
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    # /start 快速开始卡等非指南消息：另发一条指南
+                    from core.handlers.messages import send_personal_text
+
+                    await send_personal_text(
+                        update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard
+                    )
+            return
+
         if action == "submy" and len(data_parts) >= 2 and data_parts[1] in {"daily", "rain"}:
             # ⚙️ button on push messages: open the subscription card without
             # touching the push itself (there is nothing to edit in place).

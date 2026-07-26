@@ -32,7 +32,13 @@ from services.chart_cache import (
     run_chart_render,
 )
 from services.visualizer import Visualizer
-from utils.formatter import format_weather_response, get_weather_keyboard
+from core.handlers.guide import GUIDE_DEFAULT_PAGE
+from utils.formatter import (
+    callback_location_token,
+    format_weather_response,
+    get_weather_keyboard,
+    styled_button,
+)
 
 
 def _looks_like_coords(text: str) -> bool:
@@ -67,33 +73,78 @@ class WeatherHandlers:
         self.deps = deps
 
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        bot_username = context.bot.username or "bot_name"
-        welcome_text = (
-            "👋 <b>欢迎使用 DomoWeather Bot！</b>\n\n"
-            "🔍 <b>查询天气</b>\n"
-            "• <code>/tq 北京</code> —— 实时天气\n"
-            "• <code>/tq 北京 明天</code> —— 明日预报（也支持 今天/后天）\n"
-            "• <code>/tq 北京 daily 3</code> —— 未来3天\n"
-            "• <code>/tq 北京 24h</code> —— 未来24小时\n"
-            "• <code>/chart 北京</code> —— 趋势图（可切换温度/降水/逐日）\n"
-            "• <code>/report 北京</code> —— AI 天气日报\n\n"
-            "🔔 <b>订阅推送</b>\n"
-            "• <code>/rain_sub 北京</code> —— 降雨提醒（快下雨时通知，可加「仅大雨」等档位）\n"
-            "• <code>/daily_sub 北京 07:30</code> —— 早安简报（时间可选，默认 08:00）\n"
-            "• <code>/rain_my</code> / <code>/daily_my</code> —— 订阅卡片（按钮改档位/改时间/退订）\n\n"
-            f"⚡ <b>Inline</b>：任意聊天输入 <code>@{bot_username} 北京</code> 直接分享天气\n\n"
-            "数据源：和风天气 (QWeather) & 彩云天气 (Caiyun)"
-        )
-        reply_markup = None
+        """/start - 三行欢迎 + 快速开始按钮卡，不再是命令墙。"""
         chat = update.effective_chat
+        last = (context.chat_data or {}).get("last_location") or {}
+
+        # Quick-start card: the things a new user actually does next.
+        if last.get("name"):
+            token = callback_location_token(last["name"], last.get("coords"))
+            subscribe_row = [
+                styled_button(
+                    f"🔔 订阅{last['name']}降雨", style="success", callback_data=f"sub|{token}"
+                ),
+                styled_button(f"📅 订阅{last['name']}简报", callback_data=f"dsub|{token}"),
+            ]
+        else:
+            subscribe_row = [
+                styled_button("🔔 降雨提醒", style="success", callback_data="submy|rain"),
+                styled_button("📅 早安简报", callback_data="submy|daily"),
+            ]
+        quick_keyboard = InlineKeyboardMarkup([
+            subscribe_row,
+            [styled_button("📖 使用指南", callback_data=f"help|{GUIDE_DEFAULT_PAGE}")],
+        ])
+
         if chat is not None and chat.type == ChatType.PRIVATE:
-            reply_markup = ReplyKeyboardMarkup(
-                [[KeyboardButton("📍 发送我的位置", request_location=True)]],
-                resize_keyboard=True,
-                one_time_keyboard=True,
-                input_field_placeholder="点击按钮分享位置，或输入 /tq 城市",
+            # Message 1: how to query. (A reply keyboard cannot share a message
+            # with inline buttons, hence the two-message split.)
+            await send_text(
+                update,
+                context,
+                "👋 你好，我是 <b>DomoWeather</b>。\n\n"
+                "查天气：<b>直接发城市名</b>就行，比如 <code>北京</code> 或 <code>北京明天</code>；\n"
+                "也可以点下面的按钮发送位置📍",
+                parse_mode=ParseMode.HTML,
+                reply_markup=ReplyKeyboardMarkup(
+                    [[KeyboardButton("📍 发送我的位置", request_location=True)]],
+                    resize_keyboard=True,
+                    one_time_keyboard=True,
+                    input_field_placeholder="直接发城市名，如：北京 明天",
+                ),
             )
-        await send_text(update, context, welcome_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
+            await send_text(
+                update,
+                context,
+                "下雨提前叫我、每天早上一份 AI 简报——点这里开启：",
+                reply_markup=quick_keyboard,
+            )
+            return
+
+        await send_text(
+            update,
+            context,
+            "👋 大家好，我是 <b>DomoWeather</b>。\n"
+            "查天气：<code>/tq 城市名</code>；订阅降雨提醒/早安简报点下面的按钮（群共享）。",
+            parse_mode=ParseMode.HTML,
+            reply_markup=quick_keyboard,
+        )
+
+    async def handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """私聊里打错的命令给出一条活路，而不是已读不回。"""
+        message = update.effective_message
+        text = (message.text or "").strip() if message else ""
+        # /tq北京 —— 命令和参数黏在一起的常见手误
+        if text.startswith("/tq") and len(text) > 3 and not text[3].isspace():
+            context.args = text[3:].split()
+            await self.handle_weather_request(update, context)
+            return
+        await send_text(
+            update,
+            context,
+            "🤔 不认识这个命令。查天气可以<b>直接发城市名</b>（如 北京）；全部玩法见 /help",
+            parse_mode=ParseMode.HTML,
+        )
 
     async def chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/chart [城市] [daily|hourly|rain] -> 发送趋势图"""
@@ -154,7 +205,12 @@ class WeatherHandlers:
 
         img_bytes = await render_chart_bytes_async(data, chart_type)
         if not img_bytes:
-            await send_text(update, context, f"⚠️ 暂无{caption.split(' ', 1)[-1]}数据，无法绘制图表")
+            await send_text(
+                update,
+                context,
+                f"⚠️ 暂无{caption.split(' ', 1)[-1]}数据。试试其他图表：",
+                reply_markup=get_weather_keyboard(location, mode="chart", coords=data.coords),
+            )
             return
 
         sent = await send_photo(
@@ -188,7 +244,21 @@ class WeatherHandlers:
             if isinstance(last, dict) and last.get("coords"):
                 location_query = last["coords"]
             else:
-                await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京（也可以直接发送城市名）")
+                location_keyboard = None
+                chat = update.effective_chat
+                if chat is not None and chat.type == ChatType.PRIVATE:
+                    location_keyboard = ReplyKeyboardMarkup(
+                        [[KeyboardButton("📍 发送我的位置", request_location=True)]],
+                        resize_keyboard=True,
+                        one_time_keyboard=True,
+                        input_field_placeholder="直接发城市名，如：北京",
+                    )
+                await send_text(
+                    update,
+                    context,
+                    "想查哪里？直接发城市名（如 北京），或点按钮发送位置📍",
+                    reply_markup=location_keyboard,
+                )
                 return
 
         if not location_query:
@@ -285,7 +355,10 @@ class WeatherHandlers:
                 bits.append(f"{storm.now.lat:.1f}°N {storm.now.lon:.1f}°E")
             lines.append(" · ".join(bits))
         if location_name:
-            lines.append(f"\n对 {escape(location_name)} 暂无明显影响。")
+            lines.append(
+                f"\n对 {escape(location_name)} 暂无明显影响。"
+                f"订阅了降雨提醒的城市，台风逼近时会自动推送，无需手动查。"
+            )
         else:
             lines.append("\n发送 /typhoon 城市 可判断对该地点的影响。")
         await send_text(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
@@ -328,11 +401,15 @@ class WeatherHandlers:
             return
 
         if not stations:
+            name = loc_info.get("name", location)
+            token = callback_location_token(name, f"{lon},{lat}")
             await send_text(
                 update,
                 context,
-                f"🌊 {loc_info.get('name', location)} 附近没有可用的潮汐站。\n"
-                "潮汐数据只覆盖沿海主要港口。",
+                f"🌊 {name} 附近没有可用的潮汐站（数据只覆盖沿海主要港口）。",
+                reply_markup=InlineKeyboardMarkup([[
+                    styled_button("🌤 查看该地天气", callback_data=f"tq|{token}|default|0|0")
+                ]]),
             )
             return
 
@@ -477,12 +554,20 @@ class WeatherHandlers:
             return
 
         if not data:
+            last = (context.chat_data or {}).get("last_location") or {}
+            not_found_keyboard = None
+            if last.get("name"):
+                token = callback_location_token(last["name"], last.get("coords"))
+                not_found_keyboard = InlineKeyboardMarkup([[
+                    styled_button(
+                        f"🌤 查{last['name']}", callback_data=f"tq|{token}|default|0|0"
+                    )
+                ]])
             await send_text(
                 update,
                 context,
-                f"❌ 未找到「{location_query}」的天气数据。\n"
-                "• 试试完整城市名或加上省份，如：辽宁 朝阳\n"
-                "• 参数写法：/tq 北京 明天 · /tq 北京 daily 3 · /tq 北京 24h · /tq 北京 07-05",
+                f"❌ 未找到「{location_query}」。\n试试完整城市名或加上省份，如：辽宁 朝阳",
+                reply_markup=not_found_keyboard,
             )
             return
 
@@ -549,6 +634,17 @@ class WeatherHandlers:
         except Exception as e:
             logger.error(f"Reply failed: {e}")
             try:
-                await send_text(update, context, "❌ 发送失败，请重试。")
+                token = callback_location_token(location_query, data.coords if data else None)
+                await send_text(
+                    update,
+                    context,
+                    "❌ 发送失败。",
+                    reply_markup=InlineKeyboardMarkup([[
+                        styled_button(
+                            "🔄 重试",
+                            callback_data=f"tq|{token}|{view_type}|{start_day}|{limit or 0}",
+                        )
+                    ]]),
+                )
             except Exception as fallback_error:
                 logger.error(f"Fallback send failed: {fallback_error}")
