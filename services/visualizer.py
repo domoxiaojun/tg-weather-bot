@@ -2,6 +2,7 @@ import io
 import os
 
 import matplotlib.pyplot as plt
+from loguru import logger
 from matplotlib import font_manager
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, Patch
@@ -17,6 +18,7 @@ plt.switch_backend('Agg')
 
 class Visualizer:
     _cjk_font_family: Optional[str] = None
+    _cjk_font_probed = False
     HOURLY_POINT_LIMIT = 24
     _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
     _THEME = {
@@ -42,15 +44,24 @@ class Visualizer:
         """剥离时区信息"""
         return [t.replace(tzinfo=None) if hasattr(t, 'replace') else t for t in times]
 
+    # macOS and Linux (Docker: fonts-noto-cjk) candidates for CJK rendering.
+    _CJK_FONT_PATHS = (
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/STHeiti Medium.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+    )
+
     @classmethod
     def _setup_style(cls):
         """配置全局绘图风格"""
-        if cls._cjk_font_family is None:
-            for font_path in (
-                "/System/Library/Fonts/Hiragino Sans GB.ttc",
-                "/System/Library/Fonts/STHeiti Medium.ttc",
-                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-            ):
+        if not cls._cjk_font_probed:
+            cls._cjk_font_probed = True
+            for font_path in cls._CJK_FONT_PATHS:
                 if not os.path.exists(font_path):
                     continue
                 try:
@@ -103,16 +114,18 @@ class Visualizer:
 
     @classmethod
     def _render_figure(cls, fig) -> bytes:
-        buf = io.BytesIO()
-        fig.savefig(
-            buf,
-            format="png",
-            facecolor=cls._THEME["canvas"],
-            edgecolor="none",
-        )
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
+        try:
+            buf = io.BytesIO()
+            fig.savefig(
+                buf,
+                format="png",
+                facecolor=cls._THEME["canvas"],
+                edgecolor="none",
+            )
+            buf.seek(0)
+            return buf.getvalue()
+        finally:
+            plt.close(fig)
 
     @staticmethod
     def _format_number(value: float, decimals: int = 1) -> str:
@@ -351,7 +364,33 @@ class Visualizer:
                 label.set_color(cls._THEME["muted"])
 
     @classmethod
+    def _draw_safely(cls, draw_fn, data: WeatherData) -> Optional[bytes]:
+        """Run a chart builder, guaranteeing stray figures are closed on failure.
+
+        Rendering is serialized on a single worker thread (see chart_cache), so
+        closing all pyplot figures here cannot affect a concurrent render.
+        """
+        try:
+            return draw_fn(data)
+        except Exception:
+            logger.exception("Chart rendering failed")
+            plt.close("all")
+            return None
+
+    @classmethod
     def draw_hourly_temp_chart(cls, data: WeatherData) -> Optional[bytes]:
+        return cls._draw_safely(cls._render_hourly_temp_chart, data)
+
+    @classmethod
+    def draw_hourly_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
+        return cls._draw_safely(cls._render_hourly_rain_chart, data)
+
+    @classmethod
+    def draw_daily_temp_chart(cls, data: WeatherData) -> Optional[bytes]:
+        return cls._draw_safely(cls._render_daily_temp_chart, data)
+
+    @classmethod
+    def _render_hourly_temp_chart(cls, data: WeatherData) -> Optional[bytes]:
         """逐小时气温与体感温度趋势图。"""
         result = data.get_hourly_temp_plot_data()
         if not result or len(result) < 2:
@@ -374,9 +413,12 @@ class Visualizer:
             dtype=float,
         )
 
-        combined = actual
+        finite_actual = actual[np.isfinite(actual)]
+        if not len(finite_actual):
+            return None
+        combined = finite_actual
         if has_feels_like:
-            combined = np.concatenate((actual, feels_like[np.isfinite(feels_like)]))
+            combined = np.concatenate((combined, feels_like[np.isfinite(feels_like)]))
         data_min = float(np.min(combined))
         data_max = float(np.max(combined))
         padding = max(1.5, (data_max - data_min) * 0.18)
@@ -388,8 +430,8 @@ class Visualizer:
             y_top = midpoint + 2.5
 
         metrics = [
-            ("最高气温", cls._format_temperature(float(np.max(actual)))),
-            ("最低气温", cls._format_temperature(float(np.min(actual)))),
+            ("最高气温", cls._format_temperature(float(np.nanmax(actual)))),
+            ("最低气温", cls._format_temperature(float(np.nanmin(actual)))),
         ]
         if has_feels_like:
             metrics.append(
@@ -521,7 +563,99 @@ class Visualizer:
         return cls._render_figure(fig)
 
     @classmethod
-    def draw_hourly_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
+    def _draw_precip_panel(
+        cls,
+        fig,
+        rect,
+        times,
+        x: np.ndarray,
+        values: np.ndarray,
+        peak_value: Optional[float],
+        missing_mask: np.ndarray,
+        *,
+        style: str,
+    ):
+        """降水量(bar)与降水强度(dashed line)面板共用的绘制逻辑。"""
+        color = cls._THEME[style]
+        label = "降水量 · mm" if style == "amount" else "降水强度 · mm/h"
+        unit = "mm" if style == "amount" else "mm/h"
+
+        ax = fig.add_axes(rect)
+        cls._style_axis(ax)
+        cls._decorate_time_axis(ax, times, show_ticks=False, show_dates=False)
+        valid = np.isfinite(values)
+        if style == "amount":
+            ax.bar(
+                x[valid],
+                values[valid],
+                width=0.48,
+                color=color,
+                alpha=0.78,
+                edgecolor="none",
+                zorder=3,
+            )
+        else:
+            for smooth_x, smooth_y in cls._smooth_segments(x, values):
+                ax.plot(
+                    smooth_x,
+                    smooth_y,
+                    color=color,
+                    linewidth=2,
+                    linestyle=(0, (5, 3)),
+                    zorder=4,
+                )
+            ax.scatter(
+                x[valid],
+                values[valid],
+                s=18,
+                color=cls._THEME["surface"],
+                edgecolor=color,
+                linewidth=1.2,
+                zorder=5,
+            )
+
+        top = max(0.5, float(peak_value or 0) * 1.28)
+        ax.set_ylim(0, top)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value)))
+        ax.yaxis.tick_right()
+        ax.tick_params(axis="y", colors=color, labelsize=8)
+        ax.text(
+            0.008,
+            0.78,
+            label,
+            transform=ax.transAxes,
+            color=color,
+            fontsize=8.5,
+            fontweight=600,
+        )
+        if peak_value is not None and peak_value > 0:
+            peak_index = int(np.nanargmax(values))
+            ax.annotate(
+                f"{cls._format_number(peak_value)} {unit}",
+                (x[peak_index], peak_value),
+                xytext=(0, 5),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                color=color,
+                fontsize=8,
+                fontweight=600,
+            )
+        if np.any(missing_mask):
+            ax.scatter(
+                x[missing_mask],
+                np.full(np.count_nonzero(missing_mask), top * 0.06),
+                marker="x",
+                s=16,
+                linewidth=1,
+                color=cls._THEME["missing"],
+                zorder=5,
+            )
+        return ax
+
+    @classmethod
+    def _render_hourly_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
         """逐小时降水概率与降水量趋势图。"""
         result = data.get_hourly_rain_plot_data()
         if not result or len(result) < 2:
@@ -729,126 +863,33 @@ class Visualizer:
         missing_precipitation = ~np.isfinite(precipitation)
 
         if panel_rects and has_amount:
-            amount_ax = fig.add_axes(panel_rects[panel_index])
+            precip_axes.append(
+                cls._draw_precip_panel(
+                    fig,
+                    panel_rects[panel_index],
+                    times,
+                    x,
+                    amount,
+                    max_amount,
+                    missing_precipitation,
+                    style="amount",
+                )
+            )
             panel_index += 1
-            precip_axes.append(amount_ax)
-            cls._style_axis(amount_ax)
-            cls._decorate_time_axis(amount_ax, times, show_ticks=False, show_dates=False)
-            valid_amount = np.isfinite(amount)
-            amount_ax.bar(
-                x[valid_amount],
-                amount[valid_amount],
-                width=0.48,
-                color=cls._THEME["amount"],
-                alpha=0.78,
-                edgecolor="none",
-                zorder=3,
-            )
-            amount_top = max(0.5, float(max_amount or 0) * 1.28)
-            amount_ax.set_ylim(0, amount_top)
-            amount_ax.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
-            amount_ax.yaxis.set_major_formatter(
-                FuncFormatter(lambda value, _: cls._format_number(value))
-            )
-            amount_ax.yaxis.tick_right()
-            amount_ax.tick_params(axis="y", colors=cls._THEME["amount"], labelsize=8)
-            amount_ax.text(
-                0.008,
-                0.78,
-                "降水量 · mm",
-                transform=amount_ax.transAxes,
-                color=cls._THEME["amount"],
-                fontsize=8.5,
-                fontweight=600,
-            )
-            if max_amount is not None and max_amount > 0:
-                peak_index = int(np.nanargmax(amount))
-                amount_ax.annotate(
-                    f"{cls._format_number(max_amount)} mm",
-                    (x[peak_index], max_amount),
-                    xytext=(0, 5),
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    color=cls._THEME["amount"],
-                    fontsize=8,
-                    fontweight=600,
-                )
-            if np.any(missing_precipitation):
-                amount_ax.scatter(
-                    x[missing_precipitation],
-                    np.full(np.count_nonzero(missing_precipitation), amount_top * 0.06),
-                    marker="x",
-                    s=16,
-                    linewidth=1,
-                    color=cls._THEME["missing"],
-                    zorder=5,
-                )
 
         if panel_rects and has_intensity:
-            intensity_ax = fig.add_axes(panel_rects[panel_index])
-            precip_axes.append(intensity_ax)
-            cls._style_axis(intensity_ax)
-            cls._decorate_time_axis(intensity_ax, times, show_ticks=False, show_dates=False)
-            valid_intensity = np.isfinite(intensity)
-            for smooth_x, smooth_y in cls._smooth_segments(x, intensity):
-                intensity_ax.plot(
-                    smooth_x,
-                    smooth_y,
-                    color=cls._THEME["intensity"],
-                    linewidth=2,
-                    linestyle=(0, (5, 3)),
-                    zorder=4,
+            precip_axes.append(
+                cls._draw_precip_panel(
+                    fig,
+                    panel_rects[panel_index],
+                    times,
+                    x,
+                    intensity,
+                    max_intensity,
+                    missing_precipitation,
+                    style="intensity",
                 )
-            intensity_ax.scatter(
-                x[valid_intensity],
-                intensity[valid_intensity],
-                s=18,
-                color=cls._THEME["surface"],
-                edgecolor=cls._THEME["intensity"],
-                linewidth=1.2,
-                zorder=5,
             )
-            intensity_top = max(0.5, float(max_intensity or 0) * 1.28)
-            intensity_ax.set_ylim(0, intensity_top)
-            intensity_ax.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
-            intensity_ax.yaxis.set_major_formatter(
-                FuncFormatter(lambda value, _: cls._format_number(value))
-            )
-            intensity_ax.yaxis.tick_right()
-            intensity_ax.tick_params(axis="y", colors=cls._THEME["intensity"], labelsize=8)
-            intensity_ax.text(
-                0.008,
-                0.78,
-                "降水强度 · mm/h",
-                transform=intensity_ax.transAxes,
-                color=cls._THEME["intensity"],
-                fontsize=8.5,
-                fontweight=600,
-            )
-            if max_intensity is not None and max_intensity > 0:
-                peak_index = int(np.nanargmax(intensity))
-                intensity_ax.annotate(
-                    f"{cls._format_number(max_intensity)} mm/h",
-                    (x[peak_index], max_intensity),
-                    xytext=(0, 5),
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    color=cls._THEME["intensity"],
-                    fontsize=8,
-                    fontweight=600,
-                )
-            if np.any(missing_precipitation):
-                intensity_ax.scatter(
-                    x[missing_precipitation],
-                    np.full(np.count_nonzero(missing_precipitation), intensity_top * 0.06),
-                    marker="x",
-                    s=16,
-                    linewidth=1,
-                    color=cls._THEME["missing"],
-                    zorder=5,
-                )
 
         if precip_axes:
             cls._decorate_time_axis(
@@ -890,48 +931,104 @@ class Visualizer:
         cls._add_footer(fig, " · ".join(footer_notes), handles, labels)
         return cls._render_figure(fig)
 
-    @staticmethod
-    def draw_daily_temp_chart(data: WeatherData) -> Optional[bytes]:
-        """保持逐日预报基本可用，极简风格"""
+    @classmethod
+    def _render_daily_temp_chart(cls, data: WeatherData) -> Optional[bytes]:
+        """逐日最高/最低温度趋势图（与其余卡片图共用渲染管线）。"""
         dates, temps_max, temps_min = data.get_daily_temp_plot_data()
-        if not dates: return None
-        
-        dates = Visualizer._strip_tz(dates)
-        x = np.arange(len(dates))
-        
-        Visualizer._setup_style()
-        fig, ax = plt.subplots(figsize=(10, 4.8), dpi=140)
-        
-        # 极简连线
-        ax.plot(x, temps_max, color='#FF9F0A', linewidth=2, marker='o', label='Max')
-        ax.plot(x, temps_min, color='#30D158', linewidth=2, marker='o', label='Min')
-        
-        ax.fill_between(x, temps_min, temps_max, color='#30D158', alpha=0.1)
-        
-        # 标注
-        for i, val in enumerate(temps_max):
-            ax.text(x[i], val + 1, f"{int(val)}°", ha='center', va='bottom', color='white', fontsize=10)
-        for i, val in enumerate(temps_min):
-            ax.text(x[i], val - 1, f"{int(val)}°", ha='center', va='top', color='white', fontsize=10)
-            
-        # X轴日期
-        date_labels = [d.strftime("%m/%d") for d in dates]
+        rows = []
+        for day, high, low in zip(dates, temps_max, temps_min):
+            if high is None or low is None:
+                continue
+            high_value, low_value = float(high), float(low)
+            if not (np.isfinite(high_value) and np.isfinite(low_value)):
+                continue
+            rows.append((day, high_value, low_value))
+        if len(rows) < 2:
+            return None
+
+        days = cls._strip_tz([row[0] for row in rows])
+        highs = np.array([row[1] for row in rows], dtype=float)
+        lows = np.array([row[2] for row in rows], dtype=float)
+        x = np.arange(len(days))
+
+        fig = cls._create_card_figure()
+        cls._add_header(
+            fig,
+            data,
+            kicker=f"未来 {len(days)} 天",
+            title="逐日温度",
+            metrics=[
+                ("最高", cls._format_temperature(float(np.max(highs)))),
+                ("最低", cls._format_temperature(float(np.min(lows)))),
+            ],
+        )
+
+        ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
+        cls._style_axis(ax)
+        ax.set_xlim(-0.55, len(days) - 0.45)
+
+        data_min = float(np.min(lows))
+        data_max = float(np.max(highs))
+        padding = max(1.5, (data_max - data_min) * 0.18)
+        ax.set_ylim(np.floor(data_min - padding), np.ceil(data_max + padding))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
+        ax.tick_params(axis="y", colors=cls._THEME["muted"])
+
+        ax.fill_between(x, lows, highs, color=cls._THEME["temperature"], alpha=0.08, zorder=2)
+        for values, color in (
+            (highs, cls._THEME["temperature"]),
+            (lows, cls._THEME["feels_like"]),
+        ):
+            ax.plot(
+                x,
+                values,
+                color=color,
+                linewidth=2.4,
+                marker="o",
+                markersize=5,
+                markerfacecolor=cls._THEME["surface"],
+                markeredgecolor=color,
+                markeredgewidth=1.4,
+                solid_capstyle="round",
+                zorder=5,
+            )
+
+        for index in range(len(days)):
+            ax.annotate(
+                cls._format_temperature(highs[index]),
+                (x[index], highs[index]),
+                xytext=(0, 9),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                color=cls._THEME["text"],
+                fontsize=8.5,
+                fontweight=600,
+                zorder=8,
+            )
+            ax.annotate(
+                cls._format_temperature(lows[index]),
+                (x[index], lows[index]),
+                xytext=(0, -9),
+                textcoords="offset points",
+                ha="center",
+                va="top",
+                color=cls._THEME["muted"],
+                fontsize=8.5,
+                zorder=8,
+            )
+
         ax.set_xticks(x)
-        ax.set_xticklabels(date_labels, color='#8E8E93', fontsize=10)
-        
-        # 去材质
-        for spine in ax.spines.values():
-            spine.set_visible(False)
-        ax.get_yaxis().set_visible(False)
-        ax.tick_params(length=0)
-        
-        plt.figtext(0.05, 0.92, "Daily Forecast", fontsize=10, color='#8E8E93', weight='bold')
-        plt.figtext(0.05, 0.85, f"未来7天预报 · {data.location_name}", fontsize=16, color='white', weight='bold')
-        
-        plt.subplots_adjust(top=0.75, bottom=0.15, left=0.05, right=0.95)
-        
-        buf = io.BytesIO()
-        plt.savefig(buf, format='png', facecolor='#000000')
-        plt.close(fig)
-        buf.seek(0)
-        return buf.getvalue()
+        ax.set_xticklabels(
+            [f"{day.month:02d}/{day.day:02d}\n{cls._WEEKDAYS[day.weekday()]}" for day in days],
+            color=cls._THEME["muted"],
+            fontsize=9,
+        )
+
+        handles = [
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.4, marker="o", markersize=4),
+            Line2D([0], [0], color=cls._THEME["feels_like"], linewidth=2.4, marker="o", markersize=4),
+        ]
+        cls._add_footer(fig, "逐日最高 / 最低温度趋势", handles, ["最高", "最低"])
+        return cls._render_figure(fig)

@@ -31,13 +31,13 @@
 ## 批次 C — 展示与 LLM 层（visualizer / chart_cache / formatter / llm）
 
 - [x] C1 chart_cache: 渲染移入单线程 executor（不阻塞事件循环）；失败负缓存
-- [ ] C2 visualizer: 逐日图 None 防护并迁移到统一卡片渲染管线
-- [ ] C3 visualizer: 小时图 NaN 防护（nanmin/nanmax，全 NaN 返回 None）
-- [ ] C4 visualizer: figure 异常路径 try/finally 关闭；CJK 字体补 Linux 路径并缓存探测结果
-- [ ] C5 visualizer: 降水双面板与峰值标注去重提取
-- [ ] C6 formatter: 提取 `_format_wind`（6 处重复）与日字段准备（2 处重复）；pop 缺失不显示 "N/A%"；minutely 数值格式化；删死代码
-- [ ] C7 llm: 错误路径通用文案 + 详情仅日志；HTML 标签配对校验；Markdown 规则防误伤；4096 安全截断
-- [ ] C8 llm: Gemini 超时读配置；删 delta 流式死代码
+- [x] C2 visualizer: 逐日图 None 防护并迁移到统一卡片渲染管线
+- [x] C3 visualizer: 小时图 NaN 防护（nanmin/nanmax，全 NaN 返回 None）
+- [x] C4 visualizer: figure 异常路径 try/finally 关闭；CJK 字体补 Linux 路径并缓存探测结果
+- [x] C5 visualizer: 降水双面板与峰值标注去重提取
+- [x] C6 formatter: 提取 `_format_wind`（6 处重复）与日字段准备（2 处重复）；pop 缺失不显示 "N/A%"；minutely 数值格式化；删死代码
+- [x] C7 llm: 错误路径通用文案 + 详情仅日志；HTML 标签配对校验；Markdown 规则防误伤；4096 安全截断
+- [x] C8 llm: Gemini 超时读配置；删 delta 流式死代码
 
 ## 批次 D — 收尾
 

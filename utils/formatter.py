@@ -1,5 +1,4 @@
 import datetime
-import logging
 from typing import Optional, List
 from numbers import Number
 
@@ -13,8 +12,6 @@ from domain.models import (
     WeatherData,
     normalize_warning_level,
 )
-
-logger = logging.getLogger(__name__)
 
 # --- Constants & Mappings ---
 
@@ -98,9 +95,6 @@ def foldable_text_v2(body_lines: List[str], folding_threshold: int = 8) -> str:
     """Formats a list of escaped strings into a MarkdownV2 foldable block."""
     if len(body_lines) <= folding_threshold:
         return "\n".join(body_lines)
-    
-    if not body_lines:
-        return ""
 
     first = f"**> {body_lines[0]}"
     rest = [f"> {line}" for line in body_lines[1:]]
@@ -113,6 +107,53 @@ def foldable_text_v2(body_lines: List[str], folding_threshold: int = 8) -> str:
              all_lines[-1] += "||"
              
     return "\n".join(all_lines)
+
+
+def _wind_parts(
+    direction: Optional[str],
+    degrees: Optional[Number],
+    scale: Optional[str],
+    speed: Optional[Number],
+) -> List[str]:
+    """统一的风况拼装：方向（或度数回退）、风力等级、风速。已完成 MarkdownV2 转义。"""
+    parts: List[str] = []
+    if direction:
+        parts.append(escape_v2(direction))
+    elif degrees is not None:
+        parts.append(f"{escape_v2(format_weather_number(degrees, 0))}°")
+    if scale:
+        parts.append(f"{escape_v2(scale)}级")
+    if speed is not None:
+        parts.append(f"{escape_v2(format_weather_number(speed))}km/h")
+    return parts
+
+
+def _day_display_fields(day: DailyForecast) -> dict:
+    """今日详情与多日预报共用的字段准备（取值、回退与转义）。"""
+    day_wind = " ".join(
+        _wind_parts(day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day)
+    )
+    night_wind = " ".join(
+        _wind_parts(day.wind_dir_night, day.wind_direction_night_degrees, day.wind_scale_night, day.wind_speed_night)
+    )
+    return {
+        "date_str": day.date.strftime("%m-%d"),
+        "moon": escape_v2(day.moon_phase) if day.moon_phase else "",
+        "temp_min": escape_v2(day.temp_min),
+        "temp_max": escape_v2(day.temp_max),
+        "day_icon": weather_icon(day.icon_day),
+        "text_day": escape_v2(day.text_day),
+        "day_wind": day_wind or "N/A",
+        "night_icon": weather_icon(day.icon_night),
+        "text_night": escape_v2(day.text_night),
+        "night_wind": night_wind or "N/A",
+        "humid": escape_v2(day.humidity if day.humidity is not None else "N/A"),
+        "precip": escape_v2(format_precip_value(day.precip, day.precip_kind)),
+        "sunrise": escape_v2(day.sunrise or "N/A"),
+        "sunset": escape_v2(day.sunset or "N/A"),
+        "vis": escape_v2(day.vis if day.vis is not None else "N/A"),
+        "uv": escape_v2(day.uv_index or "N/A"),
+    }
 
 
 # --- Formatters (With Strict Manual Escaping) ---
@@ -138,15 +179,12 @@ def format_realtime_weather(data: WeatherData) -> str:
     lines.append(temperature_line)
     lines.append(f"🌤️ 天气: {weather_icon(data.now_icon)} {escape_v2(data.now_text or '暂无描述')}")
 
-    wind_parts = []
-    if data.now_wind_dir:
-        wind_parts.append(escape_v2(data.now_wind_dir))
-    elif data.now_wind_direction_degrees is not None:
-        wind_parts.append(f"{escape_v2(format_weather_number(data.now_wind_direction_degrees, 0))}°")
-    if data.now_wind_scale:
-        wind_parts.append(f"{escape_v2(data.now_wind_scale)}级")
-    if data.now_wind_speed is not None:
-        wind_parts.append(f"{escape_v2(format_weather_number(data.now_wind_speed))}km/h")
+    wind_parts = _wind_parts(
+        data.now_wind_dir,
+        data.now_wind_direction_degrees,
+        data.now_wind_scale,
+        data.now_wind_speed,
+    )
     if wind_parts:
         lines.append(f"💨 风况: {' '.join(wind_parts)}")
 
@@ -211,45 +249,24 @@ def format_today_detail(
     title: str = "今日详情",
 ) -> str:
     """专门为今日详情设计的格式，块状布局而非树状"""
-    date_str = day.date.strftime("%m-%d")
-    moon = escape_v2(day.moon_phase) if day.moon_phase else ""
-    
-    temp_min = escape_v2(day.temp_min)
-    temp_max = escape_v2(day.temp_max)
-    
-    day_icon = weather_icon(day.icon_day)
-    text_day = escape_v2(day.text_day)
-    day_wind_parts = []
-    if day.wind_dir_day:
-        day_wind_parts.append(escape_v2(day.wind_dir_day))
-    elif day.wind_direction_day_degrees is not None:
-        day_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_direction_day_degrees, 0))}°")
-    if day.wind_scale_day:
-        day_wind_parts.append(f"{escape_v2(day.wind_scale_day)}级")
-    if day.wind_speed_day is not None:
-        day_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_speed_day))}km/h")
-    day_wind = " ".join(day_wind_parts) or "N/A"
-    
-    night_icon = weather_icon(day.icon_night)
-    text_night = escape_v2(day.text_night)
-    night_wind_parts = []
-    if day.wind_dir_night:
-        night_wind_parts.append(escape_v2(day.wind_dir_night))
-    elif day.wind_direction_night_degrees is not None:
-        night_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_direction_night_degrees, 0))}°")
-    if day.wind_scale_night:
-        night_wind_parts.append(f"{escape_v2(day.wind_scale_night)}级")
-    if day.wind_speed_night is not None:
-        night_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_speed_night))}km/h")
-    night_wind = " ".join(night_wind_parts) or "N/A"
-    
-    humid = escape_v2(day.humidity if day.humidity is not None else "N/A")
-    precip = escape_v2(format_precip_value(day.precip, day.precip_kind))
-    sunrise = escape_v2(day.sunrise or "N/A")
-    sunset = escape_v2(day.sunset or "N/A")
-    vis = escape_v2(day.vis if day.vis is not None else "N/A")
-    uv = escape_v2(day.uv_index or "N/A")
-    
+    fields = _day_display_fields(day)
+    date_str = fields["date_str"]
+    moon = fields["moon"]
+    temp_min = fields["temp_min"]
+    temp_max = fields["temp_max"]
+    day_icon = fields["day_icon"]
+    text_day = fields["text_day"]
+    day_wind = fields["day_wind"]
+    night_icon = fields["night_icon"]
+    text_night = fields["text_night"]
+    night_wind = fields["night_wind"]
+    humid = fields["humid"]
+    precip = fields["precip"]
+    sunrise = fields["sunrise"]
+    sunset = fields["sunset"]
+    vis = fields["vis"]
+    uv = fields["uv"]
+
     # 计算未来6小时降水概率（始终显示）
     max_pop = None
     if hourly_data:
@@ -296,56 +313,18 @@ def format_daily_weather(daily_data: List[DailyForecast]) -> str:
     """用于多日预报的树状格式"""
     result_lines = []
     for day in daily_data:
-        date_str = day.date.strftime("%m-%d")
-        moon = escape_v2(day.moon_phase) if day.moon_phase else ""
-        
-        temp_min = escape_v2(day.temp_min)
-        temp_max = escape_v2(day.temp_max)
-        
-        day_icon = weather_icon(day.icon_day)
-        text_day = escape_v2(day.text_day)
-        day_wind_parts = []
-        if day.wind_dir_day:
-            day_wind_parts.append(escape_v2(day.wind_dir_day))
-        elif day.wind_direction_day_degrees is not None:
-            day_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_direction_day_degrees, 0))}°")
-        if day.wind_scale_day:
-            day_wind_parts.append(f"{escape_v2(day.wind_scale_day)}级")
-        if day.wind_speed_day is not None:
-            day_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_speed_day))}km/h")
-        day_wind = " ".join(day_wind_parts) or "N/A"
-        
-        night_icon = weather_icon(day.icon_night)
-        text_night = escape_v2(day.text_night)
-        night_wind_parts = []
-        if day.wind_dir_night:
-            night_wind_parts.append(escape_v2(day.wind_dir_night))
-        elif day.wind_direction_night_degrees is not None:
-            night_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_direction_night_degrees, 0))}°")
-        if day.wind_scale_night:
-            night_wind_parts.append(f"{escape_v2(day.wind_scale_night)}级")
-        if day.wind_speed_night is not None:
-            night_wind_parts.append(f"{escape_v2(format_weather_number(day.wind_speed_night))}km/h")
-        night_wind = " ".join(night_wind_parts) or "N/A"
-        
-        humid = escape_v2(day.humidity if day.humidity is not None else "N/A")
-        precip = escape_v2(format_precip_value(day.precip, day.precip_kind))
-        sunrise = escape_v2(day.sunrise or "N/A")
-        sunset = escape_v2(day.sunset or "N/A")
-        vis = escape_v2(day.vis if day.vis is not None else "N/A")
-        uv = escape_v2(day.uv_index or "N/A")
-        
+        fields = _day_display_fields(day)
         daily_info = [
-            f"🗓 *{escape_v2(date_str)} {moon}*",
-            f"├─ 温度: {temp_min}\\~{temp_max}°C", 
-            f"├─ 日间: {day_icon} {text_day}",
-            f"│   └─ {day_wind}",
-            f"├─ 夜间: {night_icon} {text_night}",
-            f"│   └─ {night_wind}",
+            f"🗓 *{escape_v2(fields['date_str'])} {fields['moon']}*",
+            f"├─ 温度: {fields['temp_min']}\\~{fields['temp_max']}°C",
+            f"├─ 日间: {fields['day_icon']} {fields['text_day']}",
+            f"│   └─ {fields['day_wind']}",
+            f"├─ 夜间: {fields['night_icon']} {fields['text_night']}",
+            f"│   └─ {fields['night_wind']}",
             "└─ 详情:",
-            f"    💧 湿度: {humid}% \\| ☔️ 降水: {precip}",
-            f"    🌅 日出: {sunrise} \\| 🌄 日落: {sunset}",
-            f"    👁️ 能见度: {vis}km \\| ☀️ UV: {uv}",
+            f"    💧 湿度: {fields['humid']}% \\| ☔️ 降水: {fields['precip']}",
+            f"    🌅 日出: {fields['sunrise']} \\| 🌄 日落: {fields['sunset']}",
+            f"    👁️ 能见度: {fields['vis']}km \\| ☀️ UV: {fields['uv']}",
         ]
         result_lines.append("\n".join(daily_info))
     return "\n\n".join(result_lines)
@@ -395,7 +374,6 @@ def format_hourly_weather(hourly_data: List[HourlyForecast]) -> str:
         temp = escape_v2(format_weather_number(hour.temp))
         icon = weather_icon(hour.icon)
         text = escape_v2(hour.text)
-        pop = escape_v2(format_weather_number(hour.pop, decimals=0))
         precip = escape_v2(format_precip_value(hour.precip, hour.precip_kind))
 
         temp_line = f"🌡️ {temp}°C"
@@ -403,20 +381,21 @@ def format_hourly_weather(hourly_data: List[HourlyForecast]) -> str:
             feels_like = escape_v2(format_weather_number(hour.feels_like))
             temp_line += f" \\(体感 {feels_like}°C\\)"
 
-        wind_parts = []
-        if hour.wind_dir:
-            wind_parts.append(escape_v2(hour.wind_dir))
-        elif hour.wind_direction_degrees is not None:
-            wind_parts.append(f"{escape_v2(format_weather_number(hour.wind_direction_degrees, 0))}°")
-        if hour.wind_scale:
-            wind_parts.append(f"{escape_v2(hour.wind_scale)}级")
-        if hour.wind_speed is not None:
-            wind_speed = escape_v2(format_weather_number(hour.wind_speed))
-            wind_parts.append(f"{wind_speed}km/h")
+        wind_parts = _wind_parts(
+            hour.wind_dir,
+            hour.wind_direction_degrees,
+            hour.wind_scale,
+            hour.wind_speed,
+        )
         wind_text = " \\| ".join(wind_parts) if wind_parts else "N/A"
 
+        if hour.pop is not None:
+            pop = escape_v2(format_weather_number(hour.pop, decimals=0))
+            rain_summary = f"☔️ 降概 {pop}% / 降水 {precip}"
+        else:
+            rain_summary = f"☔️ 降水 {precip}"
         rain_detail_parts = [
-            f"☔️ 降概 {pop}% / 降水 {precip}",
+            rain_summary,
             f"💧 湿度 {escape_v2(hour.humidity if hour.humidity is not None else 'N/A')}%",
         ]
         if hour.uv_index is not None:
@@ -452,7 +431,7 @@ def format_minutely_weather(minutely: List[MinutelyPrecipitation], summary: str)
     lines = []
     for m in minutely:
         time_str = escape_v2(m.time.strftime("%H:%M"))
-        precip = escape_v2(m.precip)
+        precip = escape_v2(format_weather_number(m.precip, decimals=2))
         precip_type = {"rain": "雨", "snow": "雪"}.get(m.precip_type or "", "降水")
         if m.probability is None:
             lines.append(f"⏰ {time_str} \\| 🌧️ {escape_v2(precip_type)} {precip}mm")
@@ -471,8 +450,10 @@ def format_rain_weather(data: WeatherData) -> str:
         for h in data.hourly[:6]:
             time_str = escape_v2(h.time.strftime("%H:%M"))
             precip = escape_v2(format_precip_value(h.precip, h.precip_kind))
-            pop = escape_v2(int(h.pop)) if h.pop is not None else "N/A"
-            lines.append(f"⏰ {time_str} \\| 降水 {precip} \\| 降概 {pop}%")
+            if h.pop is not None:
+                lines.append(f"⏰ {time_str} \\| 降水 {precip} \\| 降概 {escape_v2(int(h.pop))}%")
+            else:
+                lines.append(f"⏰ {time_str} \\| 降水 {precip}")
         return "\n".join(result) + "\n" + foldable_text_v2(lines, folding_threshold=5)
 
     return f"📝 {escape_v2(data.summary or '暂无可用降水预报')}"
