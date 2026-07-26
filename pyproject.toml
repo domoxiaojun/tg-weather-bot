@@ -1,0 +1,19 @@
+[project]
+name = "tg-weather-bot"
+version = "1.0.0"
+description = "DomoWeather Telegram bot — QWeather-first dual-source weather fusion"
+requires-python = ">=3.12"
+# Runtime dependencies remain canonical in requirements.txt (Docker uses it directly).
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# Project convention (plan.md): logic errors and syntax errors only.
+select = ["F", "E9"]

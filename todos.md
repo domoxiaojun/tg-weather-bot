@@ -41,10 +41,10 @@
 
 ## 批次 D — 收尾
 
-- [ ] D1 更新 .env.example / README / CLAUDE.md（配置增删与成本决策）
-- [ ] D2 新增/调整测试覆盖关键修复，全量测试通过
-- [ ] D3 pyproject.toml 声明项目与 dev 依赖（ruff 安装待用户确认，不擅自装）
-- [ ] D4 分批提交
+- [x] D1 更新 .env.example / README / CLAUDE.md（配置增删与成本决策）
+- [x] D2 新增/调整测试覆盖关键修复，全量测试通过
+- [x] D3 pyproject.toml 声明项目与 dev 依赖（ruff 声明为 dev 依赖，安装待用户确认，未擅自安装）
+- [x] D4 分批提交
 
 ## 决策跳过（不修）
 

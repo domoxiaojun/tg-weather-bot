@@ -53,7 +53,7 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - For GPT-5.6, tune reasoning with `OPENAI_REASONING_EFFORT=none|low|medium|high|xhigh|max` and output length tendency with `OPENAI_VERBOSITY=low|medium|high`; the migration baseline remains `medium`.
 - OpenAI defaults to `OPENAI_API_MODE=responses`; set `OPENAI_API_MODE=chat_completions` only for compatible proxies or legacy flows.
 - AI weather report style can be overridden with `LLM_WEATHER_REPORT_PROMPT` or `LLM_WEATHER_REPORT_PROMPT_FILE`; the built-in prompt already asks the LLM to use Telegram HTML, emoji headers, and blank-line sectioning.
-- If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and reduce `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` controls when the bot gives up.
+- If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and reduce `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` controls when the bot gives up. Gemini HTTP timeout is configured with `GEMINI_TIMEOUT_SECONDS`.
 
 ## Telegram Bot API Compatibility
 
@@ -90,6 +90,8 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 
 - Click the **🔔 Subscribe Rain Alert** button under any weather message to enable 24/7 rain monitoring for that location. (Updates every 5 mins).
 - Scheduled rain alerts and daily briefs can be toggled with `ENABLE_RAIN_ALERTS` and `ENABLE_DAILY_BRIEF`.
+- Daily briefs fire at 08:00 in the `TIMEZONE` configured in `.env` (default `Asia/Shanghai`).
+- Subscription locations are geocoded and normalized on subscribe; chats that block the bot are removed from push lists automatically.
 
 ## 📚 API Notes
 
