@@ -399,6 +399,90 @@ class Visualizer:
         return cls._draw_safely(cls._render_minutely_rain_chart, data)
 
     @classmethod
+    def draw_tide_chart(cls, forecast) -> Optional[bytes]:
+        try:
+            return cls._render_tide_chart(forecast)
+        except Exception:
+            logger.exception("Tide chart rendering failed")
+            return None
+
+    @classmethod
+    def _render_tide_chart(cls, forecast) -> Optional[bytes]:
+        """Tide curve with high/low markers — the shape is the whole point."""
+        if len(forecast.hourly) < 3:
+            return None
+
+        times = cls._strip_tz([moment for moment, _height in forecast.hourly])
+        heights = np.array([height for _moment, height in forecast.hourly], dtype=float)
+        x = np.arange(len(times))
+
+        fig = cls._create_card_figure()
+        cls._add_header_text(
+            fig,
+            kicker="海洋潮汐 · 和风天气",
+            title=f"{forecast.station.name} 潮汐",
+            subtitle=forecast.date.strftime("%Y-%m-%d"),
+            metrics=[
+                ("最高潮位", f"{cls._format_number(float(np.max(heights)), 2)} m"),
+                ("最低潮位", f"{cls._format_number(float(np.min(heights)), 2)} m"),
+            ],
+        )
+
+        ax = fig.add_axes([0.075, 0.16, 0.85, 0.53])
+        cls._style_axis(ax)
+        ax.set_xlim(-0.5, len(times) - 0.5)
+        span = float(np.max(heights) - np.min(heights)) or 1.0
+        ax.set_ylim(float(np.min(heights)) - span * 0.2, float(np.max(heights)) + span * 0.25)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value, 1)))
+        ax.tick_params(axis="y", colors=cls._THEME["feels_like"])
+        ax.text(-0.05, 1.02, "m", transform=ax.transAxes,
+                color=cls._THEME["subtle"], fontsize=8.5, ha="left")
+
+        for smooth_x, smooth_y in cls._smooth_segments(x, heights):
+            ax.fill_between(smooth_x, smooth_y, ax.get_ylim()[0],
+                            color=cls._THEME["feels_like"], alpha=0.14, zorder=2)
+            ax.plot(smooth_x, smooth_y, color=cls._THEME["feels_like"], linewidth=2.6, zorder=4)
+
+        # Mark the reported high/low moments on the curve.
+        stamp_to_index = {moment.strftime("%Y%m%d%H%M"): index for index, moment in enumerate(times)}
+        for extreme in forecast.extremes:
+            naive = extreme.time.replace(tzinfo=None) if extreme.time.tzinfo else extreme.time
+            index = stamp_to_index.get(naive.strftime("%Y%m%d%H%M"))
+            if index is None:
+                continue
+            colour = cls._THEME["temperature"] if extreme.is_high else cls._THEME["probability"]
+            ax.scatter([index], [heights[index]], s=70,
+                       marker="^" if extreme.is_high else "v", color=colour, zorder=7)
+            ax.annotate(
+                f"{cls._format_number(extreme.height, 2)}m\n{naive.strftime('%H:%M')}",
+                (index, heights[index]),
+                xytext=(0, 12 if extreme.is_high else -26),
+                textcoords="offset points",
+                ha="center",
+                color=colour,
+                fontsize=8.5,
+                fontweight=600,
+                zorder=8,
+            )
+
+        step = max(1, len(times) // 8)
+        ticks = list(range(0, len(times), step))
+        if ticks[-1] != len(times) - 1:
+            ticks.append(len(times) - 1)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels([times[index].strftime("%H:%M") for index in ticks],
+                           color=cls._THEME["muted"], fontsize=9)
+
+        handles = [
+            Line2D([0], [0], color=cls._THEME["feels_like"], linewidth=2.6),
+            Line2D([0], [0], color=cls._THEME["temperature"], marker="^", linestyle="none"),
+            Line2D([0], [0], color=cls._THEME["probability"], marker="v", linestyle="none"),
+        ]
+        cls._add_footer(fig, "潮位曲线，作业请以官方潮汐表为准", handles, ["潮位", "高潮", "低潮"])
+        return cls._render_figure(fig)
+
+    @classmethod
     def draw_typhoon_track_chart(cls, storm, user_lon=None, user_lat=None) -> Optional[bytes]:
         """Storm track relative to the user. No basemap dependency — the useful
         information is the geometry (where it has been, where it is going, and

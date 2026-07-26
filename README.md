@@ -90,6 +90,8 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - `/tq <city> hourly 24` - Hourly temperature, native feels-like when available, and precipitation details.
 - `/chart <city>` - View temperature/rain charts.
 - `/report <city>` - **AI Weather Report** (Requires OpenAI/Gemini Key).
+- `/typhoon [city]` - Active tropical cyclones and whether they reach that location (basin NP only).
+- `/tide [coastal city]` - Nearest tide station's high/low tide table plus the tide curve.
 - `/rain_sub <city>` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts (`/rain_my` offers one-tap unsubscribe buttons).
 - `/daily_sub <city> [HH:MM]` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions with an optional custom push time (default 08:00 in `TIMEZONE`).
 - **Send Location** - Auto-query + Rain Chart.

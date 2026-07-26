@@ -200,5 +200,8 @@
       · 复用 check_weather_alerts 的去重/免打扰豁免/Forbidden 清理；活跃台风每轮只取一次，全地点共享
       · 富文本推送块（当前强度/气压/移动 + 预测路径表）+ 路径图（历史虚线/预测实线/当前★/用户▲，等比例坐标）
       · /typhoon [城市] 命令；新增 22 项测试（共 200 项）
-- [ ] P2 潮汐：必须先 /geo/v2/poi/lookup?type=TSTA 找潮汐站，再 /v7/ocean/tide；仅对沿海用户有意义
-- [ ] P3 太阳辐射：/solarradiation/v1/forecast，垂类（光伏），建议仅进 AI payload 或不做
+- [x] P2 潮汐：POI(type=TSTA) 找最近站点 → 潮汐表；新增 /tide 命令、富文本高低潮表、潮位曲线图（高低潮标注）
+- [x] P3 太阳辐射：按 fill-only 用 GHI 补 HourlyForecast.radiation（彩云关闭时的唯一辐射来源），
+      逐小时"更多指标"折叠表新增辐射列，AI payload 自动带上；不新增独立界面
+- [x] P4 新增 16 项测试（共 216 项）：GHI 按小时聚合取最强、fill-only 不覆盖、TSTA 站点排序与兼容 poi/location 键、
+      潮汐表脏数据跳过、潮位曲线渲染

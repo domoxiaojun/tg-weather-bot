@@ -42,6 +42,11 @@ class Settings(BaseSettings):
         15.0,
         description="Switch to grid weather when the geocoded city is farther than this from the requested coordinates",
     )
+    enable_solar_radiation: bool = Field(
+        True,
+        description="Fetch QWeather solar radiation (GHI) to fill the hourly radiation field",
+    )
+    enable_tide: bool = Field(True, description="Enable /tide (GeoAPI POI type=TSTA + /v7/ocean/tide)")
     enable_history_comparison: bool = Field(
         True,
         description="Fetch yesterday's observed summary (Time Machine) so the AI report can compare day over day",

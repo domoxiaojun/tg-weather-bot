@@ -15,6 +15,9 @@ from domain.models import (
     HourlyForecast,
     LifeIndex,
     MinutelyPrecipitation,
+    TideExtreme,
+    TideForecast,
+    TideStation,
     TropicalStorm,
     TyphoonPoint,
     TyphoonWindRadius,
@@ -620,6 +623,31 @@ class QWeatherAdapter(WeatherAdapter):
                 mapped[forecast_time.date()] = air_quality
         return mapped
 
+    @classmethod
+    def _map_solar_radiation(cls, solar_data: Optional[Dict[str, Any]]) -> Dict[tuple, float]:
+        """GHI per hour, keyed like the hourly forecast for fill-only merging.
+
+        Response shape (verified): forecasts[] with forecastTime, ghi, dhi and
+        ni (note: "ni", not "dni"), all W/m².
+        """
+        if not isinstance(solar_data, dict) or cls._is_unavailable_marker(solar_data):
+            return {}
+        mapped: Dict[tuple, float] = {}
+        for raw in solar_data.get("forecasts") or []:
+            if not isinstance(raw, dict):
+                continue
+            moment = cls._parse_datetime(raw.get("forecastTime"))
+            ghi = cls._optional_float(raw.get("ghi"))
+            if moment is None or ghi is None:
+                continue
+            if moment.tzinfo is not None and moment.utcoffset() is not None:
+                key = ("utc", int(moment.timestamp() // 3600))
+            else:
+                key = ("local", moment.year, moment.month, moment.day, moment.hour)
+            # Several sub-hourly samples can share an hour; keep the strongest.
+            mapped[key] = max(ghi, mapped.get(key, ghi))
+        return mapped
+
     def _map_history(self, history_data: Optional[Dict[str, Any]]) -> Optional[HistoricalDaySummary]:
         """Map Time Machine's weatherDaily block (field names differ from /v7/weather)."""
         if not history_data or self._is_unavailable_marker(history_data):
@@ -677,6 +705,99 @@ class QWeatherAdapter(WeatherAdapter):
             except (KeyError, TypeError, ValueError) as e:
                 logger.warning(f"Skipping malformed QWeather index record: {e}")
         return indices
+
+    # ------------------------------------------------------------------ #
+    # Tides (GeoAPI POI type=TSTA, then /v7/ocean/tide)
+    # ------------------------------------------------------------------ #
+
+    async def get_tide_stations(self, lon: float, lat: float, limit: int = 5) -> List[TideStation]:
+        """Nearest tide stations. /v7/ocean/tide needs a station id, not a city."""
+        coord = self._coord_location(lon, lat)
+        data = await self._cached_request(
+            f"qw:poi:tsta:{coord}",
+            "/geo/v2/poi/lookup",
+            {"location": coord, "type": "TSTA", "number": 10},
+            ttl=self._GEO_CACHE_TTL,
+            unavailable_ttl=86400,
+            allow_data_unavailable=True,
+        )
+        if not data or self._is_unavailable_marker(data):
+            return []
+
+        # GeoAPI returns city matches under "location"; POI lookup is documented
+        # as "poi". Accept either so a naming difference cannot silently break.
+        records = data.get("poi") or data.get("location") or []
+        stations = []
+        for raw in records if isinstance(records, list) else []:
+            if not isinstance(raw, dict) or not raw.get("id"):
+                continue
+            station_lon = self._optional_float(raw.get("lon"))
+            station_lat = self._optional_float(raw.get("lat"))
+            distance = (
+                self._distance_km(lon, lat, station_lon, station_lat)
+                if station_lon is not None and station_lat is not None
+                else None
+            )
+            stations.append(
+                TideStation(
+                    id=str(raw["id"]),
+                    name=str(raw.get("name") or raw["id"]),
+                    lon=station_lon,
+                    lat=station_lat,
+                    distance_km=distance,
+                )
+            )
+        stations.sort(key=lambda s: s.distance_km if s.distance_km is not None else 1e9)
+        return stations[:limit]
+
+    async def get_tide(self, station: TideStation, target_date=None) -> Optional[TideForecast]:
+        """Tide table for one station and date (up to 10 days ahead)."""
+        target_date = target_date or datetime.now().date()
+        stamp = target_date.strftime("%Y%m%d")
+        data = await self._cached_request(
+            f"qw:tide:{station.id}:{stamp}",
+            "/v7/ocean/tide",
+            {"location": station.id, "date": stamp},
+            ttl=43200,
+            unavailable_ttl=21600,
+            allow_data_unavailable=True,
+        )
+        if not data or self._is_unavailable_marker(data):
+            return None
+
+        extremes = []
+        for raw in data.get("tideTable") or []:
+            if not isinstance(raw, dict):
+                continue
+            moment = self._parse_datetime(raw.get("fxTime"))
+            height = self._optional_float(raw.get("height"))
+            if moment is None or height is None:
+                continue
+            extremes.append(
+                TideExtreme(
+                    time=moment,
+                    height=height,
+                    is_high=str(raw.get("type") or "").upper().startswith("H"),
+                )
+            )
+
+        hourly = []
+        for raw in data.get("tideHourly") or []:
+            if not isinstance(raw, dict):
+                continue
+            moment = self._parse_datetime(raw.get("fxTime"))
+            height = self._optional_float(raw.get("height"))
+            if moment is not None and height is not None:
+                hourly.append((moment, height))
+
+        if not extremes and not hourly:
+            return None
+        return TideForecast(
+            station=station,
+            date=datetime.combine(target_date, datetime.min.time()),
+            extremes=extremes,
+            hourly=hourly,
+        )
 
     # ------------------------------------------------------------------ #
     # Tropical cyclones (basin NP only, per QWeather)
@@ -842,7 +963,7 @@ class QWeatherAdapter(WeatherAdapter):
         profile_components = {
             "full": {
                 "minutely", "air", "air_hourly", "air_daily", "warning",
-                "daily", "hourly", "indices", "history",
+                "daily", "hourly", "indices", "history", "solar",
             },
             "hourly": {"air", "air_hourly", "warning", "hourly"},
             "daily": {"air_daily", "warning", "daily"},
@@ -1008,6 +1129,16 @@ class QWeatherAdapter(WeatherAdapter):
                 ttl=seconds_until_midnight,
                 force_refresh=refresh_qweather,
             )
+        if "solar" in components and settings.enable_solar_radiation:
+            requests["solar"] = self._cached_request(
+                f"qw:solar:{coord_location}",
+                f"/solarradiation/v1/forecast/{lat}/{lon}",
+                {"hours": 24, "interval": 60, "localTime": "true"},
+                ttl=3600,
+                unavailable_ttl=21600,
+                allow_data_unavailable=True,
+                force_refresh=refresh_qweather,
+            )
         if "history" in components and settings.enable_history_comparison:
             # Yesterday's summary powers "warmer/cooler than yesterday" in the
             # AI report. LocationID only, and today is not available.
@@ -1047,6 +1178,7 @@ class QWeatherAdapter(WeatherAdapter):
         hourly_data = payloads.get("hourly")
         indices_data = payloads.get("indices")
         history_data = payloads.get("history")
+        solar_data = payloads.get("solar")
 
         now_weather = now_data["now"]
         daily_list = self._map_daily(daily_data)
@@ -1072,6 +1204,26 @@ class QWeatherAdapter(WeatherAdapter):
                     hour.field_sources["aqi"] = "qweather"
                 if forecast_air.pm2p5 is not None:
                     hour.field_sources["pm2p5"] = "qweather"
+
+        # Solar radiation fills radiation only where nothing provided it, in
+        # line with the fill-only fusion rule (Caiyun may already have set it).
+        solar_by_hour = self._map_solar_radiation(solar_data)
+        if solar_by_hour:
+            filled = 0
+            for hour in hourly_list:
+                if hour.radiation is not None:
+                    continue
+                if hour.time.tzinfo is not None and hour.time.utcoffset() is not None:
+                    solar_key = ("utc", int(hour.time.timestamp() // 3600))
+                else:
+                    solar_key = ("local", hour.time.year, hour.time.month, hour.time.day, hour.time.hour)
+                value = solar_by_hour.get(solar_key)
+                if value is not None:
+                    hour.radiation = value
+                    hour.field_sources["radiation"] = "qweather"
+                    filled += 1
+            if filled:
+                logger.debug(f"Solar radiation filled {filled} hourly slots")
 
         daily_air = self._map_daily_air_quality(daily_air_data)
         for day in daily_list:

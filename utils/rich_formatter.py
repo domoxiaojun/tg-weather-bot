@@ -420,6 +420,7 @@ def _hourly_extras_blocks(hours: List) -> List[dict]:
         ("云量", lambda hour: f"{hour.cloud}%" if hour.cloud is not None else None),
         ("能见度", lambda hour: f"{format_weather_number(hour.visibility)}km" if hour.visibility is not None else None),
         ("AQI", lambda hour: str(hour.aqi) if hour.aqi is not None else None),
+        ("辐射", lambda hour: f"{format_weather_number(hour.radiation, 0)}" if hour.radiation is not None else None),
     ]
     active = [
         (label, getter)
@@ -437,17 +438,55 @@ def _hourly_extras_blocks(hours: List) -> List[dict]:
         ])
     return [
         details(
-            "🔬 更多逐小时指标（露点/气压/云量/能见度/AQI）",
+            "🔬 更多逐小时指标（" + "/".join(label for label, _getter in active) + "）",
             [
                 table(
                     rows,
                     headers=["时间", *[label for label, _getter in active]],
                     aligns=["left", *["right"] * len(active)],
-                    caption="气压单位 hPa",
+                    caption="气压 hPa · 辐射 W/m²",
                 )
             ],
         )
     ]
+
+
+def build_tide_blocks(forecast) -> List[dict]:
+    """Tide table for one station: high/low moments plus the full curve."""
+    station = forecast.station
+    subtitle_bits = [station.name]
+    if station.distance_km is not None:
+        subtitle_bits.append(f"约 {station.distance_km:.0f}km")
+    blocks: List[dict] = [
+        heading(f"🌊 {station.name} 潮汐", size=2),
+        paragraph(italic(f"{forecast.date.strftime('%m-%d')} · {' · '.join(subtitle_bits)}")),
+    ]
+
+    if forecast.extremes:
+        peak = max((item.height for item in forecast.extremes), default=None)
+        rows = []
+        for item in forecast.extremes:
+            label = "🔺 高潮" if item.is_high else "🔻 低潮"
+            height = f"{format_weather_number(item.height, 2)} m"
+            rows.append([
+                item.time.strftime("%H:%M"),
+                label,
+                marked(height) if peak is not None and item.height == peak else height,
+            ])
+        blocks.append(
+            table(
+                rows,
+                headers=["时间", "类型", "潮高"],
+                aligns=["left", "left", "right"],
+                bordered=True,
+                caption="高亮为当日最高潮位",
+            )
+        )
+    else:
+        blocks.append(paragraph("该站当日没有高低潮数据"))
+
+    blocks.append(footer("数据源: 和风天气海洋潮汐 · 仅供参考，作业请以官方潮汐表为准"))
+    return blocks
 
 
 def build_daily_blocks(

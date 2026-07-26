@@ -259,6 +259,102 @@ class WeatherHandlers:
             lines.append("\n发送 /typhoon 城市 可判断对该地点的影响。")
         await send_text(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
 
+    async def tide(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """/tide [城市] - 最近潮汐站的当日高低潮"""
+        from services.chart_cache import run_chart_render
+        from services.telegram_rich import FEATURE_SEND, photo_block, rich
+        from utils.rich_formatter import build_tide_blocks
+
+        if not settings.enable_tide:
+            await send_text(update, context, "⚠️ 潮汐功能已关闭（ENABLE_TIDE=false）。")
+            return
+
+        location = join_location_args(list(context.args)) if context.args else None
+        if not location and context.chat_data:
+            last = context.chat_data.get("last_location")
+            if isinstance(last, dict):
+                location = last.get("coords")
+        if not location:
+            await send_text(update, context, "请提供城市或位置，例如：/tide 青岛")
+            return
+
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        qweather = self.deps.weather_service.qweather
+        try:
+            loc_info = await qweather.get_geo_location(location)
+            if not loc_info:
+                await send_text(update, context, f"❌ 找不到地点：{location}")
+                return
+            lon = float(loc_info["lon"])
+            lat = float(loc_info["lat"])
+            stations = await qweather.get_tide_stations(lon, lat)
+        except Exception as e:
+            logger.error(f"Tide station lookup failed: {e}")
+            await send_text(update, context, "❌ 潮汐站查询失败，请稍后再试。")
+            return
+
+        if not stations:
+            await send_text(
+                update,
+                context,
+                f"🌊 {loc_info.get('name', location)} 附近没有可用的潮汐站。\n"
+                "潮汐数据只覆盖沿海主要港口。",
+            )
+            return
+
+        forecast = None
+        for station in stations:
+            try:
+                forecast = await qweather.get_tide(station)
+            except Exception as e:
+                logger.debug(f"Tide fetch failed for {station.id}: {e}")
+                continue
+            if forecast is not None:
+                break
+
+        if forecast is None:
+            await send_text(update, context, "🌊 最近的潮汐站暂无当日数据，请稍后再试。")
+            return
+
+        blocks = build_tide_blocks(forecast)
+        chart = None
+        if settings.enable_weather_plots:
+            chart = await run_chart_render(Visualizer.draw_tide_chart, forecast)
+
+        if rich.supports(FEATURE_SEND):
+            if chart:
+                # Upload once so the chart can ride inside the rich message.
+                sent_photo = await context.bot.send_photo(
+                    chat_id=settings.super_admin_id or update.effective_chat.id,
+                    photo=InputFile(io.BytesIO(chart), filename="tide.png"),
+                    disable_notification=True,
+                )
+                photos = getattr(sent_photo, "photo", None)
+                if photos and settings.super_admin_id:
+                    try:
+                        await sent_photo.delete()
+                    except Exception:
+                        pass
+                    blocks.insert(2, photo_block(photos[-1].file_id, "潮位曲线"))
+                    chart = None
+            if await rich.send_rich(context.bot, update.effective_chat.id, blocks=blocks) is not None:
+                return
+
+        lines = [f"🌊 <b>{escape(forecast.station.name)} 潮汐</b> · {forecast.date.strftime('%m-%d')}"]
+        for item in forecast.extremes:
+            label = "🔺 高潮" if item.is_high else "🔻 低潮"
+            lines.append(f"{item.time.strftime('%H:%M')} {label} {item.height:.2f} m")
+        if not forecast.extremes:
+            lines.append("该站当日没有高低潮数据")
+        await send_text(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
+        if chart:
+            await send_photo(
+                update,
+                context,
+                photo=InputFile(io.BytesIO(chart), filename="tide.png"),
+                caption=f"🌊 {forecast.station.name} 潮位曲线",
+            )
+
     async def handle_private_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """私聊里直接发城市名即可查天气（支持"北京 明天"等参数写法）。"""
         message = update.effective_message

@@ -52,6 +52,7 @@ def _weather_commands():
         BotCommand("chart", "趋势图 - /chart [城市] [daily|rain|minutely]"),
         BotCommand("report", "AI天气日报 - /report [城市]"),
         BotCommand("typhoon", "台风查询 - /typhoon [城市]"),
+        BotCommand("tide", "潮汐查询 - /tide [沿海城市]"),
     ]
 
 
@@ -179,6 +180,7 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("chart", weather.chart))
     app.add_handler(CommandHandler("report", reports.report))
     app.add_handler(CommandHandler("typhoon", weather.typhoon))
+    app.add_handler(CommandHandler("tide", weather.tide))
     app.add_handler(CommandHandler("daily_sub", subscriptions.daily_sub))
     app.add_handler(CommandHandler("daily_unsub", subscriptions.daily_unsub))
     app.add_handler(CommandHandler("daily_my", subscriptions.daily_my))

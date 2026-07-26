@@ -194,6 +194,31 @@ class HistoricalDaySummary(BaseModel):
     source: WeatherProvider = "qweather"
 
 
+class TideStation(BaseModel):
+    """A tide station from GeoAPI POI lookup (type=TSTA)."""
+    id: str
+    name: str
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    distance_km: Optional[float] = None
+
+
+class TideExtreme(BaseModel):
+    """A high or low tide moment."""
+    time: datetime
+    height: float
+    is_high: bool
+
+
+class TideForecast(BaseModel):
+    """One day of tide data for one station."""
+    station: TideStation
+    date: datetime
+    extremes: List[TideExtreme] = Field(default_factory=list)
+    hourly: List[tuple] = Field(default_factory=list)  # (datetime, height_m)
+    source: WeatherProvider = "qweather"
+
+
 class TyphoonWindRadius(BaseModel):
     """Wind-circle radius per quadrant, in km."""
     ne: Optional[float] = None

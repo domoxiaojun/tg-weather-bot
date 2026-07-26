@@ -274,7 +274,14 @@ v1 空气质量统一结构：
 | 格点天气 | `/v7/grid-weather/now|{hours}|{days}` | 已接入（坐标与最近城市相距超 GRID_WEATHER_DISTANCE_KM 时启用；无 vis/feelsLike/pop） |
 | 监测站 | 复用实时空气质量响应的 `stations[]` 名称 | 已接入（未单独调 `/airquality/v1/stations/`） |
 | 热带气旋 | `/v7/tropical/storm-list` + `storm-track` + `storm-forecast` | 已接入（仅 basin=NP；list 提供 name，forecast 不返回 name） |
-| 海洋、辐射、控制台 | 对应官方 endpoint | 未接入 |
+| 海洋潮汐 | `/geo/v2/poi/lookup?type=TSTA` + `/v7/ocean/tide` | 已接入（/tide 命令；潮汐站 id 形如 P66981，非城市 id） |
+| 太阳辐射 | `/solarradiation/v1/forecast/{lat}/{lon}` | 已接入（仅用 GHI 按 fill-only 补 `HourlyForecast.radiation`，不新增界面） |
+| 控制台 API | 对应官方 endpoint | 未接入 |
+
+### 潮汐与辐射接入要点（对照官方文档核实）
+
+- 潮汐必须两步：`/geo/v2/poi/lookup?location=lon,lat&type=TSTA` 找站点（返回数组文档写作 `poi`，代码同时兼容 `location` 键），再 `/v7/ocean/tide?location={站点id}&date=yyyyMMdd`（最多未来 10 天）。响应含 `tideTable[]{fxTime,height,type H/L}` 与 `tideHourly[]{fxTime,height}`。
+- 太阳辐射路径 `/solarradiation/v1/forecast/{lat}/{lon}`，参数 `hours`(1-60)/`interval`(15/30/60)/`localTime`；响应数组名 `forecasts`，字段 `forecastTime`、`ghi`、`dhi`、**`ni`（直接辐射，注意不是 `dni`）**、`solarAngle{azimuth,elevation}`。本项目只取 `ghi`，按 fill-only 规则补 `radiation`，绝不覆盖彩云已提供的值。
 | 天文 | `/v7/astronomy/*` | 不接入：日月升落与月相逐日预报已提供，重复 |
 
 ### 热带气旋接入要点（对照官方文档核实）
