@@ -2,6 +2,13 @@ import sys
 
 from loguru import logger
 
+try:
+    import uvloop
+
+    uvloop.install()
+except ImportError:
+    uvloop = None
+
 from core.bot import create_app
 from core.config import settings
 

@@ -12,3 +12,4 @@ fake-useragent>=2.0.3
 scipy>=1.13.0
 openai==2.48.0
 google-generativeai
+uvloop>=0.21 ; sys_platform != 'win32'

@@ -256,8 +256,9 @@ class HourlyPresentationTests(unittest.TestCase):
         rain_png = Visualizer.draw_hourly_rain_chart(data)
         self.assertTrue(temperature_png.startswith(b"\x89PNG\r\n\x1a\n"))
         self.assertTrue(rain_png.startswith(b"\x89PNG\r\n\x1a\n"))
-        self.assertEqual(struct.unpack(">II", temperature_png[16:24]), (1680, 945))
-        self.assertEqual(struct.unpack(">II", rain_png[16:24]), (1680, 945))
+        # 12x6.75 inch card at 120 dpi (slimmer PNGs for faster uploads).
+        self.assertEqual(struct.unpack(">II", temperature_png[16:24]), (1440, 810))
+        self.assertEqual(struct.unpack(">II", rain_png[16:24]), (1440, 810))
 
     def test_temperature_chart_keeps_native_feels_like_gaps(self):
         runs = Visualizer._finite_runs(

@@ -1,9 +1,12 @@
 import io
 import os
+import threading
 
-import matplotlib.pyplot as plt
+import matplotlib
 from loguru import logger
 from matplotlib import font_manager
+from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch, Patch
 from matplotlib.ticker import FuncFormatter, MaxNLocator, PercentFormatter
@@ -14,11 +17,12 @@ from typing import List, Optional
 from domain.models import WeatherData
 
 # Set non-interactive backend
-plt.switch_backend('Agg')
+matplotlib.use("Agg")
 
 class Visualizer:
     _cjk_font_family: Optional[str] = None
-    _cjk_font_probed = False
+    _style_lock = threading.Lock()
+    _style_ready = False
     HOURLY_POINT_LIMIT = 24
     _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
     _THEME = {
@@ -58,9 +62,11 @@ class Visualizer:
 
     @classmethod
     def _setup_style(cls):
-        """配置全局绘图风格"""
-        if not cls._cjk_font_probed:
-            cls._cjk_font_probed = True
+        """配置全局绘图风格（只执行一次；rcParams 之后只读，线程安全）"""
+        with cls._style_lock:
+            if cls._style_ready:
+                return
+
             for font_path in cls._CJK_FONT_PATHS:
                 if not os.path.exists(font_path):
                     continue
@@ -71,33 +77,36 @@ class Visualizer:
                 except Exception:
                     continue
 
-        preferred_fonts = [
-            cls._cjk_font_family,
-            'Noto Sans CJK SC',
-            'Microsoft YaHei',
-            'SimHei',
-            'Arial Unicode MS',
-            'Arial',
-        ]
-        plt.style.use('default')
-        plt.rcParams.update({
-            'font.family': 'sans-serif',
-            'font.sans-serif': [font for font in preferred_fonts if font],
-            'font.weight': 300,
-            'axes.unicode_minus': False,
-            'axes.edgecolor': cls._THEME['border'],
-            'text.color': cls._THEME['text'],
-            'xtick.color': cls._THEME['muted'],
-            'ytick.color': cls._THEME['muted'],
-            'figure.facecolor': cls._THEME['canvas'],
-            'axes.facecolor': cls._THEME['surface'],
-            'savefig.facecolor': cls._THEME['canvas'],
-        })
+            preferred_fonts = [
+                cls._cjk_font_family,
+                'Noto Sans CJK SC',
+                'Microsoft YaHei',
+                'SimHei',
+                'Arial Unicode MS',
+                'Arial',
+            ]
+            matplotlib.rcdefaults()
+            matplotlib.rcParams.update({
+                'font.family': 'sans-serif',
+                'font.sans-serif': [font for font in preferred_fonts if font],
+                'font.weight': 300,
+                'axes.unicode_minus': False,
+                'axes.edgecolor': cls._THEME['border'],
+                'text.color': cls._THEME['text'],
+                'xtick.color': cls._THEME['muted'],
+                'ytick.color': cls._THEME['muted'],
+                'figure.facecolor': cls._THEME['canvas'],
+                'axes.facecolor': cls._THEME['surface'],
+                'savefig.facecolor': cls._THEME['canvas'],
+            })
+            cls._style_ready = True
 
     @classmethod
     def _create_card_figure(cls):
+        """OO API figure（不注册进 pyplot，线程安全，GC 自动回收）。"""
         cls._setup_style()
-        fig = plt.figure(figsize=(12, 6.75), dpi=140, facecolor=cls._THEME["canvas"])
+        fig = Figure(figsize=(12, 6.75), dpi=120, facecolor=cls._THEME["canvas"])
+        FigureCanvasAgg(fig)
         card = FancyBboxPatch(
             (0.018, 0.026),
             0.964,
@@ -114,18 +123,15 @@ class Visualizer:
 
     @classmethod
     def _render_figure(cls, fig) -> bytes:
-        try:
-            buf = io.BytesIO()
-            fig.savefig(
-                buf,
-                format="png",
-                facecolor=cls._THEME["canvas"],
-                edgecolor="none",
-            )
-            buf.seek(0)
-            return buf.getvalue()
-        finally:
-            plt.close(fig)
+        buf = io.BytesIO()
+        fig.savefig(
+            buf,
+            format="png",
+            facecolor=cls._THEME["canvas"],
+            edgecolor="none",
+        )
+        buf.seek(0)
+        return buf.getvalue()
 
     @staticmethod
     def _format_number(value: float, decimals: int = 1) -> str:
@@ -365,16 +371,15 @@ class Visualizer:
 
     @classmethod
     def _draw_safely(cls, draw_fn, data: WeatherData) -> Optional[bytes]:
-        """Run a chart builder, guaranteeing stray figures are closed on failure.
+        """Run a chart builder and degrade to None on failure.
 
-        Rendering is serialized on a single worker thread (see chart_cache), so
-        closing all pyplot figures here cannot affect a concurrent render.
+        Figures use the OO API and are never registered with pyplot, so
+        abandoned figures are reclaimed by GC — no explicit cleanup needed.
         """
         try:
             return draw_fn(data)
         except Exception:
             logger.exception("Chart rendering failed")
-            plt.close("all")
             return None
 
     @classmethod

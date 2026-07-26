@@ -50,6 +50,14 @@ class Settings(BaseSettings):
 
     # Scheduling
     timezone: str = Field("Asia/Shanghai", description="Timezone for scheduled pushes (daily brief)")
+    rain_alert_cooldown_hours: float = Field(4.0, description="Minimum hours between rain alerts per chat+location")
+
+    @field_validator("rain_alert_cooldown_hours")
+    @classmethod
+    def validate_rain_alert_cooldown(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("rain_alert_cooldown_hours must be greater than 0")
+        return value
 
     # LLM Service
     llm_provider: str = Field("openai", description="LLM Provider: 'openai' or 'gemini'")

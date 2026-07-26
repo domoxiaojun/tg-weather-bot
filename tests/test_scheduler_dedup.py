@@ -1,12 +1,15 @@
 import os
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 
 os.environ.setdefault("BOT_TOKEN", "test-token")
 os.environ.setdefault("QWEATHER_API_KEY", "test-qweather-key")
 
-from core.scheduler import check_rain_alerts, send_daily_brief
+from core.config import settings
+from core.scheduler import check_rain_alerts, dispatch_daily_briefs
 from domain.models import WeatherData
 
 
@@ -53,15 +56,16 @@ class SchedulerDeduplicationTests(unittest.IsolatedAsyncioTestCase):
         weather_service = FakeWeatherService()
         llm_service = FakeLLMService()
         bot = FakeBot()
+        now_hhmm = datetime.now(ZoneInfo(settings.timezone)).strftime("%H:%M")
         app = SimpleNamespace(
             chat_data={
-                1: {"daily_subs": ["北京"]},
-                2: {"daily_subs": ["北京"]},
+                1: {"daily_subs": ["北京"], "daily_sub_times": {"北京": now_hhmm}},
+                2: {"daily_subs": ["北京"], "daily_sub_times": {"北京": now_hhmm}},
             }
         )
         context = SimpleNamespace(application=app, bot=bot)
 
-        await send_daily_brief(
+        await dispatch_daily_briefs(
             context,
             weather_service=weather_service,
             llm_service=llm_service,
@@ -70,6 +74,15 @@ class SchedulerDeduplicationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(weather_service.calls, [("北京", "full", False)])
         self.assertEqual(llm_service.calls, 1)
         self.assertEqual({message["chat_id"] for message in bot.messages}, {1, 2})
+        # Same-day duplicates are guarded by the per-chat last-sent marker.
+        self.assertIn("北京", app.chat_data[1]["daily_brief_last_sent"])
+
+        await dispatch_daily_briefs(
+            context,
+            weather_service=weather_service,
+            llm_service=llm_service,
+        )
+        self.assertEqual(llm_service.calls, 1)
 
     async def test_rain_check_fetches_once_and_fans_out(self):
         weather_service = FakeWeatherService()

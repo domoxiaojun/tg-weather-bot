@@ -61,3 +61,22 @@
 - [x] E5 handlers: /report 与 inline 日报渐进编辑消息（节流），替换 keep_typing
 - [x] E6 tests: 流式聚合、缓存命中、OpenAI 流事件解析；更新 900 token 断言
 - [x] E7 .env.example / README 同步；全量验证并提交
+
+## 第三轮 — 性能与用户体验（2026-07-26，用户确认全做）
+
+### F 性能
+- [x] F1 图表 file_id 复用：普通聊天发图后回存 file_id，同数据秒发
+- [x] F2 定时任务有界并发（Semaphore 5）
+- [x] F3 visualizer 迁移 OO API（Figure/FigureCanvasAgg），渲染线程池开到 2
+- [x] F4 图表 dpi 140→120 瘦身
+- [x] F5 uvloop 接入（requirements + main.py，仅非 Windows）
+
+### G 用户体验
+- [ ] G1 城市歧义候选按钮（同名城市列出让用户选）
+- [ ] G2 天气卡片新增 🤖 AI日报 与 📅 逐日图 按钮（AI日报走流式+缓存）
+- [ ] G3 /chart 回复附带图表切换键盘
+- [ ] G4 /rain_my、/daily_my 列表带一键退订按钮
+- [ ] G5 /start 私聊提供"发送位置"快捷键盘
+- [x] G6 降雨提醒附降水图；冷却时长做成配置 RAIN_ALERT_COOLDOWN_HOURS
+- [ ] G7 早安简报自定义时间 /daily_sub 城市 HH:MM（分钟级调度窗口）
+- [ ] G8 全量验证（tests/ruff/compile/factory）并分批提交

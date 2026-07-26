@@ -11,6 +11,7 @@ from services.chart_cache import (
     get_chart_caption,
     get_or_create_chart_file_id,
     normalize_chart_type,
+    remember_chart_file_id,
     render_chart_bytes_async,
 )
 from utils.formatter import format_weather_response, get_weather_keyboard
@@ -122,6 +123,9 @@ class CallbackHandlers:
                     chat_id=update.effective_chat.id,
                     photo=file_id,
                     caption=caption,
+                    reply_markup=get_weather_keyboard(
+                        location, mode="chart", coords=weather_data.coords
+                    ),
                 )
             return
 
@@ -134,11 +138,13 @@ class CallbackHandlers:
             await self._notify(update, context, "⚠️ Inline 图表需要 SUPER_ADMIN_ID 用于预上传 file_id 缓存。")
             return
 
-        await context.bot.send_photo(
+        sent = await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=InputFile(io.BytesIO(img_bytes), filename=f"{chart_type}.png"),
             caption=caption,
+            reply_markup=get_weather_keyboard(location, mode="chart", coords=weather_data.coords),
         )
+        await remember_chart_file_id(weather_data, chart_type, sent)
 
     async def _handle_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
         query = update.callback_query

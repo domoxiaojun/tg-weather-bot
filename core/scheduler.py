@@ -1,15 +1,22 @@
 import asyncio
-from datetime import datetime, timedelta, time
+import io
+from datetime import datetime, timedelta
 from functools import partial
 from html import escape
 from zoneinfo import ZoneInfo
 
 from loguru import logger
+from telegram import InputFile
 from telegram.constants import ParseMode
 from telegram.error import Forbidden
 from telegram.ext import Application, ContextTypes
 
 from core.config import settings
+from services.chart_cache import (
+    get_cached_chart_file_id,
+    remember_chart_file_id,
+    render_chart_bytes_async,
+)
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
 from utils.formatter import format_weather_response
@@ -57,6 +64,27 @@ def will_rain_soon(weather, minutes: int = 30) -> bool:
 # round (max_instances=1 would then skip the following runs entirely).
 LOCATION_WEATHER_TIMEOUT = 30.0
 LOCATION_REPORT_TIMEOUT = 90.0
+# Locations are processed concurrently but bounded, so one job round is
+# paced by the slowest location instead of the sum of all of them.
+LOCATION_CONCURRENCY = 5
+
+DEFAULT_DAILY_BRIEF_TIME = "08:00"
+
+# In-memory watermark per application for the minute-level brief dispatcher.
+# A restart resets it; the per-chat "last sent date" guard prevents duplicates.
+_daily_brief_last_check: dict[int, datetime] = {}
+
+
+def parse_brief_time(value: str):
+    """Parse HH:MM; returns (hour, minute) or None."""
+    try:
+        hour_text, minute_text = value.strip().split(":", 1)
+        hour, minute = int(hour_text), int(minute_text)
+    except (ValueError, AttributeError):
+        return None
+    if 0 <= hour <= 23 and 0 <= minute <= 59:
+        return hour, minute
+    return None
 
 
 def _remove_subscription(chat_data: dict, list_key: str, location: str) -> None:
@@ -77,27 +105,56 @@ async def _persist_chat_data(app: Application, chat_ids: set) -> None:
         logger.error(f"Failed to persist chat_data from job: {error}")
 
 
-async def send_daily_brief(
+async def _bounded_gather(entries, worker):
+    semaphore = asyncio.Semaphore(LOCATION_CONCURRENCY)
+
+    async def run(entry):
+        async with semaphore:
+            await worker(entry)
+
+    if entries:
+        await asyncio.gather(*(run(entry) for entry in entries))
+
+
+async def dispatch_daily_briefs(
     context: ContextTypes.DEFAULT_TYPE,
     *,
     weather_service: WeatherFusionService,
     llm_service: LLMService,
 ):
-    """Generate one weather report per unique subscription location."""
+    """Minute-level dispatcher supporting a custom HH:MM per subscription."""
     app = context.application
     if not hasattr(app, "chat_data") or not app.chat_data:
         return
 
+    now = datetime.now(ZoneInfo(settings.timezone))
+    last_check = _daily_brief_last_check.get(id(app), now - timedelta(seconds=90))
+    _daily_brief_last_check[id(app)] = now
+    today_str = now.strftime("%Y-%m-%d")
+
     grouped: dict[str, dict] = {}
     for chat_id, data in app.chat_data.items():
+        sub_times = data.get("daily_sub_times", {})
+        last_sent = data.get("daily_brief_last_sent", {})
         for location in data.get("daily_subs", []):
+            parsed = parse_brief_time(sub_times.get(location, DEFAULT_DAILY_BRIEF_TIME))
+            hour, minute = parsed if parsed else parse_brief_time(DEFAULT_DAILY_BRIEF_TIME)
+            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if not (last_check < target <= now):
+                continue
+            if last_sent.get(location) == today_str:
+                continue
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "subscribers": []})
             entry["subscribers"].append((chat_id, data, location))
 
+    if not grouped:
+        return
+
     dirty_chats: set = set()
-    logger.debug(f"Running Daily Brief for {len(grouped)} unique locations")
-    for entry in grouped.values():
+    logger.info(f"Dispatching Daily Brief for {len(grouped)} unique locations")
+
+    async def process(entry):
         location = entry["location"]
         try:
             weather = await asyncio.wait_for(
@@ -105,7 +162,7 @@ async def send_daily_brief(
                 timeout=LOCATION_WEATHER_TIMEOUT,
             )
             if not weather:
-                continue
+                return
             report_text = await asyncio.wait_for(
                 llm_service.generate_weather_report(weather),
                 timeout=LOCATION_REPORT_TIMEOUT,
@@ -118,6 +175,8 @@ async def send_daily_brief(
                         text=header + report_text,
                         parse_mode=ParseMode.HTML,
                     )
+                    chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = today_str
+                    dirty_chats.add(chat_id)
                     logger.info(f"Sent Daily Brief to {chat_id} for {location}")
                 except Forbidden:
                     _remove_subscription(chat_data, "daily_subs", subscribed_location)
@@ -134,6 +193,7 @@ async def send_daily_brief(
         except Exception as error:
             logger.error(f"Daily Brief generation failed for {location}: {error}")
 
+    await _bounded_gather(list(grouped.values()), process)
     await _persist_chat_data(app, dirty_chats)
 
 
@@ -155,8 +215,10 @@ async def check_rain_alerts(
             entry["subscribers"].append((chat_id, data, location))
 
     dirty_chats: set = set()
+    cooldown = timedelta(hours=settings.rain_alert_cooldown_hours)
     logger.debug(f"Running rain check for {len(grouped)} unique locations")
-    for entry in grouped.values():
+
+    async def process(entry):
         location = entry["location"]
         try:
             weather = await asyncio.wait_for(
@@ -164,23 +226,57 @@ async def check_rain_alerts(
                 timeout=LOCATION_WEATHER_TIMEOUT,
             )
             if not weather or not will_rain_soon(weather):
-                continue
+                return
 
             alert_text = "🚨 *自动降雨提醒*\n\n" + format_weather_response(
                 weather,
                 view_type="rain",
             )
-            for chat_id, chat_data, subscribed_location in entry["subscribers"]:
-                last_alert = chat_data.get("last_rain_alert", {})
-                last_time = last_alert.get(subscribed_location)
-                if last_time and (datetime.now() - last_time) < timedelta(hours=4):
-                    continue
-                try:
+            chart_file_id = None
+            chart_bytes = None
+            if settings.enable_weather_plots:
+                chart_file_id = await get_cached_chart_file_id(weather, "rain")
+                if not chart_file_id:
+                    chart_bytes = await render_chart_bytes_async(weather, "rain")
+
+            async def deliver(chat_id):
+                nonlocal chart_file_id, chart_bytes
+                caption_fits = len(alert_text) <= 1000
+                if chart_file_id or chart_bytes:
+                    photo = chart_file_id or InputFile(io.BytesIO(chart_bytes), filename="rain.png")
+                    message = await context.bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photo,
+                        caption=alert_text if caption_fits else None,
+                        parse_mode=ParseMode.MARKDOWN_V2 if caption_fits else None,
+                    )
+                    if chart_file_id is None:
+                        # Reuse Telegram's upload for the remaining subscribers.
+                        await remember_chart_file_id(weather, "rain", message)
+                        photos = getattr(message, "photo", None)
+                        if photos:
+                            chart_file_id = photos[-1].file_id
+                            chart_bytes = None
+                    if not caption_fits:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=alert_text,
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+                else:
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=alert_text,
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
+
+            for chat_id, chat_data, subscribed_location in entry["subscribers"]:
+                last_alert = chat_data.get("last_rain_alert", {})
+                last_time = last_alert.get(subscribed_location)
+                if last_time and (datetime.now() - last_time) < cooldown:
+                    continue
+                try:
+                    await deliver(chat_id)
                     last_alert[subscribed_location] = datetime.now()
                     chat_data["last_rain_alert"] = last_alert
                     dirty_chats.add(chat_id)
@@ -200,6 +296,7 @@ async def check_rain_alerts(
         except Exception as error:
             logger.error(f"Rain check failed for {location}: {error}")
 
+    await _bounded_gather(list(grouped.values()), process)
     await _persist_chat_data(app, dirty_chats)
 
 
@@ -227,13 +324,15 @@ def setup_scheduler(
         rain_status = "ON"
 
     if settings.enable_daily_brief:
-        job_queue.run_daily(
+        # Minute-level dispatcher so each subscription can pick its own HH:MM.
+        job_queue.run_repeating(
             partial(
-                send_daily_brief,
+                dispatch_daily_briefs,
                 weather_service=weather_service,
                 llm_service=llm_service,
             ),
-            time=time(8, 0, tzinfo=ZoneInfo(settings.timezone)),
+            interval=60,
+            first=15,
             name="daily-brief",
         )
         daily_status = "ON"

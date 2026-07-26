@@ -18,10 +18,10 @@ CHART_CACHE_TTL = 1800
 CHART_FAILURE_TTL = 120
 _CHART_FAILURE_SENTINEL = "__chart_failed__"
 
-# Matplotlib rendering is CPU-bound and pyplot's global state is not
-# thread-safe, so all chart drawing is serialized on one worker thread to
-# keep it off the asyncio event loop.
-_RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chart-render")
+# Matplotlib rendering is CPU-bound; charts are drawn with the thread-safe
+# OO API (Figure + FigureCanvasAgg) on a small worker pool to keep the
+# asyncio event loop free while allowing concurrent renders.
+_RENDER_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="chart-render")
 
 
 async def run_chart_render(func: Callable[..., Any], *args: Any) -> Any:
@@ -89,6 +89,23 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
         ).encode("utf-8")
     ).hexdigest()[:16]
     return f"chart:v5:{weather_data.coords}:{normalized}:{fingerprint}"
+
+
+async def remember_chart_file_id(weather_data: WeatherData, chart_type: str, message) -> None:
+    """Store the file_id of an already-sent chart photo for instant reuse.
+
+    Telegram returns the uploaded photo's file_id on every send; caching it
+    means the next request for the same data skips both render and upload.
+    """
+    try:
+        photos = getattr(message, "photo", None)
+        if not photos:
+            return
+        file_id = photos[-1].file_id
+        if file_id:
+            await cache.set(chart_cache_key(weather_data, chart_type), file_id, ttl=CHART_CACHE_TTL)
+    except Exception as e:
+        logger.debug(f"Failed to remember chart file_id: {e}")
 
 
 async def get_cached_chart_file_id(weather_data: WeatherData, chart_type: str) -> Optional[str]:

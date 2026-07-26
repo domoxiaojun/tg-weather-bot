@@ -12,6 +12,7 @@ from services.chart_cache import (
     get_cached_chart_file_id,
     get_chart_caption,
     normalize_chart_type,
+    remember_chart_file_id,
     render_chart_bytes_async,
     run_chart_render,
 )
@@ -82,6 +83,7 @@ class WeatherHandlers:
                 chat_id=update.effective_chat.id,
                 photo=file_id,
                 caption=caption,
+                reply_markup=get_weather_keyboard(location, mode="chart", coords=data.coords),
             )
             return
 
@@ -90,12 +92,15 @@ class WeatherHandlers:
             await send_text(update, context, f"⚠️ 暂无{caption.split(' ', 1)[-1]}数据，无法绘制图表")
             return
 
-        await send_photo(
+        sent = await send_photo(
             update,
             context,
             photo=InputFile(io.BytesIO(img_bytes), filename=f"{location}_{chart_type}.png"),
             caption=caption,
+            reply_markup=get_weather_keyboard(location, mode="chart", coords=data.coords),
         )
+        if sent is not None:
+            await remember_chart_file_id(data, chart_type, sent)
 
     async def handle_weather_request(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /tq and location weather requests."""
@@ -153,7 +158,7 @@ class WeatherHandlers:
         try:
             # Telegram caption limit is 1024 chars; fall back to photo + text.
             if chart_bytes and len(text) <= 1000:
-                await send_photo(
+                sent = await send_photo(
                     update,
                     context,
                     photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
@@ -161,12 +166,16 @@ class WeatherHandlers:
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
+                if sent is not None:
+                    await remember_chart_file_id(data, "rain", sent)
             elif chart_bytes:
-                await send_photo(
+                sent = await send_photo(
                     update,
                     context,
                     photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
                 )
+                if sent is not None:
+                    await remember_chart_file_id(data, "rain", sent)
                 await send_text(
                     update,
                     context,
