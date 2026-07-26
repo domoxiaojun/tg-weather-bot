@@ -298,6 +298,43 @@ class BriefTimezoneTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(context.bot.messages), 1)
 
+    async def test_catchup_crosses_midnight(self):
+        # A 23:xx brief missed right before midnight must still be caught up
+        # after 00:00, and the dedupe record must belong to yesterday so the
+        # next evening's brief is not swallowed. Deterministic at any wall
+        # time: pick a fixed-offset zone where the local clock is just past
+        # midnight right now.
+        settings.daily_brief_catchup_hours = 3
+        now_utc = datetime.now(timezone.utc)
+        offset = (0 - now_utc.hour) % 24
+        if offset == 0:
+            tz_name = "Etc/GMT"
+        elif offset <= 14:
+            tz_name = f"Etc/GMT-{offset}"  # POSIX sign inversion: GMT-5 == UTC+5
+        else:
+            tz_name = f"Etc/GMT+{24 - offset}"
+        zone = scheduler.zone_for(tz_name)
+        local_now = now_utc.astimezone(zone)
+        self.assertEqual(local_now.hour, 0, "zone construction must land just after midnight")
+        missed_local = local_now - timedelta(hours=1)  # 23:xx yesterday
+        self.assertGreater(local_now.date(), missed_local.date())
+
+        service = StubWeatherService(make_weather())
+        llm = self.LLM()
+        context, _app = make_context({
+            1: {
+                "daily_subs": ["某地"],
+                "daily_sub_times": {"某地": missed_local.strftime("%H:%M")},
+                "daily_sub_tz": {"某地": tz_name},
+            },
+        })
+
+        await scheduler.dispatch_daily_briefs(context, weather_service=service, llm_service=llm)
+        self.assertEqual(len(context.bot.messages), 1, "cross-midnight brief must be caught up")
+        recorded = _app.chat_data[1]["daily_brief_last_sent"]["某地"]
+        self.assertEqual(recorded, missed_local.strftime("%Y-%m-%d"),
+                         "dedupe must record the brief's own day, not today")
+
     async def test_catchup_disabled_skips_missed_brief(self):
         settings.daily_brief_catchup_hours = 0
         now_local = datetime.now(scheduler.ZoneInfo(settings.timezone))

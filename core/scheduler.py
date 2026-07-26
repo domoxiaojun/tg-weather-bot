@@ -334,17 +334,29 @@ async def dispatch_daily_briefs(
             hour, minute = parsed if parsed else parse_brief_time(DEFAULT_DAILY_BRIEF_TIME)
             zone = zone_for(sub_zones.get(location))
             local_now = now_utc.astimezone(zone)
-            target_utc = local_now.replace(
-                hour=hour, minute=minute, second=0, microsecond=0
-            ).astimezone(timezone.utc)
-            if not (window_start < target_utc <= now_utc):
+            base = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            # Check today's occurrence AND yesterday's: a 23:50 brief missed
+            # just before midnight must still be caught up at 00:30, when
+            # "today's" occurrence is in the future.
+            target_local = next(
+                (
+                    candidate
+                    for candidate in (base, base - timedelta(days=1))
+                    if window_start < candidate.astimezone(timezone.utc) <= now_utc
+                ),
+                None,
+            )
+            if target_local is None:
                 continue
-            # "Already sent" is judged by the subscription's own calendar day.
-            if last_sent.get(location) == local_now.strftime("%Y-%m-%d"):
+            # "Already sent" is judged by the calendar day the brief belongs
+            # to (the target's day, not today's) so a cross-midnight catch-up
+            # does not swallow the next evening's brief.
+            target_day = target_local.strftime("%Y-%m-%d")
+            if last_sent.get(location) == target_day:
                 continue
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "subscribers": []})
-            entry["subscribers"].append((chat_id, data, location, zone))
+            entry["subscribers"].append((chat_id, data, location, zone, target_day))
 
     if not grouped:
         return
@@ -365,7 +377,7 @@ async def dispatch_daily_briefs(
                 llm_service.generate_weather_report(weather),
                 timeout=LOCATION_REPORT_TIMEOUT,
             )
-            for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
+            for chat_id, chat_data, subscribed_location, zone, target_day in entry["subscribers"]:
                 brief_date = datetime.now(zone)
                 weekday = WEEKDAYS_CN[brief_date.weekday()]
                 header = (
@@ -389,9 +401,7 @@ async def dispatch_daily_briefs(
                             message_thread_id=thread_id,
                             reply_markup=keyboard,
                         )
-                    chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = (
-                        brief_date.strftime("%Y-%m-%d")
-                    )
+                    chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = target_day
                     dirty_chats.add(chat_id)
                     logger.info(f"Sent Daily Brief to {chat_id} for {location}")
                 except Forbidden:
