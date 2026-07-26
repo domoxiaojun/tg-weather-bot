@@ -228,6 +228,28 @@ class QWeatherAdapter(WeatherAdapter):
         resolved = await cache.get_or_set(cache_key, resolve_location, ttl=self._GEO_CACHE_TTL)
         return resolved if isinstance(resolved, dict) else None
 
+    async def get_geo_candidates(self, location: str, limit: int = 4) -> list:
+        """Return multiple geo matches so callers can disambiguate same-name cities."""
+        from utils.cache import cache
+
+        cache_key = f"{self._geo_cache_key(location)}:multi"
+
+        async def resolve_candidates() -> Optional[list]:
+            data = await self._request("/geo/v2/city/lookup", {"location": location})
+            records = data.get("location") if data else None
+            if not isinstance(records, list):
+                return None
+            return [
+                {key: record.get(key) for key in ("id", "name", "adm1", "adm2", "lon", "lat", "tz")}
+                for record in records[:10]
+                if isinstance(record, dict)
+            ]
+
+        candidates = await cache.get_or_set(cache_key, resolve_candidates, ttl=self._GEO_CACHE_TTL)
+        if not isinstance(candidates, list):
+            return []
+        return candidates[:limit]
+
     async def _cached_request(
         self,
         cache_key: str,

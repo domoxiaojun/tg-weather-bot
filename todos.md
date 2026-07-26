@@ -72,11 +72,11 @@
 - [x] F5 uvloop 接入（requirements + main.py，仅非 Windows）
 
 ### G 用户体验
-- [ ] G1 城市歧义候选按钮（同名城市列出让用户选）
-- [ ] G2 天气卡片新增 🤖 AI日报 与 📅 逐日图 按钮（AI日报走流式+缓存）
-- [ ] G3 /chart 回复附带图表切换键盘
-- [ ] G4 /rain_my、/daily_my 列表带一键退订按钮
-- [ ] G5 /start 私聊提供"发送位置"快捷键盘
+- [x] G1 城市歧义候选按钮（同名城市列出让用户选）
+- [x] G2 天气卡片新增 🤖 AI日报 与 📅 逐日图 按钮（AI日报走流式+缓存）
+- [x] G3 /chart 回复附带图表切换键盘
+- [x] G4 /rain_my、/daily_my 列表带一键退订按钮
+- [x] G5 /start 私聊提供"发送位置"快捷键盘
 - [x] G6 降雨提醒附降水图；冷却时长做成配置 RAIN_ALERT_COOLDOWN_HOURS
-- [ ] G7 早安简报自定义时间 /daily_sub 城市 HH:MM（分钟级调度窗口）
-- [ ] G8 全量验证（tests/ruff/compile/factory）并分批提交
+- [x] G7 早安简报自定义时间 /daily_sub 城市 HH:MM（分钟级调度窗口）
+- [x] G8 全量验证（tests/ruff/compile/factory）并分批提交

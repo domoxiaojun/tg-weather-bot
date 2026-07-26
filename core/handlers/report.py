@@ -65,53 +65,61 @@ class ReportHandlers:
             if not weather_data:
                 await send_text(update, context, f"❌ 未找到城市：{location}")
                 return
-
-            title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"
-            placeholder = await send_text(
-                update,
-                context,
-                f"{title}\n\n⏳ 正在生成 AI 天气日报...",
-                parse_mode=ParseMode.HTML,
-            )
-
-            on_progress = None
-            if placeholder is not None:
-                async def edit_placeholder(text_html: str):
-                    await placeholder.edit_text(text_html, parse_mode=ParseMode.HTML)
-
-                on_progress = self._make_stream_editor(edit_placeholder, title)
-
-            report_text = await self.deps.llm_service.generate_weather_report(
-                weather_data,
-                on_progress=on_progress,
-            )
-
-            final_html = f"{title}\n\n{report_text}"
-            final_plain = f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}"
-            if placeholder is not None:
-                try:
-                    await placeholder.edit_text(final_html, parse_mode=ParseMode.HTML)
-                except Exception as e:
-                    if "Message is not modified" in str(e):
-                        return
-                    logger.warning(f"HTML edit failed, using plain text: {e}")
-                    try:
-                        await placeholder.edit_text(final_plain)
-                    except Exception as edit_error:
-                        logger.error(f"Report final edit failed: {edit_error}")
-                        await send_text(update, context, final_plain, parse_mode=None)
-            else:
-                try:
-                    await send_text(update, context, final_html, parse_mode=ParseMode.HTML)
-                except Exception as e:
-                    logger.warning(f"HTML parsing failed, using plain text: {e}")
-                    await send_text(update, context, final_plain, parse_mode=None)
+            await self.send_report_for_weather(update, context, weather_data)
         except Exception as e:
             logger.error(f"Report generation failed: {e}")
             try:
                 await send_text(update, context, "❌ 生成日报失败，请稍后重试。")
             except Exception as fallback_error:
                 logger.error(f"Report fallback send failed: {fallback_error}")
+
+    async def send_report_for_weather(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        weather_data,
+    ):
+        """Send a streaming AI report into the chat (shared by /report and buttons)."""
+        title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"
+        placeholder = await send_text(
+            update,
+            context,
+            f"{title}\n\n⏳ 正在生成 AI 天气日报...",
+            parse_mode=ParseMode.HTML,
+        )
+
+        on_progress = None
+        if placeholder is not None:
+            async def edit_placeholder(text_html: str):
+                await placeholder.edit_text(text_html, parse_mode=ParseMode.HTML)
+
+            on_progress = self._make_stream_editor(edit_placeholder, title)
+
+        report_text = await self.deps.llm_service.generate_weather_report(
+            weather_data,
+            on_progress=on_progress,
+        )
+
+        final_html = f"{title}\n\n{report_text}"
+        final_plain = f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}"
+        if placeholder is not None:
+            try:
+                await placeholder.edit_text(final_html, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    return
+                logger.warning(f"HTML edit failed, using plain text: {e}")
+                try:
+                    await placeholder.edit_text(final_plain)
+                except Exception as edit_error:
+                    logger.error(f"Report final edit failed: {edit_error}")
+                    await send_text(update, context, final_plain, parse_mode=None)
+        else:
+            try:
+                await send_text(update, context, final_html, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                logger.warning(f"HTML parsing failed, using plain text: {e}")
+                await send_text(update, context, final_plain, parse_mode=None)
 
     async def handle_chosen_inline_result(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate AI reports after the user chooses an inline AI placeholder."""

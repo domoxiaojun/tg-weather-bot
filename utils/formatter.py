@@ -553,8 +553,12 @@ def get_weather_keyboard(
         if show_charts:
             row2 = [
                 InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
-                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain")
+                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain"),
+                InlineKeyboardButton("📅 逐日图", callback_data=f"chart|{token}|daily"),
             ]
             keyboard.append(row2)
+
+        # 第三排：AI 日报（Inline 场景有专属结果项，无需此按钮）
+        keyboard.append([InlineKeyboardButton("🤖 AI日报", callback_data=f"report|{token}")])
 
     return InlineKeyboardMarkup(keyboard)

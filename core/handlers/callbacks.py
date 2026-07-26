@@ -18,8 +18,10 @@ from utils.formatter import format_weather_response, get_weather_keyboard
 
 
 class CallbackHandlers:
-    def __init__(self, deps: BotDependencies):
+    def __init__(self, deps: BotDependencies, weather_handlers=None, report_handlers=None):
         self.deps = deps
+        self.weather_handlers = weather_handlers
+        self.report_handlers = report_handlers
 
     @staticmethod
     async def _safe_answer(query, text: str | None = None, show_alert: bool = False) -> bool:
@@ -76,7 +78,115 @@ class CallbackHandlers:
             await self._handle_subscribe(update, context, location)
             return
 
+        if action == "tq" and location:
+            await self._safe_answer(query, "⏳ 查询中...")
+            await self._handle_weather_choice(update, context, data_parts)
+            return
+
+        if action == "report" and location:
+            await self._handle_report(update, context, location)
+            return
+
+        if action == "unsub" and len(data_parts) >= 3:
+            await self._handle_unsubscribe(update, context, data_parts)
+            return
+
         await query.answer()
+
+    async def _handle_weather_choice(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        data_parts: list[str],
+    ):
+        """City-disambiguation button: tq|{coords}|{view}|{start_day}|{limit}"""
+        if self.weather_handlers is None:
+            await self._notify(update, context, "❌ 功能暂不可用")
+            return
+        coords = data_parts[1]
+        view_type = data_parts[2] if len(data_parts) > 2 else "default"
+        try:
+            start_day = int(data_parts[3]) if len(data_parts) > 3 else 0
+        except ValueError:
+            start_day = 0
+        try:
+            limit = int(data_parts[4]) if len(data_parts) > 4 else 0
+        except ValueError:
+            limit = 0
+        await self.weather_handlers._send_weather(
+            update,
+            context,
+            coords,
+            view_type=view_type,
+            start_day=start_day,
+            limit=limit or None,
+        )
+
+    async def _handle_report(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
+        query = update.callback_query
+        if query.inline_message_id:
+            await query.answer(
+                "⚠️ Inline 消息不支持此按钮，请在 @bot 的结果里直接选择「AI 天气日报」。",
+                show_alert=True,
+            )
+            return
+        if self.report_handlers is None or not self.deps.llm_service.provider:
+            await query.answer("⚠️ AI 日报功能未配置。", show_alert=True)
+            return
+
+        await self._safe_answer(query, "🤖 正在生成 AI 日报...")
+        try:
+            weather_data = await self.deps.weather_service.get_fused_weather(location, profile="full")
+            if not weather_data:
+                await self._notify(update, context, "未获取到天气数据")
+                return
+            await self.report_handlers.send_report_for_weather(update, context, weather_data)
+        except Exception as e:
+            logger.error(f"Report button failed: {e}")
+            await self._notify(update, context, "❌ 生成日报失败，请稍后重试。")
+
+    async def _handle_unsubscribe(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        data_parts: list[str],
+    ):
+        """One-tap unsubscribe from the /rain_my and /daily_my lists."""
+        from core.handlers.subscriptions import (
+            remove_subscription_entry,
+            render_subscription_list,
+        )
+
+        query = update.callback_query
+        kind = data_parts[1]
+        try:
+            index = int(data_parts[2])
+        except ValueError:
+            await query.answer()
+            return
+        if kind not in {"daily", "rain"}:
+            await query.answer()
+            return
+
+        removed = remove_subscription_entry(context.chat_data, kind, index)
+        if removed is None:
+            # List changed since the message was rendered; refresh it below.
+            await self._safe_answer(query, "列表已变化，已刷新")
+        else:
+            await self._safe_answer(query, f"✅ 已取消 {removed}")
+
+        text, keyboard = render_subscription_list(context.chat_data, kind)
+        try:
+            if text is None:
+                empty_text = (
+                    "📭 你还没有订阅任何早安简报。" if kind == "daily" else "📭 你还没有订阅任何降雨提醒。"
+                )
+                await query.edit_message_text(empty_text)
+            else:
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        except Exception as e:
+            if "Message is not modified" not in str(e):
+                logger.debug(f"Subscription list refresh failed: {e}")
 
     async def _handle_chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data_parts: list[str]):
         query = update.callback_query

@@ -1,8 +1,15 @@
 import io
 
 from loguru import logger
-from telegram import InputFile, Update
-from telegram.constants import ChatAction, ParseMode
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputFile,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    Update,
+)
+from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.ext import ContextTypes
 
 from core.config import settings
@@ -18,6 +25,18 @@ from services.chart_cache import (
 )
 from services.visualizer import Visualizer
 from utils.formatter import format_weather_response, get_weather_keyboard
+
+
+def _looks_like_coords(text: str) -> bool:
+    parts = text.split(",")
+    if len(parts) != 2:
+        return False
+    try:
+        float(parts[0])
+        float(parts[1])
+    except ValueError:
+        return False
+    return True
 
 
 class WeatherHandlers:
@@ -38,7 +57,16 @@ class WeatherHandlers:
             "• <b>Inline模式</b>：直接在对话框输入 <code>@bot_name 北京</code>\n\n"
             "数据源：和风天气 (QWeather) & 彩云天气 (Caiyun)"
         )
-        await send_text(update, context, welcome_text, parse_mode=ParseMode.HTML)
+        reply_markup = None
+        chat = update.effective_chat
+        if chat is not None and chat.type == ChatType.PRIVATE:
+            reply_markup = ReplyKeyboardMarkup(
+                [[KeyboardButton("📍 发送我的位置", request_location=True)]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="点击按钮分享位置，或输入 /tq 城市",
+            )
+        await send_text(update, context, welcome_text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
     async def chart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/chart [城市] [daily|hourly|rain] -> 发送趋势图"""
@@ -129,6 +157,74 @@ class WeatherHandlers:
             await message.set_reaction("👀")
         except Exception:
             pass
+
+        # 同名城市（如"朝阳"）静默取第一个匹配容易查错地方；
+        # 有多个精确同名候选时让用户点选。
+        if message.location is None and not _looks_like_coords(location_query):
+            if await self._offer_geo_choices(update, context, location_query, view_type, start_day, limit):
+                return
+
+        await self._send_weather(update, context, location_query, view_type, start_day, limit)
+
+    async def _offer_geo_choices(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        location_query: str,
+        view_type: str,
+        start_day: int,
+        limit,
+    ) -> bool:
+        try:
+            candidates = await self.deps.weather_service.qweather.get_geo_candidates(location_query)
+        except Exception as e:
+            logger.debug(f"Geo candidates lookup failed: {e}")
+            return False
+
+        query_text = location_query.strip()
+        exact = [c for c in candidates if (c.get("name") or "") == query_text]
+        if len(exact) < 2:
+            return False
+
+        buttons = []
+        for candidate in exact[:4]:
+            name = candidate.get("name") or query_text
+            adm2 = candidate.get("adm2") or ""
+            adm1 = candidate.get("adm1") or ""
+            region = "·".join(part for part in (adm2, adm1) if part and part != name)
+            label = f"{name}（{region}）" if region else name
+            try:
+                coords = f"{float(candidate['lon']):.2f},{float(candidate['lat']):.2f}"
+            except (KeyError, TypeError, ValueError):
+                continue
+            buttons.append(
+                [
+                    InlineKeyboardButton(
+                        label,
+                        callback_data=f"tq|{coords}|{view_type}|{start_day}|{limit or 0}",
+                    )
+                ]
+            )
+        if len(buttons) < 2:
+            return False
+
+        await send_text(
+            update,
+            context,
+            f"🔎 找到多个「{query_text}」，请选择：",
+            reply_markup=InlineKeyboardMarkup(buttons),
+        )
+        return True
+
+    async def _send_weather(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        location_query: str,
+        view_type: str = "default",
+        start_day: int = 0,
+        limit=None,
+    ):
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
 
         try:

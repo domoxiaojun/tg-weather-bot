@@ -36,7 +36,7 @@ async def _register_bot_commands(application: Application):
         BotCommand("tq", "天气查询 - /tq [城市] [参数]"),
         BotCommand("chart", "温度趋势图 - /chart [城市] [daily|hourly]"),
         BotCommand("report", "AI天气日报 - /report [城市]"),
-        BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市]"),
+        BotCommand("daily_sub", "订阅早安简报 - /daily_sub [城市] [HH:MM]"),
         BotCommand("daily_my", "我的订阅 - 查看已订阅城市"),
         BotCommand("daily_unsub", "取消订阅 - /daily_unsub [城市]"),
         BotCommand("rain_sub", "订阅降雨提醒 - /rain_sub [城市]"),
@@ -83,7 +83,7 @@ def create_app() -> Application:
     weather = WeatherHandlers(deps)
     reports = ReportHandlers(deps)
     inline = InlineHandlers(deps)
-    callbacks = CallbackHandlers(deps)
+    callbacks = CallbackHandlers(deps, weather_handlers=weather, report_handlers=reports)
     subscriptions = SubscriptionHandlers(deps)
 
     app.add_handler(CommandHandler("start", weather.start))

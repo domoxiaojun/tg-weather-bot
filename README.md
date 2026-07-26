@@ -83,8 +83,8 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - `/tq <city> hourly 24` - Hourly temperature, native feels-like when available, and precipitation details.
 - `/chart <city>` - View temperature/rain charts.
 - `/report <city>` - **AI Weather Report** (Requires OpenAI/Gemini Key).
-- `/rain_sub <city>` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts.
-- `/daily_sub <city>` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions.
+- `/rain_sub <city>` / `/rain_unsub <city>` / `/rain_my` - Manage rain alerts (`/rain_my` offers one-tap unsubscribe buttons).
+- `/daily_sub <city> [HH:MM]` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions with an optional custom push time (default 08:00 in `TIMEZONE`).
 - **Send Location** - Auto-query + Rain Chart.
 - **Inline**: `@your_bot Beijing` - Share weather anywhere.
 
@@ -92,8 +92,10 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 
 - Click the **🔔 Subscribe Rain Alert** button under any weather message to enable 24/7 rain monitoring for that location. (Updates every 5 mins).
 - Scheduled rain alerts and daily briefs can be toggled with `ENABLE_RAIN_ALERTS` and `ENABLE_DAILY_BRIEF`.
-- Daily briefs fire at 08:00 in the `TIMEZONE` configured in `.env` (default `Asia/Shanghai`).
+- Daily briefs fire at 08:00 in the `TIMEZONE` configured in `.env` (default `Asia/Shanghai`); each subscription can override this with `/daily_sub <city> HH:MM` (minute-level dispatcher).
+- Rain alerts attach the hourly precipitation chart and respect `RAIN_ALERT_COOLDOWN_HOURS` (default 4h) per chat+location.
 - Subscription locations are geocoded and normalized on subscribe; chats that block the bot are removed from push lists automatically.
+- Ambiguous city names (e.g. 朝阳) prompt an inline chooser instead of silently picking the first match.
 
 ## 📚 API Notes
 
