@@ -109,6 +109,28 @@ def foldable_text_v2(body_lines: List[str], folding_threshold: int = 8) -> str:
     return "\n".join(all_lines)
 
 
+_WEEKDAYS_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _weekday_cn(value) -> str:
+    return _WEEKDAYS_CN[value.weekday()]
+
+
+def _display_summary_lines(summary: Optional[str]) -> List[str]:
+    """Summary lines worth showing; drops the auto '当前 X，温度 Y' duplicate."""
+    if not summary:
+        return []
+    lines = []
+    for line in summary.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("当前 ") and "温度" in line:
+            continue
+        lines.append(line)
+    return lines
+
+
 def _wind_parts(
     direction: Optional[str],
     degrees: Optional[Number],
@@ -138,9 +160,10 @@ def _day_display_fields(day: DailyForecast) -> dict:
     )
     return {
         "date_str": day.date.strftime("%m-%d"),
+        "weekday": _weekday_cn(day.date),
         "moon": escape_v2(day.moon_phase) if day.moon_phase else "",
-        "temp_min": escape_v2(day.temp_min),
-        "temp_max": escape_v2(day.temp_max),
+        "temp_min": escape_v2(format_weather_number(day.temp_min)),
+        "temp_max": escape_v2(format_weather_number(day.temp_max)),
         "day_icon": weather_icon(day.icon_day),
         "text_day": escape_v2(day.text_day),
         "day_wind": day_wind or "N/A",
@@ -151,7 +174,7 @@ def _day_display_fields(day: DailyForecast) -> dict:
         "precip": escape_v2(format_precip_value(day.precip, day.precip_kind)),
         "sunrise": escape_v2(day.sunrise or "N/A"),
         "sunset": escape_v2(day.sunset or "N/A"),
-        "vis": escape_v2(day.vis if day.vis is not None else "N/A"),
+        "vis": escape_v2(format_weather_number(day.vis)) if day.vis is not None else "N/A",
         "uv": escape_v2(day.uv_index or "N/A"),
     }
 
@@ -165,11 +188,9 @@ def format_realtime_weather(data: WeatherData) -> str:
         "",
     ]
     
-    if data.summary:
-        summary_lines = data.summary.split('\n')
-        for line in summary_lines:
-            lines.append(f"*{escape_v2(line)}*")
-        
+    for line in _display_summary_lines(data.summary):
+        lines.append(f"*{escape_v2(line)}*")
+
     lines.append("")
     temperature_line = f"🌡️ 温度: *{escape_v2(format_weather_number(data.now_temp))}°C*"
     if data.now_feels_like is not None:
@@ -273,26 +294,35 @@ def format_today_detail(
         future_6h = hourly_data[:6]
         available_pops = [h.pop for h in future_6h if h.pop is not None]
         max_pop = max(available_pops) if available_pops else None
-    
+
+    weekday = fields["weekday"]
     lines = [
         "━━━━━━━━━━━━━━━━━━━━",
-        f"📅 *{escape_v2(title)} \\({escape_v2(date_str)}\\)*",
+        f"📅 *{escape_v2(title)} \\({escape_v2(date_str)} {weekday}\\)*",
         f"🌡️ 气温: {temp_min}\\~{temp_max}°C \\| 🌙 {moon} \\(日出 {sunrise} / 日落 {sunset}\\)",
         "",
         f"☀️ 日间: {day_icon} {text_day} \\({day_wind}\\)",
         f"🌙 夜间: {night_icon} {text_night} \\({night_wind}\\)",
         "",
-        f"💧 统计: 降水 {precip} \\| 湿度 {humid}% \\| 能见度 {vis}km",
     ]
-    forecast_parts = [f"UV {uv}"]
+    stats_parts = [f"☔️ 降水 {precip}"]
+    if fields["humid"] != "N/A":
+        stats_parts.append(f"💧 湿度 {humid}%")
+    if fields["vis"] != "N/A":
+        stats_parts.append(f"👁️ 能见度 {vis}km")
+    lines.append(" \\| ".join(stats_parts))
+
+    forecast_parts = []
+    if fields["uv"] != "N/A":
+        forecast_parts.append(f"☀️ UV {uv}")
     if max_pop is not None:
-        forecast_parts.append(f"未来6h降水 {escape_v2(int(max_pop))}%")
+        forecast_parts.append(f"未来6h降概 {escape_v2(int(max_pop))}%")
     if day.precip_day_probability is not None:
         forecast_parts.append(f"白天降概 {escape_v2(int(day.precip_day_probability))}%")
     if day.precip_night_probability is not None:
         forecast_parts.append(f"夜间降概 {escape_v2(int(day.precip_night_probability))}%")
-    forecast_text = " \\| ".join(forecast_parts)
-    lines.append(f"☔️ 预报: {forecast_text}")
+    if forecast_parts:
+        lines.append(" \\| ".join(forecast_parts))
     
     # 生活指数
     tips = []
@@ -314,18 +344,32 @@ def format_daily_weather(daily_data: List[DailyForecast]) -> str:
     result_lines = []
     for day in daily_data:
         fields = _day_display_fields(day)
+        title = f"🗓 *{escape_v2(fields['date_str'])} {fields['weekday']}*"
+        if fields["moon"]:
+            title += f" · {fields['moon']}"
         daily_info = [
-            f"🗓 *{escape_v2(fields['date_str'])} {fields['moon']}*",
-            f"├─ 温度: {fields['temp_min']}\\~{fields['temp_max']}°C",
-            f"├─ 日间: {fields['day_icon']} {fields['text_day']}",
-            f"│   └─ {fields['day_wind']}",
-            f"├─ 夜间: {fields['night_icon']} {fields['text_night']}",
-            f"│   └─ {fields['night_wind']}",
-            "└─ 详情:",
-            f"    💧 湿度: {fields['humid']}% \\| ☔️ 降水: {fields['precip']}",
-            f"    🌅 日出: {fields['sunrise']} \\| 🌄 日落: {fields['sunset']}",
-            f"    👁️ 能见度: {fields['vis']}km \\| ☀️ UV: {fields['uv']}",
+            title,
+            f"{fields['day_icon']} {fields['text_day']} → {fields['night_icon']} {fields['text_night']}"
+            f" · {fields['temp_min']}\\~{fields['temp_max']}°C",
         ]
+
+        if fields["day_wind"] != "N/A" and fields["night_wind"] not in ("N/A", fields["day_wind"]):
+            daily_info.append(f"💨 {fields['day_wind']}（夜间 {fields['night_wind']}）")
+        elif fields["day_wind"] != "N/A":
+            daily_info.append(f"💨 {fields['day_wind']}")
+
+        stats_parts = [f"☔️ 降水 {fields['precip']}"]
+        if fields["humid"] != "N/A":
+            stats_parts.append(f"💧 {fields['humid']}%")
+        if fields["uv"] != "N/A":
+            stats_parts.append(f"☀️ UV {fields['uv']}")
+        if fields["vis"] != "N/A":
+            stats_parts.append(f"👁️ {fields['vis']}km")
+        daily_info.append(" · ".join(stats_parts))
+
+        if day.sunrise or day.sunset:
+            daily_info.append(f"🌅 {fields['sunrise']} / 🌇 {fields['sunset']}")
+
         result_lines.append("\n".join(daily_info))
     return "\n\n".join(result_lines)
 
@@ -368,48 +412,48 @@ def format_unavailable_current_daily_weather(data: WeatherData) -> str:
     )
 
 def format_hourly_weather(hourly_data: List[HourlyForecast]) -> str:
+    """紧凑两行/小时的逐小时预报，跨天时插入日期分隔行。"""
     result_lines = []
+    previous_date = None
     for hour in hourly_data:
+        hour_date = hour.time.date() if hasattr(hour.time, "date") else None
+        if hour_date is not None and previous_date is not None and hour_date != previous_date:
+            result_lines.append(
+                f"—— {escape_v2(hour.time.strftime('%m-%d'))} {_weekday_cn(hour.time)} ——"
+            )
+        previous_date = hour_date
+
         time_str = escape_v2(hour.time.strftime("%H:%M"))
         temp = escape_v2(format_weather_number(hour.temp))
         icon = weather_icon(hour.icon)
         text = escape_v2(hour.text)
         precip = escape_v2(format_precip_value(hour.precip, hour.precip_kind))
 
-        temp_line = f"🌡️ {temp}°C"
+        head = f"⏰ {time_str} {icon} {text} · 🌡️ {temp}°C"
         if hour.feels_like is not None and not hour.feels_like_estimated:
             feels_like = escape_v2(format_weather_number(hour.feels_like))
-            temp_line += f" \\(体感 {feels_like}°C\\)"
+            head += f" \\(体感 {feels_like}°C\\)"
 
+        if hour.pop is not None:
+            pop = escape_v2(format_weather_number(hour.pop, decimals=0))
+            detail_parts = [f"☔️ 降概 {pop}% / 降水 {precip}"]
+        else:
+            detail_parts = [f"☔️ 降水 {precip}"]
+        if hour.humidity is not None:
+            detail_parts.append(f"💧 {escape_v2(hour.humidity)}%")
         wind_parts = _wind_parts(
             hour.wind_dir,
             hour.wind_direction_degrees,
             hour.wind_scale,
             hour.wind_speed,
         )
-        wind_text = " \\| ".join(wind_parts) if wind_parts else "N/A"
-
-        if hour.pop is not None:
-            pop = escape_v2(format_weather_number(hour.pop, decimals=0))
-            rain_summary = f"☔️ 降概 {pop}% / 降水 {precip}"
-        else:
-            rain_summary = f"☔️ 降水 {precip}"
-        rain_detail_parts = [
-            rain_summary,
-            f"💧 湿度 {escape_v2(hour.humidity if hour.humidity is not None else 'N/A')}%",
-        ]
+        if wind_parts:
+            detail_parts.append(f"💨 {' '.join(wind_parts)}")
         if hour.uv_index is not None:
-            uv_index = escape_v2(format_weather_number(hour.uv_index))
-            rain_detail_parts.append(f"☀️ UV {uv_index}")
+            detail_parts.append(f"☀️ UV {escape_v2(format_weather_number(hour.uv_index))}")
 
-        lines = [
-            f"⏰ {time_str} \\| {icon} {text}",
-            temp_line,
-            " \\| ".join(rain_detail_parts),
-            f"💨 {wind_text}",
-            "━━━━━━━━━━━━"
-        ]
-        result_lines.append("\n".join(lines))
+        result_lines.append(head)
+        result_lines.append(" · ".join(detail_parts))
     return "\n".join(result_lines)
 
 def format_indices_data(indices: List[LifeIndex]) -> str:
@@ -490,14 +534,14 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
                 if current_day.date.date() == data.local_update_date
                 else "最近预报"
             )
-            body = "\n" + format_today_detail(
+            body = format_today_detail(
                 current_day,
                 data.indices,
                 data.hourly,
                 title=detail_title,
             )
         else:
-            body = "\n" + format_unavailable_current_daily_weather(data)
+            body = format_unavailable_current_daily_weather(data)
     
     source_label = {
         "qweather": "和风天气",
@@ -506,9 +550,17 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
     }.get(data.source, data.source.title())
     return f"{header}\n\n{body}\n\n_数据源: {escape_v2(source_label)}_"
 
-# Telegram limits callback_data to 64 bytes; the longest pattern here is
-# "chart|{location}|temp", so the location token itself must stay small.
-_CALLBACK_LOCATION_MAX_BYTES = 50
+# Telegram limits callback_data to 64 bytes; the longest pattern is
+# "refresh|{token}|indices|0|24", so the location token itself must stay small.
+_CALLBACK_LOCATION_MAX_BYTES = 40
+
+# In-place switchable views: (view_type, label, start_day, limit)
+_VIEW_SWITCHES = (
+    ("default", "🌤 实时", 0, 0),
+    ("hourly", "⏰ 逐小时", 0, 24),
+    ("daily", "📅 未来7天", 0, 7),
+    ("indices", "💡 指数", 0, 0),
+)
 
 
 def callback_location_token(location_query: str, coords: Optional[str] = None) -> str:
@@ -526,12 +578,14 @@ def get_weather_keyboard(
     mode: str = "default",
     show_charts: bool = True,
     coords: Optional[str] = None,
+    view_type: str = "default",
 ) -> InlineKeyboardMarkup:
     """
     生成天气消息的按钮键盘
     :param mode: 'default' (文本模式), 'chart' (图表模式，显示返回按钮)
     :param show_charts: 是否显示图表切换按钮 (Inline模式下因无法切图，建议关闭)
     :param coords: 坐标字符串，地名过长超出 callback_data 限制时作为回退
+    :param view_type: 当前视图；刷新保持该视图，切换按钮隐藏当前项
     """
     token = callback_location_token(location_query, coords)
     if mode == "chart":
@@ -544,25 +598,41 @@ def get_weather_keyboard(
             ],
             [InlineKeyboardButton("📝 文字天气", callback_data=f"tq|{token}|default|0|0")],
         ]
-    else:
-        # 默认文本模式：功能按钮
-        # 第一排：基础功能
-        row1 = [
-            InlineKeyboardButton("🔄 刷新", callback_data=f"refresh|{token}"),
-            InlineKeyboardButton("🔔 降雨提醒", callback_data=f"sub|{token}")
-        ]
-        keyboard = [row1]
+        return InlineKeyboardMarkup(keyboard)
 
-        # 第二排：图表按钮 (可选)
-        if show_charts:
-            row2 = [
-                InlineKeyboardButton("🌡️ 温度趋势", callback_data=f"chart|{token}|temp"),
-                InlineKeyboardButton("🌧️ 降水趋势", callback_data=f"chart|{token}|rain"),
-                InlineKeyboardButton("📅 逐日图", callback_data=f"chart|{token}|daily"),
-            ]
-            keyboard.append(row2)
+    known_views = {view for view, _, _, _ in _VIEW_SWITCHES}
+    current_view = view_type if view_type in known_views else "default"
+    current_args = next(
+        (view, start, limit) for view, _, start, limit in _VIEW_SWITCHES if view == current_view
+    )
 
-        # 第三排：AI 日报（Inline 场景有专属结果项，无需此按钮）
-        keyboard.append([InlineKeyboardButton("🤖 AI日报", callback_data=f"report|{token}")])
+    # 第一排：基础功能（刷新携带当前视图，刷新后不丢失展示形态）
+    row1 = [
+        InlineKeyboardButton(
+            "🔄 刷新",
+            callback_data=f"refresh|{token}|{current_args[0]}|{current_args[1]}|{current_args[2]}",
+        ),
+        InlineKeyboardButton("🔔 降雨提醒", callback_data=f"sub|{token}"),
+    ]
+    keyboard = [row1]
+
+    # 第二排：视图切换（原地编辑消息，不刷屏；不显示当前视图）
+    view_row = [
+        InlineKeyboardButton(label, callback_data=f"view|{token}|{view}|{start}|{limit}")
+        for view, label, start, limit in _VIEW_SWITCHES
+        if view != current_view
+    ]
+    keyboard.append(view_row)
+
+    # 第三排：图表按钮 (可选)
+    if show_charts:
+        keyboard.append([
+            InlineKeyboardButton("🌡️ 温度图", callback_data=f"chart|{token}|temp"),
+            InlineKeyboardButton("🌧️ 降水图", callback_data=f"chart|{token}|rain"),
+            InlineKeyboardButton("📆 逐日图", callback_data=f"chart|{token}|daily"),
+        ])
+
+    # 第四排：AI 日报
+    keyboard.append([InlineKeyboardButton("🤖 AI日报", callback_data=f"report|{token}")])
 
     return InlineKeyboardMarkup(keyboard)

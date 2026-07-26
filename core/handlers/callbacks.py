@@ -72,7 +72,11 @@ class CallbackHandlers:
 
         if action == "refresh" and location:
             await self._safe_answer(query, "⏳ 正在刷新...")
-            await self._handle_refresh(update, context, location)
+            await self._handle_refresh(update, context, data_parts)
+            return
+
+        if action == "view" and location:
+            await self._handle_view_switch(update, context, data_parts)
             return
 
         if action == "sub" and location:
@@ -270,12 +274,81 @@ class CallbackHandlers:
         )
         await remember_chart_file_id(weather_data, chart_type, sent)
 
-    async def _handle_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
+    @staticmethod
+    def _parse_view_parts(data_parts: list[str]) -> tuple[str, int, int]:
+        view = data_parts[2] if len(data_parts) > 2 else "default"
+        try:
+            start_day = int(data_parts[3]) if len(data_parts) > 3 else 0
+        except ValueError:
+            start_day = 0
+        try:
+            limit = int(data_parts[4]) if len(data_parts) > 4 else 0
+        except ValueError:
+            limit = 0
+        return view, start_day, limit
+
+    _VIEW_PROFILES = {
+        "hourly": "hourly",
+        "daily": "daily",
+        "rain": "rain",
+        "indices": "indices",
+    }
+
+    async def _handle_view_switch(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        data_parts: list[str],
+    ):
+        """Edit the weather message in place to another view — no re-send spam."""
         query = update.callback_query
+        location = data_parts[1]
+        view, start_day, limit = self._parse_view_parts(data_parts)
+
+        if query.message is not None and query.message.caption is not None:
+            # Photo captions cannot hold the longer views reliably.
+            await self._safe_answer(query, "图片消息无法切换视图，请点「📝 文字天气」或重新 /tq。", show_alert=True)
+            return
+
+        await self._safe_answer(query, "⏳ 切换中...")
         try:
             weather_data = await self.deps.weather_service.get_fused_weather(
                 location,
-                profile="full",
+                profile=self._VIEW_PROFILES.get(view, "full"),
+            )
+            if not weather_data:
+                await self._notify(update, context, "未获取到天气数据")
+                return
+
+            text = format_weather_response(
+                weather_data, view_type=view, days=limit or None, start_day=start_day
+            )
+            keyboard = get_weather_keyboard(
+                location, show_charts=True, coords=weather_data.coords, view_type=view
+            )
+            try:
+                await query.edit_message_text(
+                    text=text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    await self._safe_answer(query, "已是当前内容")
+                    return
+                raise
+        except Exception as e:
+            logger.error(f"View switch failed: {e}")
+            await self._notify(update, context, "切换失败，请稍后重试")
+
+    async def _handle_refresh(self, update: Update, context: ContextTypes.DEFAULT_TYPE, data_parts: list[str]):
+        query = update.callback_query
+        location = data_parts[1]
+        view, start_day, limit = self._parse_view_parts(data_parts)
+        try:
+            weather_data = await self.deps.weather_service.get_fused_weather(
+                location,
+                profile=self._VIEW_PROFILES.get(view, "full"),
                 refresh_qweather=True,
             )
             if not weather_data:
@@ -283,8 +356,12 @@ class CallbackHandlers:
                 return
 
             is_inline = query.inline_message_id is not None
-            text = format_weather_response(weather_data)
-            keyboard = get_weather_keyboard(location, show_charts=True, coords=weather_data.coords)
+            text = format_weather_response(
+                weather_data, view_type=view, days=limit or None, start_day=start_day
+            )
+            keyboard = get_weather_keyboard(
+                location, show_charts=True, coords=weather_data.coords, view_type=view
+            )
 
             is_caption = bool(query.message and query.message.caption)
             try:

@@ -150,11 +150,16 @@ class WeatherHandlers:
         elif context.args:
             location_query, view_type, start_day, limit = parse_location_and_view(list(context.args))
         else:
-            await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京")
-            return
+            # 无参数时回落到上次查询的城市，新用户才给用法提示。
+            last = context.chat_data.get("last_location") if context.chat_data else None
+            if isinstance(last, dict) and last.get("coords"):
+                location_query = last["coords"]
+            else:
+                await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京（也可以直接发送城市名）")
+                return
 
         if not location_query:
-            await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京")
+            await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京（也可以直接发送城市名）")
             return
 
         try:
@@ -169,6 +174,18 @@ class WeatherHandlers:
                 return
 
         await self._send_weather(update, context, location_query, view_type, start_day, limit)
+
+    async def handle_private_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """私聊里直接发城市名即可查天气（支持"北京 明天"等参数写法）。"""
+        message = update.effective_message
+        if message is None or not message.text:
+            return
+        text = message.text.strip()
+        # 太长/多行的内容基本不是城市查询，安静忽略避免误伤闲聊。
+        if not text or len(text) > 20 or "\n" in text:
+            return
+        context.args = text.split()
+        await self.handle_weather_request(update, context)
 
     async def _offer_geo_choices(
         self,
@@ -252,8 +269,14 @@ class WeatherHandlers:
             )
             return
 
+        if context.chat_data is not None:
+            context.chat_data["last_location"] = {
+                "coords": data.coords,
+                "name": data.location_name,
+            }
+
         text = format_weather_response(data, view_type=view_type, days=limit, start_day=start_day)
-        keyboard = get_weather_keyboard(location_query, coords=data.coords)
+        keyboard = get_weather_keyboard(location_query, coords=data.coords, view_type=view_type)
 
         chart_bytes = None
         if settings.enable_weather_plots:

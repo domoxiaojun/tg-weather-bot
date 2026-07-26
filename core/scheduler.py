@@ -170,7 +170,12 @@ async def dispatch_daily_briefs(
                 llm_service.generate_weather_report(weather),
                 timeout=LOCATION_REPORT_TIMEOUT,
             )
-            header = f"☀️ <b>早安！{escape(location)}</b>\n------------------\n"
+            brief_date = datetime.now(ZoneInfo(settings.timezone))
+            weekday = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")[brief_date.weekday()]
+            header = (
+                f"☀️ <b>早安！{escape(location)}</b> · "
+                f"{brief_date.strftime('%m月%d日')} {weekday}\n\n"
+            )
             for chat_id, chat_data, subscribed_location in entry["subscribers"]:
                 try:
                     await context.bot.send_message(

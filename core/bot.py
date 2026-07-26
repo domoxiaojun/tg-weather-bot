@@ -97,6 +97,13 @@ def create_app() -> Application:
     app.add_handler(CommandHandler("rain_unsub", subscriptions.rain_unsub))
     app.add_handler(CommandHandler("rain_my", subscriptions.rain_my))
     app.add_handler(MessageHandler(filters.LOCATION, weather.handle_weather_request))
+    # 私聊里直接发城市名即可查询（不影响群聊与命令）
+    app.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            weather.handle_private_text,
+        )
+    )
     app.add_handler(CallbackQueryHandler(callbacks.handle_callback))
     app.add_handler(InlineQueryHandler(inline.handle_inline_query))
     app.add_handler(ChosenInlineResultHandler(reports.handle_chosen_inline_result))
