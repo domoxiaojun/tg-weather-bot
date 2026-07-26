@@ -115,13 +115,6 @@ class CaiyunAdapter(WeatherAdapter):
         return parsed / 100 if parsed is not None else None
 
     @classmethod
-    def _probability_over(cls, value, threshold: float) -> bool:
-        probability = cls._safe_float(value)
-        if probability > 1:
-            probability = probability / 100
-        return probability > threshold
-
-    @classmethod
     def _probability_pct(cls, value) -> Optional[float]:
         if value in (None, ""):
             return None
@@ -146,7 +139,7 @@ class CaiyunAdapter(WeatherAdapter):
 
     @staticmethod
     def _requires_long_cooldown(status_code: Optional[int], error_text: str = "") -> bool:
-        if status_code in {401, 403}:
+        if status_code in {401, 403, 429}:
             return True
         normalized = error_text.lower()
         return any(
@@ -218,7 +211,15 @@ class CaiyunAdapter(WeatherAdapter):
                 data = response.json()
             except httpx.HTTPStatusError as error:
                 status_code = error.response.status_code
-                await self._set_failure_cooldown(cooldown_key, status_code=status_code)
+                try:
+                    error_text = error.response.text[:500]
+                except Exception:
+                    error_text = ""
+                await self._set_failure_cooldown(
+                    cooldown_key,
+                    status_code=status_code,
+                    error_text=error_text,
+                )
                 logger.error(
                     f"Caiyun API HTTP failure: status={status_code} location={cache_location}"
                 )

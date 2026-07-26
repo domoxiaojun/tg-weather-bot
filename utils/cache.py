@@ -24,6 +24,7 @@ class CacheManager:
         self._last_memory_cleanup = 0.0
         self._memory_cache_max_items = 2048
         self._inflight: dict[str, asyncio.Task[Any]] = {}
+        self._redis_init_lock = asyncio.Lock()
 
     def _cleanup_memory_cache(self):
         now = time.monotonic()
@@ -54,26 +55,40 @@ class CacheManager:
         if self.redis is not None:
             return self.redis
 
-        now = time.monotonic()
-        if now < self._redis_unavailable_until:
+        if time.monotonic() < self._redis_unavailable_until:
             return None
 
-        try:
-            self.redis = redis.from_url(
+        async with self._redis_init_lock:
+            # Another coroutine may have finished (or failed) initialization
+            # while this one waited on the lock.
+            if self.redis is not None:
+                return self.redis
+            if time.monotonic() < self._redis_unavailable_until:
+                return None
+
+            client = redis.from_url(
                 settings.redis_url,
                 decode_responses=True,
                 socket_connect_timeout=5,
             )
-            await self.redis.ping()
+            try:
+                await client.ping()
+            except Exception as e:
+                logger.warning(f"Redis连接失败: {e}，将使用内存缓存")
+                try:
+                    await client.aclose()
+                except Exception:
+                    pass
+                self._redis_unavailable_until = time.monotonic() + 30
+                return None
+
+            # Publish only after the ping succeeded so other coroutines never
+            # observe an unverified client.
+            self.redis = client
             if not self._redis_logged_ready:
                 logger.info("Redis连接成功")
                 self._redis_logged_ready = True
-            return self.redis
-        except Exception as e:
-            logger.warning(f"Redis连接失败: {e}，将使用内存缓存")
-            self.redis = None
-            self._redis_unavailable_until = time.monotonic() + 30
-            return None
+            return client
 
     async def _mark_redis_failed(self, error: Exception):
         logger.error(f"Redis操作失败: {error}，临时切换到内存缓存")
@@ -87,17 +102,20 @@ class CacheManager:
 
     async def get(self, key: str) -> Optional[Any]:
         """获取缓存"""
+        redis_client = None
         try:
             redis_client = await self._get_redis()
             if redis_client:
                 value = await redis_client.get(key)
                 if value is not None:
                     return json.loads(value)
-                return None
+                # Fall through to the memory layer: entries written during a
+                # Redis outage must stay visible after Redis recovers.
         except Exception as e:
             logger.error(f"缓存读取失败: {e}")
             if self.redis is not None:
                 await self._mark_redis_failed(e)
+            redis_client = None
 
         self._cleanup_memory_cache()
         cached = self._memory_cache.get(key)
@@ -108,6 +126,18 @@ class CacheManager:
         if expires_at is not None and expires_at <= time.monotonic():
             self._memory_cache.pop(key, None)
             return None
+
+        if redis_client is not None:
+            # Backfill Redis with the remaining TTL, then drop the local copy.
+            try:
+                if expires_at is None:
+                    await redis_client.set(key, json_value)
+                else:
+                    remaining = max(1, int(expires_at - time.monotonic()))
+                    await redis_client.setex(key, remaining, json_value)
+                self._memory_cache.pop(key, None)
+            except Exception as e:
+                logger.debug(f"缓存回填 Redis 失败: {e}")
         return json.loads(json_value)
 
     async def set(self, key: str, value: Any, ttl: Optional[int] = None):

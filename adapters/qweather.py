@@ -1,6 +1,6 @@
 import asyncio
 import re
-from datetime import date, datetime, time as dtime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Literal, Optional
 
 import httpx
@@ -76,7 +76,7 @@ class QWeatherAdapter(WeatherAdapter):
             try:
                 data = response.json()
             except ValueError:
-                data = {"raw": response.text}
+                data = None
 
             if not response.is_success:
                 if allow_data_unavailable and self._is_data_not_available_error(data):
@@ -90,7 +90,15 @@ class QWeatherAdapter(WeatherAdapter):
                     "QWeather API HTTP error: {} {} - {}",
                     response.status_code,
                     endpoint,
-                    data,
+                    data if data is not None else response.text[:200],
+                )
+                return None
+
+            if not isinstance(data, dict):
+                logger.warning(
+                    "QWeather API returned non-JSON success body: {} - {}",
+                    endpoint,
+                    response.text[:200],
                 )
                 return None
 
@@ -123,9 +131,14 @@ class QWeatherAdapter(WeatherAdapter):
 
     @classmethod
     def _optional_float(cls, value: Any) -> Optional[float]:
+        """Parse an optional numeric field; unparseable values are missing, never 0."""
         if value in (None, ""):
             return None
-        return cls._to_float(value)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+            return float(match.group(0)) if match else None
 
     @classmethod
     def _optional_int(cls, value: Any) -> Optional[int]:
@@ -157,11 +170,42 @@ class QWeatherAdapter(WeatherAdapter):
     def _coord_location(cls, lon: Any, lat: Any) -> str:
         return f"{cls._to_float(lon):.2f},{cls._to_float(lat):.2f}"
 
+    @staticmethod
+    def _seconds_until_local_midnight(tz_name: Optional[str]) -> int:
+        """Indices are per-location daily data; expire them at the location's midnight."""
+        tzinfo = None
+        if tz_name:
+            try:
+                from zoneinfo import ZoneInfo
+
+                tzinfo = ZoneInfo(tz_name)
+            except Exception:
+                logger.debug(f"Unknown QWeather timezone: {tz_name}")
+        now = datetime.now(tzinfo) if tzinfo else datetime.now()
+        next_midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return max(60, int((next_midnight - now).total_seconds()))
+
+    _GEO_CACHE_TTL = 30 * 24 * 3600
+
+    @classmethod
+    def _geo_cache_key(cls, location: str) -> str:
+        """Normalize coordinate-style locations so nearby lookups share one cache entry."""
+        normalized = location.strip().lower()
+        parts = normalized.split(",")
+        if len(parts) == 2:
+            try:
+                lon, lat = float(parts[0]), float(parts[1])
+            except ValueError:
+                pass
+            else:
+                return f"geo:{lon:.2f},{lat:.2f}"
+        return f"geo:{normalized}"
+
     async def get_geo_location(self, location: str) -> Optional[Dict[str, Any]]:
         """Resolve location string to Location ID and coordinates."""
         from utils.cache import cache
 
-        cache_key = f"geo:{location.strip().lower()}"
+        cache_key = self._geo_cache_key(location)
         cached = await cache.get(cache_key)
         if isinstance(cached, dict):
             logger.debug(f"地理位置缓存命中: {location}")
@@ -181,7 +225,7 @@ class QWeatherAdapter(WeatherAdapter):
                         return data["location"][0]
             return None
 
-        resolved = await cache.get_or_set(cache_key, resolve_location, ttl=None)
+        resolved = await cache.get_or_set(cache_key, resolve_location, ttl=self._GEO_CACHE_TTL)
         return resolved if isinstance(resolved, dict) else None
 
     async def _cached_request(
@@ -220,11 +264,21 @@ class QWeatherAdapter(WeatherAdapter):
             return daily_list
 
         for d in daily_data.get("daily", []):
+            try:
+                forecast_date = datetime.strptime(d["fxDate"], "%Y-%m-%d")
+                temp_min = self._optional_float(d.get("tempMin"))
+                temp_max = self._optional_float(d.get("tempMax"))
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(f"Skipping malformed QWeather daily record: {e}")
+                continue
+            if temp_min is None or temp_max is None:
+                logger.warning(f"Skipping QWeather daily record missing temperature: {d.get('fxDate')}")
+                continue
             daily_list.append(
                 DailyForecast(
-                    date=datetime.strptime(d["fxDate"], "%Y-%m-%d"),
-                    temp_min=self._to_float(d.get("tempMin")),
-                    temp_max=self._to_float(d.get("tempMax")),
+                    date=forecast_date,
+                    temp_min=temp_min,
+                    temp_max=temp_max,
                     text_day=d.get("textDay", ""),
                     icon_day=d.get("iconDay", ""),
                     text_night=d.get("textNight", ""),
@@ -264,14 +318,20 @@ class QWeatherAdapter(WeatherAdapter):
         hourly_list: List[HourlyForecast] = []
         if hourly_data:
             for h in hourly_data.get("hourly", []):
-                temp = self._to_float(h.get("temp"))
+                fx_time = self._parse_datetime(h.get("fxTime"))
+                temp = self._optional_float(h.get("temp"))
+                if fx_time is None or temp is None:
+                    logger.warning(
+                        f"Skipping QWeather hourly record with missing time/temp: {h.get('fxTime')}"
+                    )
+                    continue
                 humidity = self._optional_int(h.get("humidity"))
                 wind_speed = self._optional_float(h.get("windSpeed"))
                 dew = self._optional_float(h.get("dew"))
                 precip = self._optional_float(h.get("precip"))
                 hourly_list.append(
                     HourlyForecast(
-                        time=self._parse_datetime(h.get("fxTime")) or datetime.now(),
+                        time=fx_time,
                         temp=temp,
                         text=h.get("text", ""),
                         icon=h.get("icon", ""),
@@ -299,7 +359,8 @@ class QWeatherAdapter(WeatherAdapter):
             try:
                 now = now_data["now"]
                 current_obs_time = self._parse_datetime(now.get("obsTime"))
-                if current_obs_time:
+                current_temp = self._optional_float(now.get("temp"))
+                if current_obs_time and current_temp is not None:
                     current_hour_time = current_obs_time.replace(minute=0, second=0, microsecond=0)
                     if hourly_list[0].time > current_hour_time:
                         current_precip = self._optional_float(now.get("precip"))
@@ -307,12 +368,8 @@ class QWeatherAdapter(WeatherAdapter):
                             0,
                             HourlyForecast(
                                 time=current_hour_time,
-                                temp=self._to_float(now.get("temp")),
-                                feels_like=(
-                                    self._to_float(now.get("feelsLike"))
-                                    if now.get("feelsLike") not in (None, "")
-                                    else None
-                                ),
+                                temp=current_temp,
+                                feels_like=self._optional_float(now.get("feelsLike")),
                                 feels_like_estimated=False,
                                 feels_like_source="qweather",
                                 text=now.get("text", ""),
@@ -348,7 +405,10 @@ class QWeatherAdapter(WeatherAdapter):
             return minutely_list
 
         for item in minutely_data.get("minutely", []):
-            fx_time = self._parse_datetime(item.get("fxTime")) or datetime.now()
+            fx_time = self._parse_datetime(item.get("fxTime"))
+            if fx_time is None:
+                logger.warning("Skipping QWeather minutely record with unparseable fxTime")
+                continue
             minutely_list.append(
                 MinutelyPrecipitation(
                     time=fx_time,
@@ -500,18 +560,23 @@ class QWeatherAdapter(WeatherAdapter):
     def _map_indices(self, indices_data: Optional[Dict[str, Any]]) -> List[LifeIndex]:
         if not indices_data:
             return []
-        return [
-            LifeIndex(
-                type=i["type"],
-                name=i["name"],
-                category=i["category"],
-                text=i.get("text", ""),
-                date=self._parse_datetime(i.get("date")),
-                value=str(i.get("level")) if i.get("level") not in (None, "") else None,
-                source="qweather",
-            )
-            for i in indices_data.get("daily", [])
-        ]
+        indices: List[LifeIndex] = []
+        for i in indices_data.get("daily", []):
+            try:
+                indices.append(
+                    LifeIndex(
+                        type=i["type"],
+                        name=i["name"],
+                        category=i["category"],
+                        text=i.get("text", ""),
+                        date=self._parse_datetime(i.get("date")),
+                        value=str(i.get("level")) if i.get("level") not in (None, "") else None,
+                        source="qweather",
+                    )
+                )
+            except (KeyError, TypeError, ValueError) as e:
+                logger.warning(f"Skipping malformed QWeather index record: {e}")
+        return indices
 
     async def get_weather(
         self,
@@ -546,9 +611,7 @@ class QWeatherAdapter(WeatherAdapter):
         coords = f"{lon},{lat}"
         coord_location = self._coord_location(lon, lat)
 
-        now = datetime.now()
-        midnight = datetime.combine(now.date(), dtime(23, 59, 59))
-        seconds_until_midnight = max(60, int((midnight - now).total_seconds()))
+        seconds_until_midnight = self._seconds_until_local_midnight(resolved_location.get("tz"))
         components = profile_components[profile]
 
         requests: dict[str, Any] = {

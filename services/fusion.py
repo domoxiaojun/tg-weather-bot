@@ -25,7 +25,7 @@ class WeatherFusionService:
 
     @property
     def caiyun_enabled(self) -> bool:
-        return settings.enable_caiyun_api or settings.enable_caiyun_minutely
+        return settings.enable_caiyun_api
 
     @staticmethod
     def _hour_key(value):
@@ -44,10 +44,6 @@ class WeatherFusionService:
         }
         enriched = 0
         for hour in qweather_hours:
-            if hour.feels_like_estimated:
-                hour.feels_like = None
-                hour.feels_like_estimated = False
-                hour.feels_like_source = None
             if hour.feels_like is not None:
                 continue
             caiyun_hour = native_caiyun.get(cls._hour_key(hour.time))
@@ -303,8 +299,11 @@ class WeatherFusionService:
             caiyun_task = asyncio.create_task(self.caiyun.get_weather(coords))
 
         if caiyun_task is None:
-            qweather_data = await qweather_task
-            return qweather_data
+            try:
+                return await qweather_task
+            except Exception as error:
+                logger.error(f"Fusion: QWeather failed with {type(error).__name__}")
+                return None
 
         qweather_result, caiyun_result = await asyncio.gather(
             qweather_task,

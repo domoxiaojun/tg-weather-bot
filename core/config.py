@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     enable_rain_alerts: bool = Field(True, description="Enable scheduled rain alert checks")
     enable_daily_brief: bool = Field(True, description="Enable scheduled daily brief pushes")
 
+    # Scheduling
+    timezone: str = Field("Asia/Shanghai", description="Timezone for scheduled pushes (daily brief)")
+
     # LLM Service
     llm_provider: str = Field("openai", description="LLM Provider: 'openai' or 'gemini'")
     llm_model: Optional[str] = Field(None, description="Legacy fallback model name")
@@ -63,7 +66,7 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[str] = Field(None, description="Google Gemini API Key")
     gemini_api_base: Optional[str] = Field(None, description="Google Gemini API Base URL")
     gemini_model: Optional[str] = Field(None, description="Google Gemini model name")
-    llm_streaming: bool = True
+    gemini_timeout_seconds: float = Field(60.0, description="Gemini HTTP request timeout in seconds")
     llm_report_timeout_seconds: float = Field(35.0, description="AI weather report generation timeout in seconds")
     llm_weather_report_prompt: Optional[str] = Field(None, description="Custom system prompt for AI weather reports")
     llm_weather_report_prompt_file: Optional[str] = Field(None, description="Path to a custom AI weather report prompt file")
@@ -221,12 +224,37 @@ class Settings(BaseSettings):
             raise ValueError(f"openai_verbosity must be one of: {', '.join(sorted(allowed))}")
         return value
 
-    @field_validator("openai_timeout_seconds", "llm_report_timeout_seconds")
+    @field_validator("openai_timeout_seconds", "llm_report_timeout_seconds", "gemini_timeout_seconds")
     @classmethod
     def validate_positive_timeout(cls, value: float) -> float:
         if value <= 0:
             raise ValueError("timeout must be greater than 0")
         return value
+
+    @field_validator("timezone")
+    @classmethod
+    def validate_timezone(cls, value: str) -> str:
+        value = value.strip()
+        from zoneinfo import ZoneInfo
+
+        try:
+            ZoneInfo(value)
+        except Exception as e:
+            raise ValueError(f"invalid timezone: {value}") from e
+        return value
+
+    @model_validator(mode="after")
+    def fold_deprecated_caiyun_flag(self):
+        if self.enable_caiyun_minutely and not self.enable_caiyun_api:
+            import warnings
+
+            warnings.warn(
+                "ENABLE_CAIYUN_MINUTELY is deprecated; use ENABLE_CAIYUN_API instead",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.enable_caiyun_api = True
+        return self
 
     @field_validator("openai_max_output_tokens")
     @classmethod
