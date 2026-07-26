@@ -14,6 +14,8 @@ services:
       - ./logs:/app/logs
       # 持久化数据
       - ./data:/app/data
+      # QWeather JWT 私钥（只读挂载；QWEATHER_JWT_PRIVATE_KEY_FILE 指向 secrets/ 下的文件）
+      - ./secrets:/app/secrets:ro
     ports:
       # Webhook 模式需要暴露 Bot 监听端口给宿主机/1Panel 反代；Polling 模式可删除或注释本段。
       # 左侧是宿主机端口，右侧是容器内 WEBHOOK_PORT；默认使用 8443。
