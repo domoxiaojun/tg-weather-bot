@@ -26,6 +26,7 @@ from services.telegram_rich import FEATURE_SEND, photo_block, rich
 from services.typhoon import assess_storms, format_threat_summary
 from utils.formatter import callback_location_token, format_weather_response
 from utils.rich_formatter import (
+    build_report_blocks,
     build_alert_push_blocks,
     build_event_push_blocks,
     build_rain_alert_blocks,
@@ -384,13 +385,19 @@ async def dispatch_daily_briefs(
                     f"☀️ <b>早安！{escape(location)}</b> · "
                     f"{brief_date.strftime('%m月%d日')} {weekday}\n\n"
                 )
+                plain_header = (
+                    f"☀️ 早安！{location} · {brief_date.strftime('%m月%d日')} {weekday}"
+                )
                 thread_id = chat_data.get("push_thread_id")
                 keyboard = push_keyboard(location, weather.coords, "daily")
                 try:
+                    # Rich BLOCKS, never rich html= (HTML semantics collapse
+                    # newlines and squash the brief into one blob).
+                    brief_blocks = build_report_blocks(report_text, title=plain_header)
                     if await rich.send_rich(
                         context.bot,
                         chat_id,
-                        html=header + report_text,
+                        blocks=brief_blocks,
                         message_thread_id=thread_id,
                         reply_markup=keyboard,
                     ) is None:

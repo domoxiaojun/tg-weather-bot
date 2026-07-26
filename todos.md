@@ -300,3 +300,17 @@ mm/h 只作为实现细节；档位存 chat_data["rain_level"][location]，不�
       现在仅当整张键盘都是 tq| 按钮（纯歧义选择列表）才收回按钮
 - [x] U4 /start 订阅一行改为提示卡片交互
 - [x] U5 新增 7 项推送按钮测试（tests/test_push_buttons.py），全量 314 项通过
+
+## 第十七轮 — 截图反馈：排版重排 + 渲染 bug 修复（2026-07-27，用户实测反馈）
+
+- [x] V1 实时卡片重排：实况六字段并入「今日详情」单张表，去掉折叠（最想看的数字不该藏在开关后）；
+      空气质量保持折叠但摘要注明「点击展开详情」；头部一行装下 位置 · 日期 周几；
+      实时温度行标明「🌡️ 实时」；生活指数贴士改两列表格（5 条从 5 行变 3 行）
+- [x] V2 修 bug：AI 日报/早安简报挤成一坨——最终消息走了 rich html=，InputRichMessage 按真 HTML
+      语义折叠换行。新增 build_report_blocks()（<b>/<i> → 实体、逐行成段、Generated-by → footer 块），
+      日报三个出口（私聊 draft 收尾/占位符编辑/inline 编辑）与早安简报全部改走 rich 块，回落纯 HTML
+- [x] V3 修 bug：私聊流式期间显示原始 <b> 标签——draft 的 thinking 块是纯文本不解析 HTML，
+      新增 plain_stream_preview() 先剥标签
+- [x] V4 修 bug：「小雨」天查询不再附降水图——is_raining 只认测量值（now_precip/分钟级），
+      当前文本含雨但未来一小时无降水时为 False；提取 should_attach_rain_chart()，文本含雨/雪也触发
+- [x] V5 新增 18 项测试（tests/test_layout_and_report.py），全量 333 项通过

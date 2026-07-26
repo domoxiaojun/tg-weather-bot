@@ -1,3 +1,4 @@
+import re
 import time
 from html import escape
 
@@ -10,6 +11,16 @@ from core.config import settings
 from core.handlers.common import BotDependencies, join_location_args
 from core.handlers.messages import send_text
 from services.telegram_rich import FEATURE_DRAFT, FEATURE_SEND, next_draft_id, rich, thinking
+from utils.rich_formatter import build_report_blocks
+
+
+def plain_stream_preview(text: str) -> str:
+    """Strip HTML tags for surfaces that render plain text (thinking blocks).
+
+    Streaming previews reuse the report's Telegram-HTML, but a rich draft's
+    thinking block does NOT parse HTML — raw <b> tags would show literally.
+    """
+    return re.sub(r"</?[a-zA-Z][^<>]*>", "", text)
 
 
 class ReportHandlers:
@@ -81,6 +92,7 @@ class ReportHandlers:
         context: ContextTypes.DEFAULT_TYPE,
         weather_data,
         title_html: str,
+        plain_title: str,
     ) -> bool:
         """Stream with sendRichMessageDraft, then persist with sendRichMessage.
 
@@ -116,7 +128,7 @@ class ReportHandlers:
             if now - state["last_time"] < 1.2:
                 return
             state["last_time"] = now
-            preview = self.deps.llm_service.preview_stream_text(partial)
+            preview = plain_stream_preview(self.deps.llm_service.preview_stream_text(partial))
             if not preview:
                 return
             if not await rich.stream_draft(
@@ -128,13 +140,11 @@ class ReportHandlers:
             weather_data, on_progress=on_progress
         )
 
-        sent = await rich.send_rich(
-            context.bot, chat.id, html=f"{title_html}\n\n{report_text}"
-        )
-        if sent is not None:
+        # The draft expires on its own; deliver the finished report as rich
+        # BLOCKS (never rich html= — that collapses newlines into one blob).
+        blocks = build_report_blocks(report_text, title=plain_title)
+        if await rich.send_rich(context.bot, chat.id, blocks=blocks) is not None:
             return True
-
-        # The draft expires on its own; deliver the finished report normally.
         await send_text(
             update,
             context,
@@ -151,8 +161,9 @@ class ReportHandlers:
     ):
         """Send a streaming AI report into the chat (shared by /report and buttons)."""
         title = f"🤖 <b>{escape(weather_data.location_name)} 天气日报</b>"
+        plain_title = f"🤖 {weather_data.location_name} 天气日报"
 
-        if await self._stream_via_rich_draft(update, context, weather_data, title):
+        if await self._stream_via_rich_draft(update, context, weather_data, title, plain_title):
             return
         placeholder = await send_text(
             update,
@@ -176,13 +187,13 @@ class ReportHandlers:
         final_html = f"{title}\n\n{report_text}"
         final_plain = f"🤖 {weather_data.location_name} 天气日报\n\n{report_text}"
         if placeholder is not None:
-            # Prefer a rich edit so the finished report renders with rich
-            # formatting even where draft streaming is unavailable (groups).
+            # Rich BLOCKS edit first (rich html= collapses newlines); plain
+            # HTML edit as the fallback.
             if await rich.edit_rich(
                 context.bot,
                 chat_id=placeholder.chat_id,
                 message_id=placeholder.message_id,
-                html=final_html,
+                blocks=build_report_blocks(report_text, title=plain_title),
             ):
                 return
             try:
@@ -254,7 +265,9 @@ class ReportHandlers:
             if await rich.edit_rich(
                 context.bot,
                 inline_message_id=inline_message_id,
-                html=f"{title}\n\n{report_text}",
+                blocks=build_report_blocks(
+                    report_text, title=f"🤖 {weather_data.location_name} 天气日报"
+                ),
             ):
                 return
             try:

@@ -5,6 +5,8 @@ Rich blocks need no escaping at all (plain strings are passed through), and
 tables give the column alignment that the text views can only approximate.
 """
 
+import re
+from html import unescape
 from typing import List, Optional
 
 from domain.models import WeatherData
@@ -79,7 +81,12 @@ def build_footer(data: WeatherData) -> dict:
 
 
 def build_header(data: WeatherData, subtitle: Optional[str] = None) -> List[dict]:
-    blocks = [heading(f"{weather_icon(data.now_icon)} {data.location_name}", size=2)]
+    title = f"{weather_icon(data.now_icon)} {data.location_name}"
+    stamp = data.update_time
+    if stamp is not None:
+        # Date + weekday ride on the title line — a separate line wastes space.
+        title += f" · {stamp.strftime('%m-%d')} {_weekday_cn(stamp)}"
+    blocks = [heading(title, size=2)]
     if subtitle:
         blocks.append(paragraph(italic(subtitle)))
     return blocks
@@ -210,7 +217,8 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         summary_bits.append(f"AQI {air.aqi}")
     if air.category:
         summary_bits.append(air.category)
-    return [details(" · ".join(summary_bits), inner)]
+    # Collapsed by default — say so, or nobody discovers the breakdown.
+    return [details(" · ".join(summary_bits) + "（点击展开详情）", inner)]
 
 
 def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[list]:
@@ -244,17 +252,36 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
     return rows
 
 
-def _today_detail_blocks(data: WeatherData) -> List[dict]:
+def _index_pairs_table(entries: List[str]) -> dict:
+    """Life-index tips two per row — five one-line bullets waste vertical space."""
+    rows = []
+    for i in range(0, len(entries), 2):
+        rows.append([entries[i], entries[i + 1] if i + 1 < len(entries) else ""])
+    return table(rows, aligns=["left", "left"])
+
+
+def _today_detail_blocks(data: WeatherData, stats_rows: Optional[List[list]] = None) -> List[dict]:
+    """One flat "今日详情" section: current conditions + today's forecast.
+
+    Not collapsible by design (owner feedback): this is the payload of the
+    realtime view, hiding it behind a toggle buried the most-wanted numbers.
+    """
     day = data.get_current_daily_forecast()
     if day is None:
+        if stats_rows:
+            return [
+                paragraph([bold("📅 今日详情")]),
+                table(stats_rows, aligns=["left", "left"]),
+            ]
         return []
 
-    rows: List[list] = [
+    rows: List[list] = list(stats_rows or [])
+    rows.append(
         [
             "🌡️ 气温",
             f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°C",
         ]
-    ]
+    )
     day_wind = _plain_wind(
         day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
     )
@@ -308,24 +335,66 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
     wanted = {"3": "🧥", "8": "😊", "2": "🚗", "5": "🕶️", "9": "🤒"}
     for index in data.indices:
         if index.type in wanted:
-            tips.append(paragraph([f"{wanted[index.type]} ", bold(index.name), f": {index.category}"]))
+            tips.append(f"{wanted[index.type]} {index.name}: {index.category}")
     if tips:
-        blocks.append(bullet_list(tips))
+        blocks.append(_index_pairs_table(tips))
 
-    title = "今日详情" if day.date.date() == data.local_update_date else "最近预报"
-    return [
-        details(
-            f"📅 {title}（{day.date.strftime('%m-%d')} {_weekday_cn(day.date)}）",
-            blocks,
-            is_open=True,
-        )
-    ]
+    if day.date.date() == data.local_update_date:
+        title = "📅 今日详情"  # date already sits on the header line
+    else:
+        title = f"📅 最近预报（{day.date.strftime('%m-%d')} {_weekday_cn(day.date)}）"
+    return [paragraph([bold(title)]), *blocks]
+
+
+_REPORT_TAG_RE = re.compile(r"<(/?)([bi])>")
+
+
+def _report_line_richtext(line: str) -> list:
+    """Convert one line of Telegram-HTML (<b>/<i> only) into RichText segments."""
+    segments: list = []
+    position = 0
+    bold_on = italic_on = False
+    for match in _REPORT_TAG_RE.finditer(line):
+        text = unescape(line[position:match.start()])
+        if text:
+            segments.append(bold(text) if bold_on else italic(text) if italic_on else text)
+        if match.group(2) == "b":
+            bold_on = match.group(1) != "/"
+        else:
+            italic_on = match.group(1) != "/"
+        position = match.end()
+    tail = unescape(line[position:])
+    if tail:
+        segments.append(bold(tail) if bold_on else italic(tail) if italic_on else tail)
+    return segments or [""]
+
+
+def build_report_blocks(report_html: str, *, title: Optional[str] = None) -> List[dict]:
+    """AI report / daily brief as rich blocks.
+
+    Never send reports via rich ``html=``: InputRichMessage treats content as
+    real HTML, so newlines collapse and the report becomes one blob. Blocks
+    keep the paragraph structure AND the rich look.
+    """
+    blocks: List[dict] = []
+    if title:
+        blocks.append(heading(title, size=4))
+    for raw_line in report_html.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        plain = _REPORT_TAG_RE.sub("", line)
+        if plain.startswith(("🤖 Generated by", "Generated by")):
+            blocks.append(footer(unescape(plain)))
+            continue
+        blocks.append(paragraph(_report_line_richtext(line)))
+    return blocks
 
 
 def build_realtime_blocks(data: WeatherData) -> List[dict]:
     blocks = build_header(data)
 
-    hero: list = [bold(f"{format_weather_number(data.now_temp)}°C")]
+    hero: list = ["🌡️ 实时 ", bold(f"{format_weather_number(data.now_temp)}°C")]
     if data.now_text:
         hero.append(f" {data.now_text}")
     if data.now_feels_like is not None:
@@ -338,13 +407,12 @@ def build_realtime_blocks(data: WeatherData) -> List[dict]:
     blocks.extend(build_alert_blocks(data))
 
     # The pollutant breakdown carries its own always-visible summary line, so
-    # the stats table drops its duplicate air row when that block is present.
+    # the merged table drops its duplicate air row when that block is present.
     air_blocks = build_air_quality_blocks(data)
-    rows = _current_stats_rows(data, include_air=not air_blocks)
-    if rows:
-        blocks.append(table(rows, aligns=["left", "left"]))
-
-    blocks.extend(_today_detail_blocks(data))
+    stats_rows = _current_stats_rows(data, include_air=not air_blocks)
+    # Current conditions live inside 今日详情 (owner feedback): one flat
+    # section instead of a floating stats table plus a collapsible.
+    blocks.extend(_today_detail_blocks(data, stats_rows=stats_rows))
     blocks.extend(air_blocks)
     blocks.append(build_footer(data))
     return blocks

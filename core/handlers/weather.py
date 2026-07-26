@@ -46,6 +46,21 @@ def _looks_like_coords(text: str) -> bool:
     return True
 
 
+def should_attach_rain_chart(data, view_type: str) -> bool:
+    """Rain chart rides along whenever it is actually rainy.
+
+    is_raining is measurement-based (now_precip / minutely); a "小雨" sky with
+    a dry next hour must still ship the chart, so the text is checked too.
+    """
+    if not settings.enable_weather_plots:
+        return False
+    if view_type == "rain":
+        return True
+    return bool(
+        data.is_raining or any(marker in (data.now_text or "") for marker in ("雨", "雪"))
+    )
+
+
 class WeatherHandlers:
     def __init__(self, deps: BotDependencies):
         self.deps = deps
@@ -459,10 +474,8 @@ class WeatherHandlers:
         keyboard = get_weather_keyboard(location_query, coords=data.coords, view_type=view_type)
 
         chart_bytes = None
-        if settings.enable_weather_plots:
-            should_plot = view_type == "rain" or data.is_raining
-            if should_plot:
-                chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
+        if should_attach_rain_chart(data, view_type):
+            chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
 
         try:
             # Telegram caption limit is 1024 chars; fall back to photo + text.
