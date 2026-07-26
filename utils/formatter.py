@@ -667,6 +667,7 @@ def get_weather_keyboard(
             callback_data=f"refresh|{token}|{current_args[0]}|{current_args[1]}|{current_args[2]}",
         ),
         styled_button("🔔 降雨提醒", style="success", callback_data=f"sub|{token}"),
+        InlineKeyboardButton("📅 早安简报", callback_data=f"dsub|{token}"),
     ]
     keyboard = [row1]
 

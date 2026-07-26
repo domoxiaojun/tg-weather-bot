@@ -102,6 +102,19 @@ class CallbackHandlers:
             await self._handle_rain_level(update, context, data_parts)
             return
 
+        if action == "dsub" and location:
+            await self._handle_subscribe(update, context, location, kind="daily")
+            return
+
+        if action == "dtime" and len(data_parts) >= 3:
+            await self._handle_daily_time(update, context, data_parts)
+            return
+
+        if action == "subview" and len(data_parts) >= 2 and data_parts[1] in {"daily", "rain"}:
+            await self._safe_answer(query)
+            await self._refresh_subscription_list(query, context, data_parts[1])
+            return
+
         await query.answer()
 
     async def _handle_weather_choice(
@@ -196,18 +209,69 @@ class CallbackHandlers:
             )
         await self._refresh_subscription_list(query, context, "rain")
 
+    async def _handle_daily_time(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        data_parts: list[str],
+    ):
+        """Change a daily brief's push time from /daily_my: dtime|{index}|{HH:MM}"""
+        from core.handlers.subscriptions import set_daily_time
+
+        query = update.callback_query
+        try:
+            index = int(data_parts[1])
+        except ValueError:
+            await query.answer()
+            return
+
+        location = set_daily_time(context.chat_data, index, data_parts[2])
+        if location is None:
+            await self._safe_answer(query, "列表已变化，已刷新")
+        else:
+            await self._safe_answer(query, f"✅ {location}：每天 {data_parts[2]} 推送")
+        await self._refresh_subscription_list(query, context, "daily")
+
     async def _refresh_subscription_list(self, query, context, kind: str):
-        """Re-render the list in place so the message always matches stored state."""
-        from core.handlers.subscriptions import render_subscription_list
+        """Re-render the card in place so the message always matches stored state."""
+        from core.handlers.subscriptions import (
+            build_subscription_blocks,
+            render_empty_card,
+            render_subscription_list,
+        )
+        from services.telegram_rich import FEATURE_EDIT, rich
 
         text, keyboard = render_subscription_list(context.chat_data, kind)
+        if text is None:
+            # Empty state still offers a way forward (➕ last city / flip card).
+            text, keyboard = render_empty_card(context.chat_data, kind)
+            try:
+                await query.edit_message_text(text, reply_markup=keyboard)
+            except Exception as e:
+                if "Message is not modified" not in str(e):
+                    logger.debug(f"Subscription list refresh failed: {e}")
+            return
+
+        # Rich edit only in private chats: group cards are ephemeral fallbacks,
+        # and a failing edit there must not strike out FEATURE_EDIT globally.
+        message = getattr(query, "message", None)
+        chat = getattr(message, "chat", None)
+        if (
+            message is not None
+            and getattr(chat, "type", None) == "private"
+            and rich.supports(FEATURE_EDIT)
+        ):
+            edited = await rich.edit_rich(
+                context.bot,
+                chat_id=chat.id,
+                message_id=message.message_id,
+                blocks=build_subscription_blocks(context.chat_data, kind),
+                reply_markup=keyboard,
+            )
+            if edited:
+                return
         try:
-            if text is None:
-                await query.edit_message_text(
-                    "📭 你还没有订阅任何早安简报。" if kind == "daily" else "📭 你还没有订阅任何降雨提醒。"
-                )
-            else:
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
         except Exception as e:
             if "Message is not modified" not in str(e):
                 logger.debug(f"Subscription list refresh failed: {e}")
@@ -457,21 +521,32 @@ class CallbackHandlers:
             logger.error(f"Refresh failed: {e}")
             await self._notify(update, context, "刷新出错")
 
-    async def _handle_subscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE, location: str):
+    async def _handle_subscribe(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        location: str,
+        kind: str = "rain",
+    ):
+        """🔔/📅/➕ buttons: subscribe to rain alerts or the daily brief."""
         query = update.callback_query
         if query.inline_message_id:
             await query.answer("⚠️ Inline模式无法订阅，请在与Bot私聊或群组中使用 /tq 后点击订阅。", show_alert=True)
             return
 
-        await self._safe_answer(query)
         from core.handlers.subscriptions import (
+            DEFAULT_DAILY_BRIEF_TIME_HINT,
+            SubscriptionHandlers,
             rain_alert_expectation,
+            send_subscription_card,
             subscription_limit_message,
             subscription_limit_reached,
         )
+        from core.scheduler import DEFAULT_DAILY_BRIEF_TIME, DEFAULT_RAIN_LEVEL, rain_level_label
 
         # Callback tokens may be coordinates; normalize to a display name so
         # the subscription list stays deduplicated and human-readable.
+        location_tz = None
         try:
             loc_info = await self.deps.weather_service.qweather.get_geo_location(location)
         except Exception as e:
@@ -481,24 +556,47 @@ class CallbackHandlers:
             name = loc_info.get("name") or location
             adm1 = loc_info.get("adm1")
             location = f"{name}, {adm1}" if adm1 and adm1 != name else name
+            location_tz = loc_info.get("tz")
 
         chat = update.effective_chat
-        group_note = "（本群成员都会收到）" if chat is not None and chat.type != "private" else ""
+        list_key = "subs" if kind == "rain" else "daily_subs"
+        manage_command = "/rain_my" if kind == "rain" else "/daily_my"
+        subs = context.chat_data.setdefault(list_key, [])
 
-        subs = context.chat_data.get("subs", [])
-        if location in subs:
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text=f"ℹ️ 已经订阅过 {location} 了。管理订阅：/rain_my",
-            )
+        existing = SubscriptionHandlers._find_subscribed(subs, location)
+        if existing:
+            await self._safe_answer(query, f"ℹ️ 已订阅过 {existing}，管理：{manage_command}")
             return
         if subscription_limit_reached(subs):
-            await context.bot.send_message(chat_id=chat.id, text=subscription_limit_message("/rain_my"))
+            await self._safe_answer(query, subscription_limit_message(manage_command), show_alert=True)
             return
 
         subs.append(location)
-        context.chat_data["subs"] = subs
-        await context.bot.send_message(
-            chat_id=chat.id,
-            text=f"✅ 已订阅 {location} 的降雨提醒{group_note}。\n{rain_alert_expectation()}",
-        )
+        SubscriptionHandlers._remember_push_target(context, update, location, location_tz)
+        await self._safe_answer(query, f"✅ 已订阅 {location}")
+
+        if chat is not None and chat.type != "private":
+            # Group subscription affects everyone: announce publicly instead of
+            # an ephemeral card only the tapper would see. No buttons here, so
+            # point at the command instead of "the buttons below".
+            if kind == "rain":
+                text = (
+                    f"✅ 已订阅 {location} 的降雨提醒（本群成员都会收到）。\n"
+                    f"{rain_alert_expectation(location_tz)}"
+                )
+            else:
+                text = (
+                    f"✅ 已订阅 {location} 的早安简报，每天 {DEFAULT_DAILY_BRIEF_TIME} 推送"
+                    f"（本群成员都会收到）。改时间：/daily_sub 城市 HH:MM"
+                )
+            await context.bot.send_message(chat_id=chat.id, text=text)
+            return
+
+        if kind == "rain":
+            prefix = (
+                f"✅ 已订阅 {location} 的降雨提醒（{rain_level_label(DEFAULT_RAIN_LEVEL)}）。\n"
+                f"{rain_alert_expectation(location_tz, include_manage=False)}"
+            )
+        else:
+            prefix = f"✅ 已订阅 {location} 的早安简报，{DEFAULT_DAILY_BRIEF_TIME_HINT}"
+        await send_subscription_card(update, context, kind, prefix=prefix)

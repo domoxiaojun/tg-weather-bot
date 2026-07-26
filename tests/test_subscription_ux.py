@@ -29,8 +29,14 @@ class SubscriptionListTests(unittest.TestCase):
         self.assertIn("08:00", text)
         self.assertIn("07:15", text)
         buttons = [button for row in keyboard.inline_keyboard for button in row]
-        self.assertEqual(len(buttons), 2)
-        self.assertEqual(buttons[0].callback_data, "unsub|daily|0")
+        unsub = [b for b in buttons if (b.callback_data or "").startswith("unsub|")]
+        self.assertEqual([b.callback_data for b in unsub], ["unsub|daily|0", "unsub|daily|1"])
+        # Each city gets a row of quick-pick times; 北京 is on the default 08:00.
+        times = [b for b in buttons if (b.callback_data or "").startswith("dtime|0|")]
+        self.assertEqual(len(times), 4)
+        checked = [b for b in times if b.text.startswith("✅")]
+        self.assertEqual(len(checked), 1)
+        self.assertIn("08:00", checked[0].text)
 
     def test_render_empty_list_returns_none(self):
         self.assertEqual(render_subscription_list({}, "rain"), (None, None))

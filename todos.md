@@ -260,3 +260,21 @@ mm/h 只作为实现细节；档位存 chat_data["rain_level"][location]，不�
 - [x] S6 scheduler._zone_for 改为公开 zone_for（handlers 复用，避免复制时区兜底逻辑）
 - [x] S7 新增 24 项测试（别名解析、档位阈值语义、同城两订阅不同档位、仅大雨忽略高概率、
       按钮 callback 预算、免打扰提示、退订清理），全量 289 项通过
+
+## 第十五轮 — 订阅卡片式按钮交互（2026-07-26，用户要求）
+
+用户："订阅没有做卡片式按钮交互这种吗? 优化用户体验啊"。
+规则：任何订阅流程不得以"再去敲一条命令"收尾——每个触点都回可直接操作的卡片。
+
+- [x] T1 /rain_my /daily_my 卡片化：私聊富文本块（heading+bullet_list+footer），群聊 ephemeral 文本回退；
+      HTML 与富文本共用 _subscription_rows()，按钮共用 _subscription_keyboard_rows()
+- [x] T2 早安卡片每城一排预设时间按钮 06:30/07:00/07:30/08:00（当前 ✅ 绿色），dtime|{index}|{HH:MM} 点按即改；
+      自定义时间仍走 /daily_sub 城市 HH:MM
+- [x] T3 卡片底部 subview|{kind} 按钮原地翻转 降雨卡↔早安卡；空状态也有按钮（➕ 订阅上次查询城市 + 翻卡），
+      退订最后一城后留下的也是可用的空卡片
+- [x] T4 天气卡片第一排新增「📅 早安简报」（dsub|token）；🔔/📅/➕ 统一 _handle_subscribe(kind)：
+      重复点按→toast、超限→alert、成功→私聊回卡片、群聊发公开确认（文案指向命令而非不存在的按钮）
+- [x] T5 修 bug：按钮订阅路径此前不存时区（sub_tz/daily_sub_tz），推送时区会退回全局 TIMEZONE
+- [x] T6 全部命令确认（订阅/改档/改时/退订/重复订阅）都带管理按钮；富文本编辑仅私聊启用，
+      群内 ephemeral 编辑失败不会打击 FEATURE_EDIT 全局能力
+- [x] T7 新增 18 项卡片交互测试（tests/test_subscription_cards.py），全量 307 项通过

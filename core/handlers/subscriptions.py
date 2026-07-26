@@ -7,9 +7,13 @@ from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
+from telegram.constants import ChatType
+
 from core.config import settings
 from core.handlers.common import BotDependencies
 from core.handlers.messages import send_personal_text
+from services.telegram_rich import FEATURE_SEND, bold, bullet_list, heading, paragraph, rich
+from services.telegram_rich import footer as footer_block
 from core.scheduler import (
     DEFAULT_DAILY_BRIEF_TIME,
     DEFAULT_RAIN_LEVEL,
@@ -20,7 +24,7 @@ from core.scheduler import (
     rain_level_label,
     zone_for,
 )
-from utils.formatter import styled_button
+from utils.formatter import callback_location_token, styled_button
 from utils.schedule_times import is_within_quiet_hours, parse_quiet_hours
 
 
@@ -30,8 +34,12 @@ def display_timezone(tz_name: Optional[str] = None) -> str:
     return "北京时间" if effective == "Asia/Shanghai" else str(effective)
 
 
-def rain_alert_expectation(tz_name: Optional[str] = None) -> str:
-    """One-line expectation for what a rain subscription actually does."""
+def rain_alert_expectation(tz_name: Optional[str] = None, include_manage: bool = True) -> str:
+    """One-line expectation for what a rain subscription actually does.
+
+    ``include_manage=False`` drops the trailing command hint — used when the
+    text sits on a card that already carries the management buttons.
+    """
     quiet = parse_quiet_hours(settings.rain_alert_quiet_hours)
     text = "即将下雨时会提醒你一次；雨过之后再次降雨才会重新提醒"
     if quiet:
@@ -40,7 +48,7 @@ def rain_alert_expectation(tz_name: Optional[str] = None) -> str:
     if settings.enable_alert_push:
         exempt = "、".join(sorted(settings.alert_exempt_levels))
         text += f"；同时会推送官方灾害预警{f'（{exempt}预警不受免打扰限制）' if exempt else ''}"
-    return f"{text}。管理订阅：/rain_my"
+    return f"{text}。管理订阅：/rain_my" if include_manage else f"{text}。"
 
 
 def subscription_limit_reached(subs: list) -> bool:
@@ -54,43 +62,62 @@ def subscription_limit_message(manage_command: str) -> str:
     )
 
 
-def render_subscription_list(chat_data: dict, kind: str):
-    """Build (text, keyboard) for a subscription list with one-tap unsubscribe.
+DEFAULT_DAILY_BRIEF_TIME_HINT = f"默认每天 {DEFAULT_DAILY_BRIEF_TIME} 推送，点下方时间按钮可改。"
 
-    kind: 'daily' or 'rain'. Returns (None, None) when the list is empty.
-    """
+# Quick-pick times for the daily-brief card. Anything else still works via
+# /daily_sub 城市 HH:MM — the buttons cover the common cases, not all of them.
+DAILY_TIME_PRESETS = ("06:30", "07:00", "07:30", "08:00")
+
+_CARD_TITLES = {"daily": "📅 我的早安订阅", "rain": "🔔 我的降雨提醒"}
+_CARD_HINTS = {
+    "daily": "点时间即改推送时间；其他时间：/daily_sub 城市 HH:MM",
+    "rain": " ｜ ".join(f"{label}＝{hint}" for label, _r, _p, hint in RAIN_LEVELS.values()),
+}
+
+
+def _subscription_rows(chat_data: dict, kind: str):
+    """Per-city (location, plain-text detail) pairs shared by HTML and rich views."""
     list_key = "daily_subs" if kind == "daily" else "subs"
-    subs = chat_data.get(list_key, [])
-    if not subs:
-        return None, None
-
-    sub_times = chat_data.get("daily_sub_times", {}) if kind == "daily" else {}
-    levels = chat_data.get("rain_level", {}) if kind == "rain" else {}
-    last_alerts = chat_data.get("last_rain_alert", {}) if kind == "rain" else {}
     zones = chat_data.get("sub_tz" if kind == "rain" else "daily_sub_tz", {})
-
-    title = "📅 <b>我的早安订阅</b>" if kind == "daily" else "🔔 <b>我的降雨提醒</b>"
-    lines = [f"{title}："]
-    keyboard_rows = []
-    for index, location in enumerate(subs):
+    rows = []
+    for location in chat_data.get(list_key, []):
         if kind == "daily":
-            brief_time = sub_times.get(location, DEFAULT_DAILY_BRIEF_TIME)
-            zone_label = display_timezone(zones.get(location))
-            lines.append(f"• <b>{escape(location)}</b>\n  每天 {brief_time}（{zone_label}）")
+            brief_time = chat_data.get("daily_sub_times", {}).get(location, DEFAULT_DAILY_BRIEF_TIME)
+            detail = f"每天 {brief_time}（{display_timezone(zones.get(location))}）"
         else:
-            level = levels.get(location, DEFAULT_RAIN_LEVEL)
-            detail = [rain_level_label(level)]
-            last = last_alerts.get(location)
-            detail.append(f"上次提醒 {last.strftime('%m-%d %H:%M')}" if last else "尚未提醒过")
+            level = chat_data.get("rain_level", {}).get(location, DEFAULT_RAIN_LEVEL)
+            parts = [rain_level_label(level)]
+            last = chat_data.get("last_rain_alert", {}).get(location)
+            parts.append(f"上次提醒 {last.strftime('%m-%d %H:%M')}" if last else "尚未提醒过")
             if _in_quiet_hours(zones.get(location)):
-                detail.append("当前免打扰中")
-            lines.append(f"• <b>{escape(location)}</b>\n  {' · '.join(detail)}")
-            # Level picker: index-based callback data keeps it inside the
-            # 64-byte limit no matter how long the place name is.
+                parts.append("当前免打扰中")
+            detail = " · ".join(parts)
+        rows.append((location, detail))
+    return rows
+
+
+def _subscription_keyboard_rows(chat_data: dict, kind: str) -> list:
+    """Per-city control rows. Index-based callback data keeps every button
+    inside Telegram's 64-byte budget no matter how long the place name is."""
+    list_key = "daily_subs" if kind == "daily" else "subs"
+    keyboard_rows = []
+    for index, location in enumerate(chat_data.get(list_key, [])):
+        if kind == "daily":
+            current = chat_data.get("daily_sub_times", {}).get(location, DEFAULT_DAILY_BRIEF_TIME)
             keyboard_rows.append([
                 styled_button(
-                    ("✅ " if levels.get(location, DEFAULT_RAIN_LEVEL) == key else "") + label,
-                    style="success" if levels.get(location, DEFAULT_RAIN_LEVEL) == key else None,
+                    ("✅ " if preset == current else "") + preset,
+                    style="success" if preset == current else None,
+                    callback_data=f"dtime|{index}|{preset}",
+                )
+                for preset in DAILY_TIME_PRESETS
+            ])
+        else:
+            current = chat_data.get("rain_level", {}).get(location, DEFAULT_RAIN_LEVEL)
+            keyboard_rows.append([
+                styled_button(
+                    ("✅ " if current == key else "") + label,
+                    style="success" if current == key else None,
                     callback_data=f"lvl|{index}|{key}",
                 )
                 for key, (label, _rate, _pop, _hint) in RAIN_LEVELS.items()
@@ -98,14 +125,121 @@ def render_subscription_list(chat_data: dict, kind: str):
         keyboard_rows.append([
             styled_button(f"❌ 取消 {location}", style="danger", callback_data=f"unsub|{kind}|{index}")
         ])
+    keyboard_rows.append(_card_footer_row(chat_data, kind))
+    return keyboard_rows
 
-    if kind == "rain":
-        lines.append("\n上面一排按钮可改提醒档位：")
-        lines.extend(f"· <b>{label}</b> —— {hint}" for label, _r, _p, hint in RAIN_LEVELS.values())
+
+def _card_footer_row(chat_data: dict, kind: str) -> list:
+    """Flip to the sibling card, plus one-tap subscribe for the last queried city."""
+    other = "daily" if kind == "rain" else "rain"
+    row = [
+        styled_button(
+            "📅 早安订阅" if other == "daily" else "🔔 降雨订阅",
+            callback_data=f"subview|{other}",
+        )
+    ]
+    add = _add_city_button(chat_data, kind)
+    if add is not None:
+        row.append(add)
+    return row
+
+
+def _add_city_button(chat_data: dict, kind: str):
+    """➕ button for the city the user queried last, if it is not covered yet."""
+    last = chat_data.get("last_location") or {}
+    name = last.get("name")
+    if not name:
+        return None
+    list_key = "daily_subs" if kind == "daily" else "subs"
+    subs = chat_data.get(list_key, [])
+    if subscription_limit_reached(subs):
+        return None
+    target = name.casefold()
+    for existing in subs:
+        head = existing.casefold()
+        if head == target or head.split(",")[0].strip() == target:
+            return None
+    token = callback_location_token(name, last.get("coords"))
+    action = "dsub" if kind == "daily" else "sub"
+    return styled_button(f"➕ 订阅{name}", callback_data=f"{action}|{token}")
+
+
+def render_subscription_list(chat_data: dict, kind: str):
+    """Build (HTML text, keyboard) for a subscription card.
+
+    kind: 'daily' or 'rain'. Returns (None, None) when the list is empty.
+    """
+    rows = _subscription_rows(chat_data, kind)
+    if not rows:
+        return None, None
+
+    icon, _, title = _CARD_TITLES[kind].partition(" ")
+    lines = [f"{icon} <b>{title}</b>："]
+    for location, detail in rows:
+        lines.append(f"• <b>{escape(location)}</b>\n  {escape(detail)}")
+    lines.append(f"\n{escape(_CARD_HINTS[kind])}")
+    return "\n".join(lines), InlineKeyboardMarkup(_subscription_keyboard_rows(chat_data, kind))
+
+
+def build_subscription_blocks(chat_data: dict, kind: str, prefix: Optional[str] = None) -> list:
+    """Rich-card version of the same list; keyboard comes from the HTML path."""
+    rows = _subscription_rows(chat_data, kind)
+    blocks = []
+    if prefix:
+        blocks.append(paragraph(prefix))
+    blocks.append(heading(_CARD_TITLES[kind], size=4))
+    blocks.append(bullet_list([
+        [paragraph([bold(location)]), paragraph(detail)] for location, detail in rows
+    ]))
+    blocks.append(footer_block(_CARD_HINTS[kind]))
+    return blocks
+
+
+def render_empty_card(chat_data: dict, kind: str):
+    """Empty state that still offers a way forward instead of a dead end."""
+    if kind == "daily":
+        text = (
+            "📭 还没有早安简报订阅。\n"
+            "方式一：/tq 城市 后点「📅 早安简报」按钮\n"
+            "方式二：/daily_sub 城市 HH:MM"
+        )
     else:
-        lines.append("\n改时间：/daily_sub 城市 HH:MM")
+        text = (
+            "📭 还没有降雨提醒订阅。\n"
+            "方式一：/tq 城市 后点「🔔 降雨提醒」按钮\n"
+            "方式二：/rain_sub 城市 [档位]"
+        )
+    rows = []
+    add = _add_city_button(chat_data, kind)
+    if add is not None:
+        rows.append([add])
+    rows.append(_card_footer_row(chat_data, kind)[:1])  # switch button only
+    return text, InlineKeyboardMarkup(rows)
 
-    return "\n".join(lines), InlineKeyboardMarkup(keyboard_rows)
+
+async def send_subscription_card(update, context, kind: str, *, prefix: Optional[str] = None):
+    """Send the subscription card: rich blocks in private chats, HTML fallback.
+
+    Group chats keep the ephemeral text path so personal bookkeeping does not
+    spam everyone. ``prefix`` is plain text (confirmation line above the card).
+    """
+    text, keyboard = render_subscription_list(context.chat_data, kind)
+    if text is None:
+        empty_text, empty_keyboard = render_empty_card(context.chat_data, kind)
+        combined = f"{prefix}\n\n{empty_text}" if prefix else empty_text
+        return await send_personal_text(update, context, combined, reply_markup=empty_keyboard)
+
+    chat = update.effective_chat
+    if chat is not None and chat.type == ChatType.PRIVATE and rich.supports(FEATURE_SEND):
+        blocks = build_subscription_blocks(context.chat_data, kind, prefix=prefix)
+        sent = await rich.send_rich(context.bot, chat.id, blocks=blocks, reply_markup=keyboard)
+        if sent is not None:
+            return sent
+
+    combined = f"{escape(prefix)}\n\n{text}" if prefix else text
+    return await send_personal_text(
+        update, context, combined, parse_mode=ParseMode.HTML, reply_markup=keyboard
+    )
 
 
 def _in_quiet_hours(tz_name) -> bool:
@@ -126,6 +260,17 @@ def set_rain_level(chat_data: dict, index: int, level: str):
         return None
     location = subs[index]
     chat_data.setdefault("rain_level", {})[location] = level
+    return location
+
+
+def set_daily_time(chat_data: dict, index: int, value: str):
+    """Change one daily subscription's push time; returns the location or None."""
+    subs = chat_data.get("daily_subs", [])
+    parsed = parse_brief_time(value)
+    if not (0 <= index < len(subs)) or parsed is None:
+        return None
+    location = subs[index]
+    chat_data.setdefault("daily_sub_times", {})[location] = f"{parsed[0]:02d}:{parsed[1]:02d}"
     return location
 
 
@@ -222,7 +367,9 @@ class SubscriptionHandlers:
         subs = context.chat_data.setdefault("daily_subs", [])
         matched = self._find_subscribed(subs, location)
         if matched and brief_time is None:
-            await send_personal_text(update, context, f"已订阅过 {matched} 的日报，改时间可用 /daily_sub {matched.split(',')[0]} HH:MM。")
+            await send_subscription_card(
+                update, context, "daily", prefix=f"ℹ️ 已订阅过 {matched}，可直接在下方改时间。"
+            )
             return
 
         if not matched:
@@ -237,12 +384,14 @@ class SubscriptionHandlers:
         effective_time = context.chat_data.get("daily_sub_times", {}).get(
             matched, DEFAULT_DAILY_BRIEF_TIME
         )
-        await send_personal_text(
+        await send_subscription_card(
             update,
             context,
-            f"✅ 已订阅 {matched} 的早安简报！\n"
-            f"每天 {effective_time}（{display_timezone(location_tz)}）推送。\n"
-            f"改时间：/daily_sub 城市 HH:MM，管理订阅：/daily_my",
+            "daily",
+            prefix=(
+                f"✅ 已订阅 {matched} 的早安简报，"
+                f"每天 {effective_time}（{display_timezone(location_tz)}）推送。"
+            ),
         )
 
     async def daily_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -261,17 +410,13 @@ class SubscriptionHandlers:
                 matched = self._find_subscribed(subs, resolved)
         if matched:
             remove_subscription_entry(context.chat_data, "daily", subs.index(matched))
-            await send_personal_text(update, context, f"✅ 已取消 {matched} 的订阅。")
+            await send_subscription_card(update, context, "daily", prefix=f"✅ 已取消 {matched} 的订阅。")
         else:
             await send_personal_text(update, context, f"你没有订阅 {location}。")
 
     async def daily_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/daily_my - 查看我的订阅"""
-        text, keyboard = render_subscription_list(context.chat_data, "daily")
-        if text is None:
-            await send_personal_text(update, context, "📭 你还没有订阅任何早安简报。")
-            return
-        await send_personal_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_subscription_card(update, context, "daily")
 
     async def rain_sub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_sub [城市] - 订阅降雨提醒"""
@@ -305,16 +450,17 @@ class SubscriptionHandlers:
         if existing and level:
             # Re-subscribing with a level is how you change it from the command.
             context.chat_data.setdefault("rain_level", {})[existing] = level
-            await send_personal_text(
+            await send_subscription_card(
                 update,
                 context,
-                f"✅ 已把 {existing} 的提醒档位改为 <b>{rain_level_label(level)}</b>"
-                f"（{rain_level_hint(level)}）。",
-                parse_mode=ParseMode.HTML,
+                "rain",
+                prefix=f"✅ 已把 {existing} 的提醒档位改为「{rain_level_label(level)}」（{rain_level_hint(level)}）。",
             )
             return
         if existing:
-            await send_personal_text(update, context, f"已订阅过 {existing} 的降雨提醒。管理订阅：/rain_my")
+            await send_subscription_card(
+                update, context, "rain", prefix=f"ℹ️ 已订阅过 {existing}，可直接在下方管理。"
+            )
             return
         if subscription_limit_reached(subs):
             await send_personal_text(update, context, subscription_limit_message("/rain_my"))
@@ -325,11 +471,14 @@ class SubscriptionHandlers:
         effective = level or DEFAULT_RAIN_LEVEL
         if level:
             context.chat_data.setdefault("rain_level", {})[location] = level
-        await send_personal_text(
+        await send_subscription_card(
             update,
             context,
-            f"✅ 已订阅 {location} 的降雨提醒（档位：{rain_level_label(effective)}——"
-            f"{rain_level_hint(effective)}）。\n{rain_alert_expectation(location_tz)}",
+            "rain",
+            prefix=(
+                f"✅ 已订阅 {location} 的降雨提醒（{rain_level_label(effective)}——{rain_level_hint(effective)}）。\n"
+                f"{rain_alert_expectation(location_tz, include_manage=False)}"
+            ),
         )
 
     async def rain_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -348,14 +497,10 @@ class SubscriptionHandlers:
                 matched = self._find_subscribed(subs, resolved)
         if matched:
             remove_subscription_entry(context.chat_data, "rain", subs.index(matched))
-            await send_personal_text(update, context, f"✅ 已取消 {matched} 的降雨提醒。")
+            await send_subscription_card(update, context, "rain", prefix=f"✅ 已取消 {matched} 的降雨提醒。")
         else:
             await send_personal_text(update, context, f"你没有订阅 {location} 的降雨提醒。")
 
     async def rain_my(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_my - 查看我的降雨提醒"""
-        text, keyboard = render_subscription_list(context.chat_data, "rain")
-        if text is None:
-            await send_personal_text(update, context, "📭 你还没有订阅任何降雨提醒。")
-            return
-        await send_personal_text(update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+        await send_subscription_card(update, context, "rain")
