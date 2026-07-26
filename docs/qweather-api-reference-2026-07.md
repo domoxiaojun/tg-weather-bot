@@ -270,8 +270,16 @@ v1 空气质量统一结构：
 | 实时空气质量 | `/airquality/v1/current/{lat}/{lon}` | 已接入 |
 | 小时/逐日空气质量 | v1 hourly/daily | 已接入；无数据时负缓存并由彩云补缺 |
 | 生活指数 | `/v7/indices/1d` | 已接入，默认只请求 5 类 |
-| 历史天气 | `/v7/historical/weather` | 未接入 |
-| 格点、气旋、海洋、辐射、天文、控制台 | 对应官方 endpoint | 未接入 |
+| 历史天气 | `/v7/historical/weather` | 已接入（仅取昨日 weatherDaily，喂 AI 日报与"比昨天"对比；LocationID only，不含今天） |
+| 格点天气 | `/v7/grid-weather/now|{hours}|{days}` | 已接入（坐标与最近城市相距超 GRID_WEATHER_DISTANCE_KM 时启用；无 vis/feelsLike/pop） |
+| 监测站 | 复用实时空气质量响应的 `stations[]` 名称 | 已接入（未单独调 `/airquality/v1/stations/`） |
+| 气旋、海洋、辐射、天文、控制台 | 对应官方 endpoint | 未接入（天文与逐日预报重复，无需接入） |
+
+### 格点天气字段差异（对照官方文档核实）
+
+`/v7/grid-weather/*` 与城市天气**字段名一致**（temp/icon/text/windDir/windScale/windSpeed/humidity/precip/pressure/cloud/dew），并额外提供 `wind360`；但**缺少 `vis`、`feelsLike` 和 `pop`**。
+因此现有 `_map_hourly` / `_map_daily` 可直接复用，缺失字段按项目规则保持为空——尤其 `pop` 缺失会让 `will_rain_soon()` 退化到只看 `precip`，这是格点作为"坐标兜底"而非默认源的原因。
+坐标精度要求 2 位小数，与既有 `_coord_location()` 一致。
 
 默认配置：
 

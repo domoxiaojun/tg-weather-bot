@@ -45,6 +45,7 @@ DEFAULT_WEATHER_REPORT_PROMPT = (
     "🌈 最后一行给一句简短收尾，不要鸡汤过度。\n\n"
     "事实规则：\n"
     "1. 优先依据 risk_signals、预警、分钟级降水、逐小时预报、空气质量和生活指数；不要编造 JSON 没有的数据。\n"
+    "1b. 若有 yesterday_observed，请在「现在」块用一句话对比昨天（例如今天最高温比昨天低几度）；没有该字段就不要提昨天。\n"
     "2. 如果 risk_signals.avoid_unfounded_rain_advice 为 true，不要提醒带伞、洗车会被雨打湿或今晚下雨，除非日预报明确有雨。\n"
     "3. 如果有预警，必须在当前时间之后第一块用 ⚠️ <b>预警</b> 单独突出。\n"
     "4. 不要自行估算、推导或补写 API 没有返回的体感温度或其他字段。\n"
@@ -465,8 +466,11 @@ class LLMService:
     def _format_weather_data(self, data: WeatherData) -> str:
         """Convert WeatherData to a readable text summary for the LLM"""
         priority_indices = {"3", "1", "2", "5", "9", "8", "7", "10", "15", "16"}
+        from utils.formatter import select_indices_for_day
+
+        # 3d indices repeat each type per day; keep today only for the report.
         selected_indices = [
-            index for index in data.indices
+            index for index in select_indices_for_day(data.indices)
             if index.type in priority_indices
         ][:10]
         daily_forecasts = data.get_daily_forecasts(limit=5)
@@ -611,9 +615,25 @@ class LLMService:
                     "name": index.name,
                     "category": index.category,
                     "text": index.text,
+                    "date": self._date_text(index.date),
                 }
                 for index in selected_indices
             ],
+            # Observed yesterday, so the report can say "cooler than yesterday"
+            # instead of leaving the reader to guess the trend.
+            "yesterday_observed": (
+                {
+                    "date": self._date_text(data.yesterday.date),
+                    "temp_max_c": self._round_number(data.yesterday.temp_max),
+                    "temp_min_c": self._round_number(data.yesterday.temp_min),
+                    "humidity_pct": data.yesterday.humidity,
+                    "precip_mm": self._round_number(data.yesterday.precip, 2),
+                    "pressure_hpa": self._round_number(data.yesterday.pressure),
+                }
+                if data.yesterday
+                else None
+            ),
+            "air_quality_stations": data.air_stations or None,
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 

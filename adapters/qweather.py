@@ -10,6 +10,7 @@ from adapters.base import WeatherAdapter
 from core.config import settings
 from domain.models import (
     AirQuality,
+    HistoricalDaySummary,
     DailyForecast,
     HourlyForecast,
     LifeIndex,
@@ -21,6 +22,13 @@ from domain.models import (
 
 
 WeatherProfile = Literal["full", "hourly", "daily", "rain", "indices"]
+
+# Grid weather (numerical model, 3-5 km) is requested instead of city weather
+# when the geocoded city sits this far from the coordinates the user supplied.
+# Grid responses reuse the city field names but omit vis, feelsLike and pop —
+# those simply stay unset rather than being estimated.
+GRID_FALLBACK_HOURS = {"24h": "24h", "72h": "72h", "168h": "72h"}
+GRID_FALLBACK_DAYS = {"3d": "3d", "7d": "7d", "10d": "7d", "15d": "7d", "30d": "7d"}
 
 
 class QWeatherAdapter(WeatherAdapter):
@@ -169,6 +177,36 @@ class QWeatherAdapter(WeatherAdapter):
     @classmethod
     def _coord_location(cls, lon: Any, lat: Any) -> str:
         return f"{cls._to_float(lon):.2f},{cls._to_float(lat):.2f}"
+
+    @staticmethod
+    def _zone_or_none(tz_name: Optional[str]):
+        if not tz_name:
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(str(tz_name))
+        except Exception:
+            return None
+
+    @staticmethod
+    def _distance_km(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+        """Great-circle distance, used to detect a far-away geo match."""
+        from math import asin, cos, radians, sin, sqrt
+
+        lon1, lat1, lon2, lat2 = map(radians, (lon1, lat1, lon2, lat2))
+        h = sin((lat2 - lat1) / 2) ** 2 + cos(lat1) * cos(lat2) * sin((lon2 - lon1) / 2) ** 2
+        return 2 * 6371.0 * asin(min(1.0, sqrt(h)))
+
+    @classmethod
+    def _parse_coords(cls, location: str) -> Optional[tuple]:
+        parts = str(location).split(",")
+        if len(parts) != 2:
+            return None
+        try:
+            return float(parts[0]), float(parts[1])
+        except ValueError:
+            return None
 
     @staticmethod
     def _seconds_until_local_midnight(tz_name: Optional[str]) -> int:
@@ -579,6 +617,43 @@ class QWeatherAdapter(WeatherAdapter):
                 mapped[forecast_time.date()] = air_quality
         return mapped
 
+    def _map_history(self, history_data: Optional[Dict[str, Any]]) -> Optional[HistoricalDaySummary]:
+        """Map Time Machine's weatherDaily block (field names differ from /v7/weather)."""
+        if not history_data or self._is_unavailable_marker(history_data):
+            return None
+        daily = history_data.get("weatherDaily")
+        if not isinstance(daily, dict):
+            return None
+        raw_date = str(daily.get("date") or "")
+        try:
+            parsed_date = datetime.strptime(raw_date[:10], "%Y-%m-%d")
+        except ValueError:
+            parsed_date = self._parse_datetime(raw_date)
+            if parsed_date is None:
+                logger.debug(f"Unparseable historical date: {raw_date}")
+                return None
+        return HistoricalDaySummary(
+            date=parsed_date,
+            temp_max=self._optional_float(daily.get("tempMax")),
+            temp_min=self._optional_float(daily.get("tempMin")),
+            humidity=self._optional_int(daily.get("humidity")),
+            precip=self._optional_float(daily.get("precip")),
+            pressure=self._optional_float(daily.get("pressure")),
+        )
+
+    @staticmethod
+    def _map_air_stations(air_data: Optional[Dict[str, Any]]) -> List[str]:
+        """Nearby station names, already present in the current AQI response."""
+        if not isinstance(air_data, dict):
+            return []
+        names = []
+        for station in air_data.get("stations") or []:
+            if isinstance(station, dict):
+                name = str(station.get("name") or "").strip()
+                if name and name not in names:
+                    names.append(name)
+        return names[:5]
+
     def _map_indices(self, indices_data: Optional[Dict[str, Any]]) -> List[LifeIndex]:
         if not indices_data:
             return []
@@ -609,7 +684,10 @@ class QWeatherAdapter(WeatherAdapter):
         loc_info: Optional[Dict[str, Any]] = None,
     ) -> Optional[WeatherData]:
         profile_components = {
-            "full": {"minutely", "air", "air_hourly", "air_daily", "warning", "daily", "hourly", "indices"},
+            "full": {
+                "minutely", "air", "air_hourly", "air_daily", "warning",
+                "daily", "hourly", "indices", "history",
+            },
             "hourly": {"air", "air_hourly", "warning", "hourly"},
             "daily": {"air_daily", "warning", "daily"},
             "rain": {"minutely", "air", "warning", "hourly"},
@@ -630,21 +708,53 @@ class QWeatherAdapter(WeatherAdapter):
         adm1 = resolved_location.get("adm1")
         if adm1:
             loc_name = f"{loc_name}, {adm1}"
+
+        # City lookup snaps coordinates to the nearest supported city. When that
+        # city is far away, reporting its weather under its name would be wrong,
+        # so switch the weather components to the grid (numerical model) API and
+        # keep the user's own coordinates.
+        requested_coords = self._parse_coords(location)
+        grid_location = None
+        if settings.enable_grid_weather and requested_coords is not None:
+            try:
+                offset_km = self._distance_km(
+                    requested_coords[0], requested_coords[1], float(lon), float(lat)
+                )
+            except (TypeError, ValueError):
+                offset_km = 0.0
+            if offset_km > settings.grid_weather_distance_km:
+                grid_location = self._coord_location(*requested_coords)
+                lon, lat = requested_coords
+                loc_name = f"{resolved_location.get('name', location)} 附近"
+                logger.info(
+                    "Using grid weather: nearest city {} is {:.0f}km away",
+                    resolved_location.get("name"),
+                    offset_km,
+                )
+
         coords = f"{lon},{lat}"
-        coord_location = self._coord_location(lon, lat)
+        coord_location = grid_location or self._coord_location(lon, lat)
 
         seconds_until_midnight = self._seconds_until_local_midnight(resolved_location.get("tz"))
         components = profile_components[profile]
 
-        requests: dict[str, Any] = {
-            "now": self._cached_request(
+        requests: dict[str, Any] = {}
+        if grid_location:
+            requests["now"] = self._cached_request(
+                f"qw:grid-now:{grid_location}",
+                "/v7/grid-weather/now",
+                {"location": grid_location},
+                ttl=600,
+                force_refresh=refresh_qweather,
+            )
+        else:
+            requests["now"] = self._cached_request(
                 f"qw:now:{loc_id}",
                 "/v7/weather/now",
                 {"location": loc_id},
                 ttl=600,
                 force_refresh=refresh_qweather,
             )
-        }
         if "minutely" in components and settings.qweather_enable_minutely:
             requests["minutely"] = self._cached_request(
                 f"qw:minutely:{coord_location}",
@@ -690,34 +800,72 @@ class QWeatherAdapter(WeatherAdapter):
                 f"qw:warning:v1:{coord_location}",
                 f"/weatheralert/v1/current/{lat}/{lon}",
                 {"localTime": "true"},
-                ttl=1800,
-                unavailable_ttl=1800,
+                # Warnings are the only life-safety data here; keep them fresh
+                # enough that a red alert is not delayed by half an hour.
+                ttl=300,
+                unavailable_ttl=300,
                 allow_data_unavailable=True,
                 force_refresh=refresh_qweather,
             )
         if "daily" in components:
-            requests["daily"] = self._cached_request(
-                f"qw:daily:{settings.qweather_daily_days}:{loc_id}",
-                f"/v7/weather/{settings.qweather_daily_days}",
-                {"location": loc_id},
-                ttl=43200,
-                force_refresh=refresh_qweather,
-            )
+            if grid_location:
+                grid_days = GRID_FALLBACK_DAYS.get(settings.qweather_daily_days, "7d")
+                requests["daily"] = self._cached_request(
+                    f"qw:grid-daily:{grid_days}:{grid_location}",
+                    f"/v7/grid-weather/{grid_days}",
+                    {"location": grid_location},
+                    ttl=43200,
+                    force_refresh=refresh_qweather,
+                )
+            else:
+                requests["daily"] = self._cached_request(
+                    f"qw:daily:{settings.qweather_daily_days}:{loc_id}",
+                    f"/v7/weather/{settings.qweather_daily_days}",
+                    {"location": loc_id},
+                    ttl=43200,
+                    force_refresh=refresh_qweather,
+                )
         if "hourly" in components:
-            requests["hourly"] = self._cached_request(
-                f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}",
-                f"/v7/weather/{settings.qweather_hourly_hours}",
-                {"location": loc_id},
-                ttl=21600,
-                force_refresh=refresh_qweather,
-            )
+            if grid_location:
+                grid_hours = GRID_FALLBACK_HOURS.get(settings.qweather_hourly_hours, "72h")
+                requests["hourly"] = self._cached_request(
+                    f"qw:grid-hourly:{grid_hours}:{grid_location}",
+                    f"/v7/grid-weather/{grid_hours}",
+                    {"location": grid_location},
+                    ttl=21600,
+                    force_refresh=refresh_qweather,
+                )
+            else:
+                requests["hourly"] = self._cached_request(
+                    f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}",
+                    f"/v7/weather/{settings.qweather_hourly_hours}",
+                    {"location": loc_id},
+                    ttl=21600,
+                    force_refresh=refresh_qweather,
+                )
         if "indices" in components:
+            # Indices are city-scoped only, so they always use the resolved city.
             requests["indices"] = self._cached_request(
-                f"qw:indices:{settings.qweather_indices_types}:{loc_id}",
-                "/v7/indices/1d",
+                f"qw:indices:{settings.qweather_indices_days}:{settings.qweather_indices_types}:{loc_id}",
+                f"/v7/indices/{settings.qweather_indices_days}",
                 {"location": loc_id, "type": settings.qweather_indices_types},
                 ttl=seconds_until_midnight,
                 force_refresh=refresh_qweather,
+            )
+        if "history" in components and settings.enable_history_comparison:
+            # Yesterday's summary powers "warmer/cooler than yesterday" in the
+            # AI report. LocationID only, and today is not available.
+            history_date = (
+                datetime.now(self._zone_or_none(resolved_location.get("tz"))) - timedelta(days=1)
+            ).strftime("%Y%m%d")
+            requests["history"] = self._cached_request(
+                f"qw:history:{loc_id}:{history_date}",
+                "/v7/historical/weather",
+                {"location": loc_id, "date": history_date},
+                ttl=86400,
+                unavailable_ttl=21600,
+                allow_data_unavailable=True,
+                force_refresh=False,
             )
 
         keys = list(requests)
@@ -742,6 +890,7 @@ class QWeatherAdapter(WeatherAdapter):
         daily_data = payloads.get("daily")
         hourly_data = payloads.get("hourly")
         indices_data = payloads.get("indices")
+        history_data = payloads.get("history")
 
         now_weather = now_data["now"]
         daily_list = self._map_daily(daily_data)
@@ -750,6 +899,8 @@ class QWeatherAdapter(WeatherAdapter):
         alerts_list = self._map_alerts(warning_data)
         aqi_obj = self._map_air_quality(air_data)
         indices_list = self._map_indices(indices_data)
+        yesterday = self._map_history(history_data)
+        air_stations = self._map_air_stations(air_data)
 
         hourly_air = self._map_hourly_air_quality(hourly_air_data)
         for hour in hourly_list:
@@ -842,4 +993,6 @@ class QWeatherAdapter(WeatherAdapter):
             indices=indices_list,
             is_raining=is_raining,
             attributions=attributions,
+            yesterday=yesterday,
+            air_stations=air_stations,
         )

@@ -30,6 +30,7 @@ from utils.formatter import (
     format_precip_value,
     format_weather_number,
     normalize_warning_level,
+    select_indices_for_day,
     weather_icon,
 )
 
@@ -196,6 +197,8 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         inner.append(paragraph(["主要污染物: ", bold(air.primary)]))
     if air.description:
         inner.append(paragraph(italic(air.description)))
+    if data.air_stations:
+        inner.append(paragraph(italic(f"附近监测站: {'、'.join(data.air_stations[:3])}")))
 
     summary_bits = ["🌫️ 空气质量"]
     if air.aqi is not None:
@@ -275,6 +278,18 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
             f"{format_precip_value(day.precip_day, day.precip_kind)} / "
             f"{format_precip_value(day.precip_night, day.precip_kind)}",
         ])
+
+    # Day-over-day context: the trend is what people actually want to know.
+    if data.yesterday is not None:
+        deltas = []
+        if data.yesterday.temp_max is not None and day.temp_max is not None:
+            delta = day.temp_max - data.yesterday.temp_max
+            deltas.append(f"最高 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
+        if data.yesterday.temp_min is not None and day.temp_min is not None:
+            delta = day.temp_min - data.yesterday.temp_min
+            deltas.append(f"最低 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
+        if deltas:
+            rows.append(["📊 比昨天", " · ".join(deltas)])
 
     pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
     if pops:
@@ -484,16 +499,13 @@ def build_daily_blocks(
     return blocks
 
 
-def build_indices_blocks(data: WeatherData) -> List[dict]:
-    if not data.indices:
-        return build_realtime_blocks(data)
-
-    blocks = build_header(data, "生活指数")
+def _indices_group_blocks(indices: List) -> List[dict]:
+    groups: List[dict] = []
     for category_name, type_ids in CATEGORIES.items():
-        group = [index for index in data.indices if index.type in type_ids]
+        group = [index for index in indices if index.type in type_ids]
         if not group:
             continue
-        blocks.append(heading(category_name, size=4))
+        groups.append(heading(category_name, size=4))
         items = []
         for index in group:
             emoji = INDICES_EMOJI.get(index.type, "ℹ️")
@@ -501,7 +513,28 @@ def build_indices_blocks(data: WeatherData) -> List[dict]:
             if index.text:
                 entry.append(paragraph(italic(index.text)))
             items.append(entry)
-        blocks.append(bullet_list(items))
+        groups.append(bullet_list(items))
+    return groups
+
+
+def build_indices_blocks(data: WeatherData) -> List[dict]:
+    if not data.indices:
+        return build_realtime_blocks(data)
+
+    blocks = build_header(data, "生活指数")
+    today = select_indices_for_day(data.indices)
+    blocks.extend(_indices_group_blocks(today))
+
+    # With a 3-day range the later days go into collapsed sections instead of
+    # repeating every index three times in one wall of text.
+    dated = [index for index in data.indices if index.date is not None]
+    days = sorted({index.date.date() for index in dated})
+    for offset, day in enumerate(days[1:3], start=1):
+        label = "明天" if offset == 1 else "后天"
+        group_blocks = _indices_group_blocks(select_indices_for_day(data.indices, day))
+        if group_blocks:
+            blocks.append(details(f"💡 {label}（{day.strftime('%m-%d')}）", group_blocks))
+
     blocks.append(build_footer(data))
     return blocks
 

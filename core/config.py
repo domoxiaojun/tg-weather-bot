@@ -33,6 +33,34 @@ class Settings(BaseSettings):
         description="QWeather life index type ids (China supports 1-16)",
     )
     qweather_enable_minutely: bool = Field(True, description="Enable QWeather minutely precipitation")
+    qweather_indices_days: str = Field("3d", description="QWeather life index range: 1d or 3d")
+    enable_grid_weather: bool = Field(
+        True,
+        description="Use QWeather grid (numerical model) weather when the nearest city is too far from the requested coordinates",
+    )
+    grid_weather_distance_km: float = Field(
+        15.0,
+        description="Switch to grid weather when the geocoded city is farther than this from the requested coordinates",
+    )
+    enable_history_comparison: bool = Field(
+        True,
+        description="Fetch yesterday's observed summary (Time Machine) so the AI report can compare day over day",
+    )
+
+    @field_validator("qweather_indices_days")
+    @classmethod
+    def validate_qweather_indices_days(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"1d", "3d"}:
+            raise ValueError("qweather_indices_days must be 1d or 3d")
+        return value
+
+    @field_validator("grid_weather_distance_km")
+    @classmethod
+    def validate_grid_distance(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("grid_weather_distance_km must be greater than 0")
+        return value
     caiyun_api_token: Optional[str] = Field(None, description="Caiyun Weather API Token")
     caiyun_cache_ttl_seconds: int = Field(3600, description="Caiyun successful response cache TTL")
     caiyun_failure_cooldown_seconds: int = Field(60, description="Caiyun temporary failure cooldown")

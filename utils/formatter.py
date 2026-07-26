@@ -471,7 +471,30 @@ def format_hourly_weather(hourly_data: List[HourlyForecast]) -> str:
         result_lines.append(" · ".join(detail_parts))
     return "\n".join(result_lines)
 
+def select_indices_for_day(indices: List[LifeIndex], target_date=None) -> List[LifeIndex]:
+    """Pick one day's indices.
+
+    With QWEATHER_INDICES_DAYS=3d the API returns each type once per day, so
+    rendering the raw list would repeat every index three times. Dateless
+    entries (older payloads) are treated as today's.
+    """
+    if not indices:
+        return []
+    dated = [index for index in indices if index.date is not None]
+    if not dated:
+        return list(indices)
+
+    available = sorted({index.date.date() for index in dated})
+    chosen = target_date or available[0]
+    same_day = [index for index in dated if index.date.date() == chosen]
+    if not same_day:
+        same_day = [index for index in dated if index.date.date() == available[0]]
+    # Keep dateless entries visible rather than silently dropping them.
+    return same_day + [index for index in indices if index.date is None]
+
+
 def format_indices_data(indices: List[LifeIndex]) -> str:
+    indices = select_indices_for_day(indices)
     if not indices: return ""
     result = []
     for category_name, type_ids in CATEGORIES.items():

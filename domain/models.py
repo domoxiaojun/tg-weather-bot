@@ -179,6 +179,21 @@ class LifeIndex(BaseModel):
 
 # --- Unified Weather Data ---
 
+class HistoricalDaySummary(BaseModel):
+    """Yesterday's observed summary, used for "warmer than yesterday" context.
+
+    QWeather's Time Machine covers the last 10 days excluding today and is
+    LocationID-only, so this is a small snapshot rather than a full forecast.
+    """
+    date: datetime
+    temp_max: Optional[float] = None
+    temp_min: Optional[float] = None
+    humidity: Optional[int] = None
+    precip: Optional[float] = None
+    pressure: Optional[float] = None
+    source: WeatherProvider = "qweather"
+
+
 class WeatherData(BaseModel):
     """
     Unified Weather Data Model.
@@ -225,6 +240,11 @@ class WeatherData(BaseModel):
     
     # Indices
     indices: List[LifeIndex] = Field(default_factory=list)
+
+    # Observed summary for yesterday (Time Machine), for day-over-day context
+    yesterday: Optional[HistoricalDaySummary] = None
+    # Nearby air-quality monitoring stations reported alongside current AQI
+    air_stations: List[str] = Field(default_factory=list)
 
     field_sources: Dict[str, WeatherProvider] = Field(default_factory=dict)
     provider_summaries: Dict[WeatherProvider, str] = Field(default_factory=dict)

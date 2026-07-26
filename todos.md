@@ -177,3 +177,23 @@
 - 和风新功能线端点：历史天气、格点天气（任意经纬度）、台风路径、潮汐、POI、监测站、indices/3d
 - 天文端点冗余：日月升落/月相已由逐日预报提供，无需另接
 - Ed25519 JWT 认证迁移（官方要求 2027-01-01 前，需要你在和风控制台生成密钥对）
+
+## 第十一轮 — 新端点接入（2026-07-26，用户：全都加上；历史天气交给 AI 总结）
+
+对照官方文档核实字段后接入（自己核，无子代理）：
+
+- [x] O1 格点天气：坐标查询时若最近城市距用户坐标 > GRID_WEATHER_DISTANCE_KM(15km) 则改用 /v7/grid-weather/*，
+      地名显示为"XX 附近"不再冒用城市名；字段名与城市天气一致故复用现有 mapper；缺失的 vis/feelsLike/pop 保持为空
+- [x] O2 历史天气（Time Machine）：只取昨日 weatherDaily，进 LLM payload（yesterday_observed）+ 提示词要求对比昨天，
+      今日详情加"📊 比昨天 最高/最低 ±N°"；LocationID only、不含今天、缓存 24h
+- [x] O3 生活指数 1d→3d：视图按天选择（明后天进折叠块），LLM payload 也只取当天，避免每个指数重复 3 次
+- [x] O4 监测站：复用实时空气质量响应里的 stations[] 名称，展示进空气质量折叠块（零额外 API 调用）
+- [x] O5 预警缓存 TTL 1800→300 秒（保命数据不该延迟半小时）
+- [x] O6 新增 18 项测试（共 178 项）：距离计算、格点范围降级、格点 payload 无 pop/vis、历史映射与脏值、
+      监测站去重、指数按天选择不重复
+- [x] O7 文档：docs/qweather-api-reference-2026-07.md 记录格点字段差异与接入状态、.env.example 新增三项配置
+
+### 下一批（尚未做）
+- [ ] P1 台风：storm-list(basin=NP only) → storm-forecast(stormid) → 路径点与订阅地点距离 → 复用预警推送框架；需新模型+路径图
+- [ ] P2 潮汐：必须先 /geo/v2/poi/lookup?type=TSTA 找潮汐站，再 /v7/ocean/tide；仅对沿海用户有意义
+- [ ] P3 太阳辐射：/solarradiation/v1/forecast，垂类（光伏），建议仅进 AI payload 或不做
