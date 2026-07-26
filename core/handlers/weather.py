@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 from core.config import settings
 from core.handlers.common import (
     BotDependencies,
+    fire_and_forget,
     join_location_args,
     parse_chart_request,
     parse_location_and_view,
@@ -98,20 +99,34 @@ class WeatherHandlers:
         """/chart [城市] [daily|hourly|rain] -> 发送趋势图"""
         args = context.args
         if not args:
-            await send_text(
-                update,
-                context,
-                "⚠️ 用法：/chart 城市 [daily|hourly|rain]\n\n"
-                "示例：\n"
-                "• <code>/chart 北京</code> - 逐小时温度图\n"
-                "• <code>/chart 上海 daily</code> - 逐日温度图\n"
-                "• <code>/chart 广州 rain</code> - 逐小时降水概率",
-                parse_mode=ParseMode.HTML,
-            )
-            return
+            # Same convention as bare /tq: fall back to the last queried city.
+            last = context.chat_data.get("last_location") if context.chat_data else None
+            if last and last.get("coords"):
+                args = [last["coords"]]
+            else:
+                await send_text(
+                    update,
+                    context,
+                    "⚠️ 用法：/chart 城市 [daily|hourly|rain]\n\n"
+                    "示例：\n"
+                    "• <code>/chart 北京</code> - 逐小时温度图\n"
+                    "• <code>/chart 上海 daily</code> - 逐日温度图\n"
+                    "• <code>/chart 广州 rain</code> - 逐小时降水概率",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
 
         location, requested_chart_type = parse_chart_request(list(args))
         chart_type = normalize_chart_type(requested_chart_type)
+        if update.effective_chat is not None:
+            # Cold path takes seconds (geo + fetch + render + upload) with zero
+            # feedback otherwise; every other command already shows an action.
+            fire_and_forget(
+                context,
+                context.bot.send_chat_action(
+                    chat_id=update.effective_chat.id, action=ChatAction.UPLOAD_PHOTO
+                ),
+            )
 
         profile = CHART_PROFILES[chart_type]
 
@@ -180,10 +195,8 @@ class WeatherHandlers:
             await send_text(update, context, "请提供城市名称或定位，例如：/tq 北京（也可以直接发送城市名）")
             return
 
-        try:
-            await message.set_reaction("👀")
-        except Exception:
-            pass
+        # Feedback rides in the background — it must not delay the fetch.
+        fire_and_forget(context, message.set_reaction("👀"))
 
         # 同名城市（如"朝阳"）静默取第一个匹配容易查错地方；
         # 有多个精确同名候选时让用户点选。
@@ -203,7 +216,10 @@ class WeatherHandlers:
             await send_text(update, context, "⚠️ 台风功能已关闭（ENABLE_TYPHOON_ALERTS=false）。")
             return
 
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        fire_and_forget(
+            context,
+            context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING),
+        )
         try:
             storms = await self.deps.weather_service.qweather.get_active_storms(settings.typhoon_basin)
         except Exception as e:
@@ -293,7 +309,10 @@ class WeatherHandlers:
             await send_text(update, context, "请提供城市或位置，例如：/tide 青岛")
             return
 
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        fire_and_forget(
+            context,
+            context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING),
+        )
         qweather = self.deps.weather_service.qweather
         try:
             loc_info = await qweather.get_geo_location(location)
@@ -441,7 +460,10 @@ class WeatherHandlers:
         start_day: int = 0,
         limit=None,
     ):
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        fire_and_forget(
+            context,
+            context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING),
+        )
 
         try:
             profile = view_type if view_type in {"hourly", "daily", "rain", "indices"} else "full"
@@ -474,29 +496,37 @@ class WeatherHandlers:
         keyboard = get_weather_keyboard(location_query, coords=data.coords, view_type=view_type)
 
         chart_bytes = None
+        chart_file_id = None
         if should_attach_rain_chart(data, view_type):
-            chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
+            # file_id first: re-rendering + re-uploading an identical chart cost
+            # 0.5-2s per rainy query, exactly at the usage peak.
+            chart_file_id = await get_cached_chart_file_id(data, "rain")
+            if not chart_file_id:
+                chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
 
+        chart_photo = chart_file_id or (
+            InputFile(io.BytesIO(chart_bytes), filename="rain.png") if chart_bytes else None
+        )
         try:
             # Telegram caption limit is 1024 chars; fall back to photo + text.
-            if chart_bytes and len(text) <= 1000:
+            if chart_photo and len(text) <= 1000:
                 sent = await send_photo(
                     update,
                     context,
-                    photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
+                    photo=chart_photo,
                     caption=text,
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
-                if sent is not None:
+                if sent is not None and not chart_file_id:
                     await remember_chart_file_id(data, "rain", sent)
-            elif chart_bytes:
+            elif chart_photo:
                 sent = await send_photo(
                     update,
                     context,
-                    photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
+                    photo=chart_photo,
                 )
-                if sent is not None:
+                if sent is not None and not chart_file_id:
                     await remember_chart_file_id(data, "rain", sent)
                 await send_text(
                     update,

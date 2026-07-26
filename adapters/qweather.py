@@ -38,6 +38,10 @@ GRID_FALLBACK_DAYS = {"3d": "3d", "7d": "7d", "10d": "7d", "15d": "7d", "30d": "
 
 
 class QWeatherAdapter(WeatherAdapter):
+    # Optional enrichments (solar/history/air panels/indices) get a bounded
+    # wait so one hung endpoint cannot drag every /tq to the full HTTP timeout.
+    OPTIONAL_COMPONENT_TIMEOUT = 4.0
+
     """Adapter for QWeather using full-path endpoints and header auth."""
 
     _UNAVAILABLE_MARKER = "__qweather_data_unavailable__"
@@ -1110,7 +1114,7 @@ class QWeatherAdapter(WeatherAdapter):
                     f"qw:grid-daily:{grid_days}:{grid_location}",
                     f"/v7/grid-weather/{grid_days}",
                     {"location": grid_location},
-                    ttl=43200,
+                    ttl=21600,
                     force_refresh=refresh_qweather,
                 )
             else:
@@ -1118,17 +1122,19 @@ class QWeatherAdapter(WeatherAdapter):
                     f"qw:daily:{settings.qweather_daily_days}:{loc_id}",
                     f"/v7/weather/{settings.qweather_daily_days}",
                     {"location": loc_id},
-                    ttl=43200,
+                    ttl=21600,
                     force_refresh=refresh_qweather,
                 )
         if "hourly" in components:
             if grid_location:
                 grid_hours = GRID_FALLBACK_HOURS.get(settings.qweather_hourly_hours, "72h")
+                # 1h TTL: QWeather refreshes hourly forecasts every hour, and a
+                # 6h-stale forecast made rain alerts judge hours already past.
                 requests["hourly"] = self._cached_request(
                     f"qw:grid-hourly:{grid_hours}:{grid_location}",
                     f"/v7/grid-weather/{grid_hours}",
                     {"location": grid_location},
-                    ttl=21600,
+                    ttl=3600,
                     force_refresh=refresh_qweather,
                 )
             else:
@@ -1136,7 +1142,7 @@ class QWeatherAdapter(WeatherAdapter):
                     f"qw:hourly:{settings.qweather_hourly_hours}:{loc_id}",
                     f"/v7/weather/{settings.qweather_hourly_hours}",
                     {"location": loc_id},
-                    ttl=21600,
+                    ttl=3600,
                     force_refresh=refresh_qweather,
                 )
         if "indices" in components:
@@ -1174,11 +1180,26 @@ class QWeatherAdapter(WeatherAdapter):
                 force_refresh=False,
             )
 
+        # Optional enrichments must not hold the whole reply hostage: with the
+        # plain gather, one hung endpoint dragged EVERY /tq to the full HTTP
+        # timeout. Core components keep it; extras get a 4s budget. The cache
+        # loader runs as its own task, so a timed-out wait does not cancel the
+        # upstream request — the result still lands in cache for next time.
+        optional_components = {"solar", "history", "air_daily", "air_hourly", "indices"}
         keys = list(requests)
-        values = await asyncio.gather(*requests.values(), return_exceptions=True)
+        awaitables = [
+            asyncio.wait_for(request, timeout=self.OPTIONAL_COMPONENT_TIMEOUT)
+            if key in optional_components
+            else request
+            for key, request in requests.items()
+        ]
+        values = await asyncio.gather(*awaitables, return_exceptions=True)
         payloads: dict[str, Optional[Dict[str, Any]]] = {}
         for key, value in zip(keys, values):
-            if isinstance(value, Exception):
+            if isinstance(value, asyncio.TimeoutError):
+                logger.warning(f"QWeather optional component slow, degrading: {key}")
+                payloads[key] = None
+            elif isinstance(value, Exception):
                 logger.error(f"QWeather component failed: component={key} type={type(value).__name__}")
                 payloads[key] = None
             else:

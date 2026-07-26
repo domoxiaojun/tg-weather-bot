@@ -425,17 +425,48 @@ class LifeIndexCoverageTests(unittest.TestCase):
         self.assertTrue(requested <= grouped, requested - grouped)
 
 
+def _write_pickle(path: Path, payload) -> None:
+    import pickle
+
+    path.write_bytes(pickle.dumps(payload))
+
+
 class PersistenceBackupTests(unittest.TestCase):
     def test_rotation_keeps_generations_in_order(self):
+        import pickle
+
         with TemporaryDirectory() as tmp:
             target = Path(tmp) / "bot_data.pickle"
             for generation in ("first", "second", "third"):
-                target.write_text(generation)
+                _write_pickle(target, generation)
                 rotate_persistence_backups(target, keep=2)
 
-            self.assertEqual(target.with_suffix(".pickle.bak1").read_text(), "third")
-            self.assertEqual(target.with_suffix(".pickle.bak2").read_text(), "second")
+            self.assertEqual(
+                pickle.loads(target.with_suffix(".pickle.bak1").read_bytes()), "third"
+            )
+            self.assertEqual(
+                pickle.loads(target.with_suffix(".pickle.bak2").read_bytes()), "second"
+            )
             self.assertFalse(target.with_suffix(".pickle.bak3").exists())
+
+    def test_corrupt_pickle_never_enters_the_backup_window(self):
+        # Docker restarts on crash: a truncated pickle would otherwise wipe
+        # bak1..N with corrupt copies within three restarts.
+        import pickle
+
+        with TemporaryDirectory() as tmp:
+            target = Path(tmp) / "bot_data.pickle"
+            _write_pickle(target, {"subs": ["北京"]})
+            rotate_persistence_backups(target, keep=3)
+
+            target.write_bytes(pickle.dumps({"subs": ["北京"]})[:10])  # truncated
+            rotate_persistence_backups(target, keep=3)
+
+            self.assertEqual(
+                pickle.loads(target.with_suffix(".pickle.bak1").read_bytes()),
+                {"subs": ["北京"]},
+                "the good generation must survive",
+            )
 
     def test_missing_or_empty_source_is_skipped(self):
         with TemporaryDirectory() as tmp:
@@ -450,7 +481,7 @@ class PersistenceBackupTests(unittest.TestCase):
     def test_keep_zero_disables_backups(self):
         with TemporaryDirectory() as tmp:
             target = Path(tmp) / "bot_data.pickle"
-            target.write_text("data")
+            _write_pickle(target, "data")
             rotate_persistence_backups(target, keep=0)
             self.assertFalse(target.with_suffix(".pickle.bak1").exists())
 

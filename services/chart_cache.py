@@ -95,9 +95,11 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
             (hour.time.isoformat(), hour.temp, hour.feels_like, hour.feels_like_source)
             for hour in weather_data.hourly[:Visualizer.HOURLY_POINT_LIMIT]
         ]
+    # update_time deliberately excluded: values already cover every rendered
+    # datum, and qw:now refreshes update_time every 10 min — keeping it here
+    # invalidated identical charts long before the data actually changed.
     fingerprint_payload = {
         "location": weather_data.location_name,
-        "update_time": weather_data.update_time.isoformat(),
         "values": values,
     }
     fingerprint = hashlib.sha256(
@@ -107,7 +109,7 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:16]
-    return f"chart:v5:{weather_data.coords}:{normalized}:{fingerprint}"
+    return f"chart:v6:{weather_data.coords}:{normalized}:{fingerprint}"
 
 
 async def remember_chart_file_id(weather_data: WeatherData, chart_type: str, message) -> None:

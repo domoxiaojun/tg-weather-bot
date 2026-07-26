@@ -8,7 +8,7 @@ from telegram.constants import ChatAction, ChatType, ParseMode
 from telegram.ext import ContextTypes
 
 from core.config import settings
-from core.handlers.common import BotDependencies, join_location_args
+from core.handlers.common import BotDependencies, fire_and_forget, join_location_args
 from core.handlers.messages import send_text
 from services.telegram_rich import FEATURE_DRAFT, FEATURE_SEND, next_draft_id, rich, thinking
 from utils.rich_formatter import build_report_blocks
@@ -61,17 +61,17 @@ class ReportHandlers:
         location = join_location_args(list(context.args))
 
         message = update.effective_message
-        try:
-            if message:
-                await message.set_reaction("👀")
-        except Exception:
-            pass
+        if message:
+            fire_and_forget(context, message.set_reaction("👀"))
 
         if not self.deps.llm_service.provider:
             await send_text(update, context, "⚠️ AI 天气日报功能尚未配置。")
             return
 
-        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING)
+        fire_and_forget(
+            context,
+            context.bot.send_chat_action(chat_id=update.effective_chat.id, action=ChatAction.TYPING),
+        )
 
         try:
             weather_data = await self.deps.weather_service.get_fused_weather(location, profile="full")

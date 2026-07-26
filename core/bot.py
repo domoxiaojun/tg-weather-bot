@@ -158,6 +158,9 @@ def create_app() -> Application:
         Application.builder()
         .token(settings.bot_token)
         .persistence(persistence)
+        # Bounded concurrency: PTB defaults to strictly serial updates, so one
+        # 60s AI report would freeze every other user until it finished.
+        .concurrent_updates(16)
         .post_init(_register_bot_commands)
         .post_shutdown(close_resources)
     )

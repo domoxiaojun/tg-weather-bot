@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
@@ -26,6 +27,25 @@ RELATIVE_DAY_WORDS = {
     "后天": 2,
     "大后天": 3,
 }
+
+
+def fire_and_forget(context, coro) -> None:
+    """Run a pure-feedback Telegram call (typing, reaction) off the hot path.
+
+    Failures are swallowed: feedback must never break or delay the answer.
+    """
+
+    async def runner():
+        try:
+            await coro
+        except Exception:
+            pass
+
+    application = getattr(context, "application", None)
+    if application is not None and hasattr(application, "create_task"):
+        application.create_task(runner())
+    else:
+        asyncio.get_event_loop().create_task(runner())
 
 
 def join_location_args(args: list[str]) -> str:

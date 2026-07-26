@@ -909,7 +909,6 @@ class Visualizer:
         """降水量(bar)与降水强度(dashed line)面板共用的绘制逻辑。"""
         color = cls._THEME[style]
         label = "每小时雨量 (mm)" if style == "amount" else "雨势"
-        unit = "mm" if style == "amount" else "mm/h"
 
         ax = fig.add_axes(rect)
         cls._style_axis(ax)
@@ -962,8 +961,13 @@ class Visualizer:
         )
         if peak_value is not None and peak_value > 0:
             peak_index = int(np.nanargmax(values))
+            peak_text = (
+                f"{cls._format_number(peak_value)} mm"
+                if style == "amount"
+                else cls._rain_rate_word(peak_value)
+            )
             ax.annotate(
-                f"{cls._format_number(peak_value)} {unit}",
+                peak_text,
                 (x[peak_index], peak_value),
                 xytext=(0, 5),
                 textcoords="offset points",
@@ -1040,7 +1044,7 @@ class Visualizer:
         if max_amount is not None:
             metrics.append(("最大降水量", f"{cls._format_number(max_amount)} mm"))
         if max_intensity is not None:
-            metrics.append(("最大降水强度", f"{cls._format_number(max_intensity)} mm/h"))
+            metrics.append(("雨势最强", cls._rain_rate_word(max_intensity)))
         if not metrics:
             metrics.append(("数据状态", "暂不可用"))
 
@@ -1193,8 +1197,8 @@ class Visualizer:
 
         if not has_visual_signal:
             if has_unknown_positive:
-                empty_title = "降水值缺少单位，未纳入趋势"
-                empty_detail = "避免把 mm 与 mm/h 混合展示"
+                empty_title = "部分降水数据格式异常"
+                empty_detail = "已忽略，不影响概率展示"
             elif not has_probability_data and not has_amount and not has_intensity:
                 empty_title = "暂无可用的逐小时降水数据"
                 empty_detail = "API 未返回的数据不会按 0 处理"

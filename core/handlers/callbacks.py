@@ -66,10 +66,6 @@ class CallbackHandlers:
             await self._handle_chart(update, context, data_parts)
             return
 
-        if action == "back":
-            await query.answer("图表消息无法直接恢复文字，请点「📝 文字天气」按钮或重新发送 /tq 城市。", show_alert=True)
-            return
-
         location = data_parts[1] if len(data_parts) > 1 else None
 
         if action == "refresh" and location:
@@ -417,12 +413,10 @@ class CallbackHandlers:
         location = data_parts[1]
         view, start_day, limit = self._parse_view_parts(data_parts)
 
-        if query.message is not None and query.message.caption is not None:
-            # Photo captions cannot hold the longer views reliably.
-            await self._safe_answer(query, "图片消息无法切换视图，请点「📝 文字天气」或重新 /tq。", show_alert=True)
-            return
-
-        await self._safe_answer(query, "⏳ 切换中...")
+        photo_message = query.message is not None and query.message.caption is not None
+        # Photo captions cannot hold the longer views reliably — send the view
+        # as a fresh message instead of dead-ending with an alert.
+        await self._safe_answer(query, "已用新消息发送" if photo_message else "⏳ 切换中...")
         try:
             weather_data = await self.deps.weather_service.get_fused_weather(
                 location,
@@ -435,6 +429,19 @@ class CallbackHandlers:
             keyboard = get_weather_keyboard(
                 location, show_charts=True, coords=weather_data.coords, view_type=view
             )
+            if photo_message and query.message is not None:
+                from core.handlers.messages import send_weather_view
+
+                await send_weather_view(
+                    context,
+                    query.message.chat_id,
+                    weather_data,
+                    view_type=view,
+                    days=limit or None,
+                    start_day=start_day,
+                    reply_markup=keyboard,
+                )
+                return
             if await edit_weather_view(
                 context,
                 weather_data,

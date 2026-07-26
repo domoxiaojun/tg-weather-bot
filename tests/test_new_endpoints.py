@@ -206,3 +206,47 @@ class IndicesDaySelectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OptionalComponentTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    """One hung optional endpoint must degrade, not hold the reply hostage."""
+
+    async def test_slow_optional_component_degrades_but_core_reply_survives(self):
+        import asyncio
+
+        from adapters.qweather import QWeatherAdapter
+
+        adapter = QWeatherAdapter()
+        original_timeout = QWeatherAdapter.OPTIONAL_COMPONENT_TIMEOUT
+        QWeatherAdapter.OPTIONAL_COMPONENT_TIMEOUT = 0.05
+
+        async def fake_cached_request(key, path, params, **kwargs):
+            if "/v7/indices" in path:
+                await asyncio.sleep(0.5)  # hangs well past the optional budget
+                return {"daily": []}
+            if "/geo/" in path:
+                return None
+            if path.endswith("/now") or "/weather/now" in path:
+                return {"now": {"temp": "25", "text": "晴", "icon": "100"}}
+            return None
+
+        adapter._cached_request = fake_cached_request
+        adapter.get_geo_location = self._fake_geo
+
+        try:
+            started = asyncio.get_event_loop().time()
+            data = await adapter.get_weather("北京", profile="indices")
+            elapsed = asyncio.get_event_loop().time() - started
+        finally:
+            QWeatherAdapter.OPTIONAL_COMPONENT_TIMEOUT = original_timeout
+
+        self.assertIsNotNone(data, "core weather must survive a hung optional component")
+        self.assertEqual(data.indices, [], "the slow component degrades to empty")
+        self.assertLess(elapsed, 0.4, "reply must not wait for the hung component")
+
+    @staticmethod
+    async def _fake_geo(raw):
+        return {
+            "id": "101010100", "name": "北京", "adm1": "北京市",
+            "lat": "39.9", "lon": "116.4", "tz": "Asia/Shanghai",
+        }

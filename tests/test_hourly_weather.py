@@ -323,7 +323,7 @@ class HourlyPresentationTests(unittest.TestCase):
         changed = original.model_copy(deep=True)
         changed.hourly[0].temp += 1
         original_key = chart_cache_key(original, "temp")
-        self.assertTrue(original_key.startswith("chart:v5:"))
+        self.assertTrue(original_key.startswith("chart:v6:"))
         self.assertNotEqual(
             original_key,
             chart_cache_key(changed, "temp"),
