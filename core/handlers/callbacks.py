@@ -8,6 +8,7 @@ from telegram.ext import ContextTypes
 from core.handlers.common import BotDependencies
 from core.handlers.messages import edit_weather_view
 from services.chart_cache import (
+    CHART_PROFILES,
     get_cached_chart_file_id,
     get_chart_caption,
     get_or_create_chart_file_id,
@@ -211,11 +212,7 @@ class CallbackHandlers:
         query = update.callback_query
         location = data_parts[1] if len(data_parts) > 1 else "北京"
         chart_type = normalize_chart_type(data_parts[2] if len(data_parts) > 2 else "temp")
-        profile = {
-            "daily": "daily",
-            "rain": "rain",
-            "temp": "hourly",
-        }[chart_type]
+        profile = CHART_PROFILES[chart_type]
 
         try:
             weather_data = await self.deps.weather_service.get_fused_weather(location, profile=profile)

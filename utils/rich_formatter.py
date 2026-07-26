@@ -513,6 +513,39 @@ def build_rain_alert_blocks(data: WeatherData) -> List[dict]:
     ]
 
 
+def build_alert_push_blocks(data: WeatherData, alert) -> List[dict]:
+    """One official warning, pushed on its own so it cannot be scrolled past."""
+    level = normalize_warning_level(alert.level)
+    title = alert.title if not level or level in alert.title else f"{alert.title}（{level}）"
+
+    blocks: List[dict] = [
+        heading(f"⚠️ {title}", size=2),
+        paragraph([bold(data.location_name), f" · {alert.source or '官方预警'}"]),
+    ]
+    if alert.pub_time:
+        blocks.append(paragraph(italic(f"发布时间 {alert.pub_time.strftime('%m-%d %H:%M')}")))
+
+    text = (alert.text or "").strip()
+    if text:
+        blocks.append({"type": "blockquote", "blocks": [paragraph(text[:900])]})
+
+    rows = _current_stats_rows(data)
+    if rows:
+        blocks.append(details("当前实况", [table(rows, aligns=["left", "left"])]))
+    blocks.append(build_footer(data))
+    return blocks
+
+
+def build_event_push_blocks(data: WeatherData, title: str, detail: str) -> List[dict]:
+    """Threshold event (air quality / temperature / wind) push."""
+    return [
+        heading(title, size=2),
+        paragraph([bold(data.location_name), f" · {data.update_time.strftime('%m-%d %H:%M')}"]),
+        paragraph(detail),
+        build_footer(data),
+    ]
+
+
 def build_report_blocks(title: str, report_html: str, *, in_progress: bool = False) -> List[dict]:
     """AI report as rich blocks.
 

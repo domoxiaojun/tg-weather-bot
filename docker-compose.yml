@@ -22,6 +22,20 @@ services:
       - redis
     networks:
       - weather_net
+    # Verifies the token still works and Telegram is reachable. It does not
+    # prove the polling loop is healthy, but it catches revoked tokens,
+    # DNS/egress breakage and a wedged container.
+    healthcheck:
+      test: ["CMD", "python", "scripts/healthcheck.py"]
+      interval: 5m
+      timeout: 15s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
   redis:
     image: redis:alpine

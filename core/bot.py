@@ -25,6 +25,9 @@ from core.handlers.weather import WeatherHandlers
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
 from utils.cache import cache
+from utils.persistence_backup import rotate_persistence_backups
+
+PERSISTENCE_PATH = "data/bot_data.pickle"
 
 
 async def _register_bot_commands(application: Application):
@@ -76,7 +79,9 @@ def create_app() -> Application:
         BOT_API_VERSION,
     )
     os.makedirs("data", exist_ok=True)
-    persistence = PicklePersistence(filepath="data/bot_data.pickle")
+    # Snapshot the previous run's subscriptions before PTB starts rewriting it.
+    rotate_persistence_backups(PERSISTENCE_PATH, settings.persistence_backup_count)
+    persistence = PicklePersistence(filepath=PERSISTENCE_PATH)
 
     deps = BotDependencies(
         weather_service=WeatherFusionService(),
@@ -92,14 +97,26 @@ def create_app() -> Application:
         )
         await cache.close()
 
-    app = (
+    builder = (
         Application.builder()
         .token(settings.bot_token)
         .persistence(persistence)
         .post_init(_register_bot_commands)
         .post_shutdown(close_resources)
-        .build()
     )
+
+    # Pushes fan out to every subscriber at once; without a limiter that trips
+    # Telegram's flood control. aiolimiter ships with python-telegram-bot[all].
+    if settings.enable_rate_limiter:
+        try:
+            from telegram.ext import AIORateLimiter
+
+            builder = builder.rate_limiter(AIORateLimiter())
+            logger.info("AIORateLimiter enabled")
+        except (ImportError, RuntimeError) as error:
+            logger.warning(f"AIORateLimiter unavailable, continuing without it: {error}")
+
+    app = builder.build()
 
     weather = WeatherHandlers(deps)
     reports = ReportHandlers(deps)

@@ -13,17 +13,22 @@ from core.scheduler import DEFAULT_DAILY_BRIEF_TIME, parse_brief_time
 from utils.schedule_times import parse_quiet_hours
 
 
-def display_timezone() -> str:
-    return "北京时间" if settings.timezone == "Asia/Shanghai" else settings.timezone
+def display_timezone(tz_name: Optional[str] = None) -> str:
+    """Human label for the timezone a push will actually use."""
+    effective = tz_name or settings.timezone
+    return "北京时间" if effective == "Asia/Shanghai" else str(effective)
 
 
-def rain_alert_expectation() -> str:
+def rain_alert_expectation(tz_name: Optional[str] = None) -> str:
     """One-line expectation for what a rain subscription actually does."""
     quiet = parse_quiet_hours(settings.rain_alert_quiet_hours)
     text = "即将下雨时会提醒你一次；雨过之后再次降雨才会重新提醒"
     if quiet:
         (start_h, start_m), (end_h, end_m) = quiet
-        text += f"（{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d} 免打扰）"
+        text += f"（{start_h:02d}:{start_m:02d}-{end_h:02d}:{end_m:02d} 当地时间免打扰）"
+    if settings.enable_alert_push:
+        exempt = "、".join(sorted(settings.alert_exempt_levels))
+        text += f"；同时会推送官方灾害预警{f'（{exempt}预警不受免打扰限制）' if exempt else ''}"
     return f"{text}。管理订阅：/rain_my"
 
 
@@ -75,10 +80,11 @@ def remove_subscription_entry(chat_data: dict, kind: str, index: int) -> Optiona
         return None
     removed = subs.pop(index)
     if kind == "daily":
-        chat_data.get("daily_sub_times", {}).pop(removed, None)
-        chat_data.get("daily_brief_last_sent", {}).pop(removed, None)
+        for key in ("daily_sub_times", "daily_sub_tz", "daily_brief_last_sent"):
+            chat_data.get(key, {}).pop(removed, None)
     else:
-        chat_data.get("last_rain_alert", {}).pop(removed, None)
+        for key in ("last_rain_alert", "rain_episode", "alert_seen", "sub_tz"):
+            chat_data.get(key, {}).pop(removed, None)
     return removed
 
 
@@ -92,6 +98,11 @@ class SubscriptionHandlers:
 
     async def _resolve_location(self, raw: str) -> Optional[str]:
         """Geocode user input so subscriptions store one validated, canonical name."""
+        resolved = await self._resolve_location_info(raw)
+        return resolved[0] if resolved else None
+
+    async def _resolve_location_info(self, raw: str):
+        """Return (canonical name, timezone) — the tz drives per-location scheduling."""
         try:
             loc_info = await self.deps.weather_service.qweather.get_geo_location(raw)
         except Exception as e:
@@ -101,7 +112,20 @@ class SubscriptionHandlers:
             return None
         name = loc_info.get("name") or raw
         adm1 = loc_info.get("adm1")
-        return f"{name}, {adm1}" if adm1 and adm1 != name else name
+        display = f"{name}, {adm1}" if adm1 and adm1 != name else name
+        return display, loc_info.get("tz")
+
+    @staticmethod
+    def _remember_push_target(context: ContextTypes.DEFAULT_TYPE, update: Update, location: str, tz) -> None:
+        """Record where and in which timezone pushes for this chat should go."""
+        if tz:
+            context.chat_data.setdefault("sub_tz", {})[location] = tz
+            context.chat_data.setdefault("daily_sub_tz", {})[location] = tz
+        message = update.effective_message
+        thread_id = getattr(message, "message_thread_id", None) if message else None
+        if thread_id:
+            # Forum topics: keep pushing into the topic the user subscribed from.
+            context.chat_data["push_thread_id"] = thread_id
 
     @staticmethod
     def _find_subscribed(subs: list, location: str) -> Optional[str]:
@@ -132,7 +156,8 @@ class SubscriptionHandlers:
                 args = args[:-1]
 
         raw = " ".join(args).strip()
-        location = await self._resolve_location(raw)
+        resolved = await self._resolve_location_info(raw)
+        location, location_tz = resolved if resolved else (None, None)
         if not location:
             await send_personal_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
             return
@@ -149,6 +174,7 @@ class SubscriptionHandlers:
                 return
             subs.append(location)
             matched = location
+        self._remember_push_target(context, update, matched, location_tz)
         if brief_time:
             context.chat_data.setdefault("daily_sub_times", {})[matched] = brief_time
         effective_time = context.chat_data.get("daily_sub_times", {}).get(
@@ -158,7 +184,7 @@ class SubscriptionHandlers:
             update,
             context,
             f"✅ 已订阅 {matched} 的早安简报！\n"
-            f"每天 {effective_time}（{display_timezone()}）推送。\n"
+            f"每天 {effective_time}（{display_timezone(location_tz)}）推送。\n"
             f"改时间：/daily_sub 城市 HH:MM，管理订阅：/daily_my",
         )
 
@@ -197,7 +223,8 @@ class SubscriptionHandlers:
             return
 
         raw = self._location_from_args(context)
-        location = await self._resolve_location(raw)
+        resolved = await self._resolve_location_info(raw)
+        location, location_tz = resolved if resolved else (None, None)
         if not location:
             await send_personal_text(update, context, f"❌ 找不到城市：{raw}，请检查名称。")
             return
@@ -211,7 +238,10 @@ class SubscriptionHandlers:
             return
 
         subs.append(location)
-        await send_personal_text(update, context, f"✅ 已订阅 {location} 的降雨提醒。\n{rain_alert_expectation()}")
+        self._remember_push_target(context, update, location, location_tz)
+        await send_personal_text(
+            update, context, f"✅ 已订阅 {location} 的降雨提醒。\n{rain_alert_expectation(location_tz)}"
+        )
 
     async def rain_unsub(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/rain_unsub [城市] - 取消降雨提醒"""

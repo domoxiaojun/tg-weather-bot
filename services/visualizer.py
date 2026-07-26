@@ -395,6 +395,117 @@ class Visualizer:
         return cls._draw_safely(cls._render_daily_temp_chart, data)
 
     @classmethod
+    def draw_minutely_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
+        return cls._draw_safely(cls._render_minutely_rain_chart, data)
+
+    @classmethod
+    def _render_minutely_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
+        """Next-2h minute-level precipitation — matches the rain-alert question.
+
+        The rain watcher triggers on QWeather's 5-minute data, so the alert
+        should show that curve rather than the coarser hourly one.
+        """
+        entries = list(data.minutely)
+        if len(entries) < 3:
+            return None
+
+        times = cls._strip_tz([item.time for item in entries])
+        values = np.array([float(item.precip or 0) for item in entries], dtype=float)
+        if not np.any(np.isfinite(values)):
+            return None
+
+        x = np.arange(len(times))
+        peak = float(np.nanmax(values))
+        total = float(np.nansum(values))
+        kind = entries[0].precip_kind or "amount"
+        unit = "mm/h" if kind == "intensity" else "mm"
+
+        fig = cls._create_card_figure()
+        metrics = [("峰值", f"{cls._format_number(peak, 2)} {unit}")]
+        if kind != "intensity":
+            metrics.append(("累计", f"{cls._format_number(total, 2)} mm"))
+        cls._add_header(
+            fig,
+            data,
+            kicker=f"未来 {len(times) * 5} 分钟 · 5 分钟粒度",
+            title="分钟级降水",
+            metrics=metrics,
+        )
+
+        ax = fig.add_axes([0.075, 0.17, 0.85, 0.51])
+        cls._style_axis(ax)
+        ax.set_xlim(-0.55, len(times) - 0.45)
+        ax.set_ylim(0, max(0.5, peak * 1.35))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4, min_n_ticks=2))
+        ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value, 2)))
+        ax.tick_params(axis="y", colors=cls._THEME["probability"])
+        ax.text(
+            -0.05,
+            1.02,
+            unit,
+            transform=ax.transAxes,
+            color=cls._THEME["subtle"],
+            fontsize=8.5,
+            ha="left",
+        )
+
+        for smooth_x, smooth_y in cls._smooth_segments(x, values):
+            ax.fill_between(smooth_x, smooth_y, 0, color=cls._THEME["probability"], alpha=0.16, zorder=2)
+            ax.plot(smooth_x, smooth_y, color=cls._THEME["probability"], linewidth=2.6, zorder=4)
+        wet = values > 0
+        if np.any(wet):
+            ax.scatter(
+                x[wet],
+                values[wet],
+                s=18,
+                color=cls._THEME["surface"],
+                edgecolor=cls._THEME["probability"],
+                linewidth=1.2,
+                zorder=5,
+            )
+
+        step = max(1, len(times) // 8)
+        ticks = list(range(0, len(times), step))
+        if ticks[-1] != len(times) - 1:
+            ticks.append(len(times) - 1)
+        ax.set_xticks(ticks)
+        ax.set_xticklabels(
+            [times[index].strftime("%H:%M") for index in ticks],
+            color=cls._THEME["muted"],
+            fontsize=9,
+        )
+
+        if peak > 0:
+            peak_index = int(np.nanargmax(values))
+            ax.annotate(
+                f"{cls._format_number(peak, 2)}{unit}",
+                (x[peak_index], values[peak_index]),
+                xytext=(0, 10),
+                textcoords="offset points",
+                ha="center",
+                color=cls._THEME["text"],
+                fontsize=9,
+                fontweight=600,
+                bbox={
+                    "boxstyle": "round,pad=0.24",
+                    "facecolor": cls._THEME["card"],
+                    "edgecolor": cls._THEME["probability"],
+                    "linewidth": 0.8,
+                },
+                zorder=8,
+            )
+
+        summary = (data.summary or "").split("\n")[-1].strip()
+        footer_text = summary if summary and "温度" not in summary else "数据源：和风天气分钟级降水"
+        cls._add_footer(
+            fig,
+            footer_text,
+            [Line2D([0], [0], color=cls._THEME["probability"], linewidth=2.6)],
+            ["降水"],
+        )
+        return cls._render_figure(fig)
+
+    @classmethod
     def _render_hourly_temp_chart(cls, data: WeatherData) -> Optional[bytes]:
         """逐小时气温与体感温度趋势图。"""
         result = data.get_hourly_temp_plot_data()

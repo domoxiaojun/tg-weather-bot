@@ -15,7 +15,7 @@ class BotDependencies:
 
 DAILY_WORDS = {"daily", "day", "days", "forecast", "预报", "未来"}
 HOURLY_WORDS = {"hourly", "hour", "hours", "逐小时", "小时"}
-CHART_TYPES = {"daily", "hourly", "rain", "temp"}
+CHART_TYPES = {"daily", "hourly", "rain", "temp", "minutely", "minute", "分钟"}
 RELATIVE_DAY_WORDS = {
     "今天": 0,
     "今日": 0,

@@ -16,6 +16,7 @@ from core.config import settings
 from core.handlers.common import BotDependencies, parse_chart_request, parse_location_and_view
 from core.handlers.messages import send_photo, send_text, send_weather_view
 from services.chart_cache import (
+    CHART_PROFILES,
     get_cached_chart_file_id,
     get_chart_caption,
     normalize_chart_type,
@@ -91,11 +92,7 @@ class WeatherHandlers:
         location, requested_chart_type = parse_chart_request(list(args))
         chart_type = normalize_chart_type(requested_chart_type)
 
-        profile = {
-            "daily": "daily",
-            "rain": "rain",
-            "temp": "hourly",
-        }[chart_type]
+        profile = CHART_PROFILES[chart_type]
 
         try:
             data = await self.deps.weather_service.get_fused_weather(location, profile=profile)

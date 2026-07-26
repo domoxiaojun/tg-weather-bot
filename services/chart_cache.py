@@ -13,7 +13,15 @@ from domain.models import WeatherData
 from services.visualizer import Visualizer
 from utils.cache import cache
 
-ChartType = Literal["temp", "rain", "daily"]
+ChartType = Literal["temp", "rain", "daily", "minutely"]
+
+# Which QWeather request profile each chart needs.
+CHART_PROFILES = {
+    "daily": "daily",
+    "rain": "rain",
+    "temp": "hourly",
+    "minutely": "rain",
+}
 CHART_CACHE_TTL = 1800
 CHART_FAILURE_TTL = 120
 _CHART_FAILURE_SENTINEL = "__chart_failed__"
@@ -34,6 +42,8 @@ def normalize_chart_type(chart_type: str) -> ChartType:
         return "rain"
     if chart_type == "daily":
         return "daily"
+    if chart_type in ("minutely", "minute", "分钟"):
+        return "minutely"
     return "temp"
 
 
@@ -43,6 +53,8 @@ def get_chart_caption(weather_data: WeatherData, chart_type: str) -> str:
         return f"🌧️ {weather_data.location_name} 逐小时降水"
     if normalized == "daily":
         return f"📈 {weather_data.location_name} 逐日温度"
+    if normalized == "minutely":
+        return f"☔️ {weather_data.location_name} 分钟级降水"
     return f"📈 {weather_data.location_name} 逐小时温度"
 
 
@@ -52,6 +64,8 @@ def render_chart_bytes(weather_data: WeatherData, chart_type: str) -> Optional[b
         return Visualizer.draw_hourly_rain_chart(weather_data)
     if normalized == "daily":
         return Visualizer.draw_daily_temp_chart(weather_data)
+    if normalized == "minutely":
+        return Visualizer.draw_minutely_rain_chart(weather_data)
     return Visualizer.draw_hourly_temp_chart(weather_data)
 
 
@@ -70,6 +84,11 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
         values = [
             (day.date.isoformat(), day.temp_min, day.temp_max)
             for day in weather_data.get_daily_forecasts()
+        ]
+    elif normalized == "minutely":
+        values = [
+            (item.time.isoformat(), item.precip, item.precip_kind)
+            for item in weather_data.minutely
         ]
     else:
         values = [

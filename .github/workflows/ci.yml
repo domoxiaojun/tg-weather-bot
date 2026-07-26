@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Tests & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Create environment
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python -r requirements.txt
+          uv pip install --python .venv/bin/python ruff
+
+      # Tests set their own fake BOT_TOKEN/QWEATHER_API_KEY and never call real APIs.
+      - name: Unit tests
+        run: uv run --python .venv/bin/python python -m unittest discover -s tests -v
+
+      - name: Compile all
+        run: uv run --python .venv/bin/python python -m compileall -q adapters core domain services utils scripts main.py
+
+      - name: Ruff (F,E9)
+        run: uv run --python .venv/bin/python ruff check --select F,E9 .
+
+      - name: Whitespace check
+        run: git diff --check HEAD
+
+  container:
+    name: Container smoke test (CJK charts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t tg-weather-bot:ci .
+
+      # Chinese tofu boxes only reproduce on Linux, so assert font resolution
+      # inside the real image rather than trusting the dev machine.
+      - name: Verify CJK font resolution and chart rendering
+        run: docker run --rm tg-weather-bot:ci python scripts/check_cjk_font.py
+
+      - name: Verify application factory wiring
+        run: |
+          docker run --rm \
+            -e BOT_TOKEN=123:ci-placeholder-token \
+            -e QWEATHER_API_KEY=ci-key \
+            tg-weather-bot:ci \
+            python -c "from core.bot import create_app; create_app(); print('factory OK')"

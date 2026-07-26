@@ -69,6 +69,51 @@ class Settings(BaseSettings):
     )
     max_subscriptions_per_chat: int = Field(3, description="Max subscribed cities per chat per subscription type")
     rain_check_interval_minutes: int = Field(30, description="Minutes between scheduled rain checks")
+    enable_alert_push: bool = Field(True, description="Push official weather warnings to rain-alert subscribers")
+    alert_check_interval_minutes: int = Field(10, description="Minutes between official warning / derived event checks")
+    alert_quiet_hours_exempt_levels: str = Field(
+        "红色,橙色",
+        description="Warning levels that ignore quiet hours (life-safety); comma separated, empty means none",
+    )
+    enable_derived_event_alerts: bool = Field(
+        True,
+        description="Also alert on derived events: air quality deterioration, extreme temperature, strong wind",
+    )
+    aqi_alert_threshold: int = Field(150, description="AQI at or above which an air-quality alert fires")
+    high_temp_alert_threshold: float = Field(35.0, description="Daily high (°C) at or above which a heat alert fires")
+    low_temp_alert_threshold: float = Field(-5.0, description="Daily low (°C) at or below which a cold alert fires")
+    wind_alert_scale_threshold: int = Field(6, description="Wind scale at or above which a wind alert fires")
+    daily_brief_catchup_hours: float = Field(
+        2.0,
+        description="Send a missed daily brief if the bot comes back within this window; 0 disables catch-up",
+    )
+    enable_rate_limiter: bool = Field(True, description="Use PTB's AIORateLimiter to respect Telegram flood limits")
+    persistence_backup_count: int = Field(3, description="Rotated copies of the persistence file kept at startup; 0 disables")
+
+    @field_validator("alert_check_interval_minutes")
+    @classmethod
+    def validate_alert_interval(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("alert_check_interval_minutes must be at least 1")
+        return value
+
+    @field_validator("daily_brief_catchup_hours")
+    @classmethod
+    def validate_catchup_hours(cls, value: float) -> float:
+        if value < 0:
+            raise ValueError("daily_brief_catchup_hours must be >= 0")
+        return value
+
+    @field_validator("persistence_backup_count")
+    @classmethod
+    def validate_backup_count(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("persistence_backup_count must be >= 0")
+        return value
+
+    @property
+    def alert_exempt_levels(self) -> set[str]:
+        return {part.strip() for part in self.alert_quiet_hours_exempt_levels.split(",") if part.strip()}
 
     @field_validator("rain_check_interval_minutes")
     @classmethod

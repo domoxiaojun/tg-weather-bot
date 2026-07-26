@@ -1,6 +1,6 @@
 import os
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
@@ -85,10 +85,10 @@ class RainEpisodeTests(unittest.IsolatedAsyncioTestCase):
         app = SimpleNamespace(chat_data={1: {"subs": ["北京"]}}, bot_data={})
         context = SimpleNamespace(application=app, bot=bot)
 
-        # 第一轮：开始下雨 → 提醒一次
+        # 第一轮：开始下雨 → 提醒一次；事件状态记在该订阅上
         await check_rain_alerts(context, weather_service=service)
         self.assertEqual(len(bot.messages), 1)
-        self.assertTrue(app.bot_data["rain_state"])
+        self.assertTrue(app.chat_data[1]["rain_episode"]["北京"])
 
         # 第二轮：仍在下雨 → 不重复提醒（即使冷却清空也不该发）
         app.chat_data[1]["last_rain_alert"] = {}
@@ -99,6 +99,7 @@ class RainEpisodeTests(unittest.IsolatedAsyncioTestCase):
         service.raining = False
         await check_rain_alerts(context, weather_service=service)
         self.assertEqual(len(bot.messages), 1)
+        self.assertFalse(app.chat_data[1]["rain_episode"]["北京"])
 
         # 第四轮：再次降雨且冷却已过 → 重新提醒
         service.raining = True
@@ -108,7 +109,8 @@ class RainEpisodeTests(unittest.IsolatedAsyncioTestCase):
         await check_rain_alerts(context, weather_service=service)
         self.assertEqual(len(bot.messages), 2)
 
-    async def test_quiet_hours_skip_whole_check(self):
+    async def test_quiet_hours_hold_alert_until_window_closes(self):
+        """免打扰期间只压住发送、不记录事件，静音结束后仍会补上提醒。"""
         now_local = datetime.now(ZoneInfo(settings.timezone))
         start = (now_local - timedelta(hours=1)).strftime("%H:%M")
         end = (now_local + timedelta(hours=1)).strftime("%H:%M")
@@ -120,10 +122,39 @@ class RainEpisodeTests(unittest.IsolatedAsyncioTestCase):
         context = SimpleNamespace(application=app, bot=bot)
 
         await check_rain_alerts(context, weather_service=service)
-        self.assertEqual(service.calls, 0)
         self.assertEqual(bot.messages, [])
-        # 状态未被写入，免打扰结束后的下一轮检查会正常补上提醒
-        self.assertEqual(app.bot_data.get("rain_state", {}), {})
+        # 事件状态没有被置位，所以静音窗口结束后会真正推送
+        self.assertFalse(app.chat_data[1].get("rain_episode", {}).get("北京"))
+
+        settings.rain_alert_quiet_hours = ""
+        await check_rain_alerts(context, weather_service=service)
+        self.assertEqual(len(bot.messages), 1)
+
+    async def test_quiet_hours_use_each_subscription_timezone(self):
+        """同一时刻，不同地点按各自时区判断免打扰。"""
+        now_utc = datetime.now(timezone.utc)
+        # 构造一个只在 UTC 当前时刻附近生效的窗口
+        start = (now_utc - timedelta(hours=1)).strftime("%H:%M")
+        end = (now_utc + timedelta(hours=1)).strftime("%H:%M")
+        settings.rain_alert_quiet_hours = f"{start}-{end}"
+
+        service = SwitchableWeatherService()
+        bot = FakeBot()
+        app = SimpleNamespace(
+            chat_data={
+                1: {"subs": ["伦敦"], "sub_tz": {"伦敦": "UTC"}},
+                2: {"subs": ["伦敦"], "sub_tz": {"伦敦": "Asia/Shanghai"}},
+            },
+            bot_data={},
+        )
+        context = SimpleNamespace(application=app, bot=bot)
+
+        await check_rain_alerts(context, weather_service=service)
+
+        # UTC 订阅者落在免打扰窗口内被压住；+08:00 的订阅者不在窗口内，正常收到
+        recipients = {message["chat_id"] for message in bot.messages}
+        self.assertNotIn(1, recipients)
+        self.assertIn(2, recipients)
 
 
 class SubscriptionLimitTests(unittest.IsolatedAsyncioTestCase):

@@ -1,6 +1,6 @@
 import asyncio
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import partial
 from html import escape
 from zoneinfo import ZoneInfo
@@ -19,14 +19,20 @@ from services.chart_cache import (
 )
 from services.fusion import WeatherFusionService
 from services.llm import LLMService
+from domain.models import normalize_warning_level
 from services.telegram_rich import FEATURE_SEND, photo_block, rich
 from utils.formatter import format_weather_response
-from utils.rich_formatter import build_rain_alert_blocks
+from utils.rich_formatter import (
+    build_alert_push_blocks,
+    build_event_push_blocks,
+    build_rain_alert_blocks,
+)
 from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_quiet_hours
 
 __all__ = [
     "DEFAULT_DAILY_BRIEF_TIME",
     "check_rain_alerts",
+    "check_weather_alerts",
     "dispatch_daily_briefs",
     "parse_brief_time",
     "setup_scheduler",
@@ -81,10 +87,24 @@ LOCATION_REPORT_TIMEOUT = 90.0
 LOCATION_CONCURRENCY = 5
 
 DEFAULT_DAILY_BRIEF_TIME = "08:00"
+WEEKDAYS_CN = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 # In-memory watermark per application for the minute-level brief dispatcher.
-# A restart resets it; the per-chat "last sent date" guard prevents duplicates.
+# A restart resets it (see the catch-up window); the per-chat "last sent date"
+# guard prevents duplicates.
 _daily_brief_last_check: dict[int, datetime] = {}
+
+
+def _zone_for(tz_name):
+    """Subscription timezone with a graceful fall back to the global default."""
+    for candidate in (tz_name, settings.timezone):
+        if not candidate:
+            continue
+        try:
+            return ZoneInfo(str(candidate))
+        except Exception:
+            logger.debug(f"Unknown subscription timezone: {candidate}")
+    return timezone.utc
 
 
 def _rain_lookahead_minutes() -> int:
@@ -132,26 +152,41 @@ async def dispatch_daily_briefs(
     if not hasattr(app, "chat_data") or not app.chat_data:
         return
 
-    now = datetime.now(ZoneInfo(settings.timezone))
-    last_check = _daily_brief_last_check.get(id(app), now - timedelta(seconds=90))
-    _daily_brief_last_check[id(app)] = now
-    today_str = now.strftime("%Y-%m-%d")
+    # Watermark is kept in UTC: each subscription's target time is evaluated in
+    # its own location timezone and converted back, so one global clock cannot
+    # skew subscriptions for other regions.
+    now_utc = datetime.now(timezone.utc)
+    last_check_utc = _daily_brief_last_check.get(id(app))
+    fresh_start = last_check_utc is None
+    if fresh_start:
+        last_check_utc = now_utc - timedelta(seconds=90)
+    _daily_brief_last_check[id(app)] = now_utc
+
+    # After a restart, look back far enough to deliver a brief the downtime ate.
+    catchup = timedelta(hours=settings.daily_brief_catchup_hours) if fresh_start else timedelta()
+    window_start = min(last_check_utc, now_utc - catchup) if catchup else last_check_utc
 
     grouped: dict[str, dict] = {}
     for chat_id, data in app.chat_data.items():
         sub_times = data.get("daily_sub_times", {})
+        sub_zones = data.get("daily_sub_tz", {})
         last_sent = data.get("daily_brief_last_sent", {})
         for location in data.get("daily_subs", []):
             parsed = parse_brief_time(sub_times.get(location, DEFAULT_DAILY_BRIEF_TIME))
             hour, minute = parsed if parsed else parse_brief_time(DEFAULT_DAILY_BRIEF_TIME)
-            target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-            if not (last_check < target <= now):
+            zone = _zone_for(sub_zones.get(location))
+            local_now = now_utc.astimezone(zone)
+            target_utc = local_now.replace(
+                hour=hour, minute=minute, second=0, microsecond=0
+            ).astimezone(timezone.utc)
+            if not (window_start < target_utc <= now_utc):
                 continue
-            if last_sent.get(location) == today_str:
+            # "Already sent" is judged by the subscription's own calendar day.
+            if last_sent.get(location) == local_now.strftime("%Y-%m-%d"):
                 continue
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "subscribers": []})
-            entry["subscribers"].append((chat_id, data, location))
+            entry["subscribers"].append((chat_id, data, location, zone))
 
     if not grouped:
         return
@@ -172,21 +207,27 @@ async def dispatch_daily_briefs(
                 llm_service.generate_weather_report(weather),
                 timeout=LOCATION_REPORT_TIMEOUT,
             )
-            brief_date = datetime.now(ZoneInfo(settings.timezone))
-            weekday = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")[brief_date.weekday()]
-            header = (
-                f"☀️ <b>早安！{escape(location)}</b> · "
-                f"{brief_date.strftime('%m月%d日')} {weekday}\n\n"
-            )
-            for chat_id, chat_data, subscribed_location in entry["subscribers"]:
+            for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
+                brief_date = datetime.now(zone)
+                weekday = WEEKDAYS_CN[brief_date.weekday()]
+                header = (
+                    f"☀️ <b>早安！{escape(location)}</b> · "
+                    f"{brief_date.strftime('%m月%d日')} {weekday}\n\n"
+                )
+                thread_id = chat_data.get("push_thread_id")
                 try:
-                    if await rich.send_rich(context.bot, chat_id, html=header + report_text) is None:
+                    if await rich.send_rich(
+                        context.bot, chat_id, html=header + report_text, message_thread_id=thread_id
+                    ) is None:
                         await context.bot.send_message(
                             chat_id=chat_id,
                             text=header + report_text,
                             parse_mode=ParseMode.HTML,
+                            message_thread_id=thread_id,
                         )
-                    chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = today_str
+                    chat_data.setdefault("daily_brief_last_sent", {})[subscribed_location] = (
+                        brief_date.strftime("%Y-%m-%d")
+                    )
                     dirty_chats.add(chat_id)
                     logger.info(f"Sent Daily Brief to {chat_id} for {location}")
                 except Forbidden:
@@ -215,40 +256,32 @@ async def check_rain_alerts(
 ):
     """Fetch each unique location once, then fan out rain notifications.
 
-    Alerts are episode-based: a location alerts once when it transitions to
-    "rain expected" and stays silent until the episode ends. Quiet hours pause
-    the whole check (state is untouched, so post-quiet checks catch up).
+    Alerts are episode-based per (chat, location): a subscriber is notified once
+    when rain becomes imminent and stays quiet until that episode ends. Quiet
+    hours are evaluated in each subscription's own timezone and suppress the
+    send *without* recording the episode, so the alert still lands once the
+    window closes.
     """
     app = context.application
     if not hasattr(app, "chat_data") or not app.chat_data:
         return
 
     quiet_window = parse_quiet_hours(settings.rain_alert_quiet_hours)
-    if quiet_window is not None:
-        local_now = datetime.now(ZoneInfo(settings.timezone)).time()
-        if is_within_quiet_hours(local_now, quiet_window):
-            logger.debug("Rain check skipped during quiet hours")
-            return
 
     grouped: dict[str, dict] = {}
     for chat_id, data in app.chat_data.items():
+        zones = data.get("sub_tz", {})
         for location in data.get("subs", []):
             key = _location_key(location)
             entry = grouped.setdefault(key, {"location": location, "key": key, "subscribers": []})
-            entry["subscribers"].append((chat_id, data, location))
-
-    bot_data = getattr(app, "bot_data", None)
-    rain_state = bot_data.setdefault("rain_state", {}) if isinstance(bot_data, dict) else {}
-    state_changed = False
+            entry["subscribers"].append((chat_id, data, location, _zone_for(zones.get(location))))
 
     dirty_chats: set = set()
     cooldown = timedelta(hours=settings.rain_alert_cooldown_hours)
     logger.debug(f"Running rain check for {len(grouped)} unique locations")
 
     async def process(entry):
-        nonlocal state_changed
         location = entry["location"]
-        state_key = entry["key"]
         try:
             weather = await asyncio.wait_for(
                 weather_service.get_fused_weather(location, profile="rain"),
@@ -259,35 +292,39 @@ async def check_rain_alerts(
                 return
 
             raining = will_rain_soon(weather, minutes=_rain_lookahead_minutes())
-            previously_raining = bool(rain_state.get(state_key, False))
-            if raining != previously_raining:
-                rain_state[state_key] = raining
-                state_changed = True
             if not raining:
-                return
-            if previously_raining:
-                # Ongoing episode — subscribers were already notified.
+                # Episode over: reset every subscriber so the next rain alerts.
+                for chat_id, chat_data, subscribed_location, _zone in entry["subscribers"]:
+                    episodes = chat_data.get("rain_episode", {})
+                    if episodes.get(subscribed_location):
+                        episodes[subscribed_location] = False
+                        chat_data["rain_episode"] = episodes
+                        dirty_chats.add(chat_id)
                 return
 
             alert_text = "🚨 *自动降雨提醒*\n\n" + format_weather_response(
                 weather,
                 view_type="rain",
             )
+            chart_type = "minutely" if weather.minutely else "rain"
             chart_file_id = None
             chart_bytes = None
             if settings.enable_weather_plots:
-                chart_file_id = await get_cached_chart_file_id(weather, "rain")
+                chart_file_id = await get_cached_chart_file_id(weather, chart_type)
                 if not chart_file_id:
-                    chart_bytes = await render_chart_bytes_async(weather, "rain")
+                    chart_bytes = await render_chart_bytes_async(weather, chart_type)
 
-            async def deliver(chat_id):
+            async def deliver(chat_id, thread_id=None):
                 nonlocal chart_file_id, chart_bytes
                 # A rich message carries the chart AND the full text together,
                 # sidestepping the 1024-char photo caption limit.
                 if chart_file_id and rich.supports(FEATURE_SEND):
                     blocks = build_rain_alert_blocks(weather)
-                    blocks.insert(2, photo_block(chart_file_id, "逐小时降水"))
-                    if await rich.send_rich(context.bot, chat_id, blocks=blocks) is not None:
+                    caption = "未来 2 小时分钟级降水" if chart_type == "minutely" else "逐小时降水"
+                    blocks.insert(2, photo_block(chart_file_id, caption))
+                    if await rich.send_rich(
+                        context.bot, chat_id, blocks=blocks, message_thread_id=thread_id
+                    ) is not None:
                         return
 
                 caption_fits = len(alert_text) <= 1000
@@ -298,10 +335,11 @@ async def check_rain_alerts(
                         photo=photo,
                         caption=alert_text if caption_fits else None,
                         parse_mode=ParseMode.MARKDOWN_V2 if caption_fits else None,
+                        message_thread_id=thread_id,
                     )
                     if chart_file_id is None:
                         # Reuse Telegram's upload for the remaining subscribers.
-                        await remember_chart_file_id(weather, "rain", message)
+                        await remember_chart_file_id(weather, chart_type, message)
                         photos = getattr(message, "photo", None)
                         if photos:
                             chart_file_id = photos[-1].file_id
@@ -311,23 +349,38 @@ async def check_rain_alerts(
                             chat_id=chat_id,
                             text=alert_text,
                             parse_mode=ParseMode.MARKDOWN_V2,
+                            message_thread_id=thread_id,
                         )
                 else:
                     await context.bot.send_message(
                         chat_id=chat_id,
                         text=alert_text,
                         parse_mode=ParseMode.MARKDOWN_V2,
+                        message_thread_id=thread_id,
                     )
 
-            for chat_id, chat_data, subscribed_location in entry["subscribers"]:
+            for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
+                episodes = chat_data.get("rain_episode", {})
+                if episodes.get(subscribed_location):
+                    # Ongoing episode — this subscriber was already notified.
+                    continue
+                if quiet_window is not None and is_within_quiet_hours(
+                    datetime.now(zone).time(), quiet_window
+                ):
+                    # Suppress without recording, so it fires after the window.
+                    logger.debug(f"Rain alert held for quiet hours: {chat_id}/{subscribed_location}")
+                    continue
+
                 last_alert = chat_data.get("last_rain_alert", {})
                 last_time = last_alert.get(subscribed_location)
                 if last_time and (datetime.now() - last_time) < cooldown:
                     continue
                 try:
-                    await deliver(chat_id)
+                    await deliver(chat_id, chat_data.get("push_thread_id"))
                     last_alert[subscribed_location] = datetime.now()
                     chat_data["last_rain_alert"] = last_alert
+                    episodes[subscribed_location] = True
+                    chat_data["rain_episode"] = episodes
                     dirty_chats.add(chat_id)
                     logger.info(f"Sent rain alert to {chat_id} for {subscribed_location}")
                 except Forbidden:
@@ -346,20 +399,199 @@ async def check_rain_alerts(
             logger.error(f"Rain check failed for {location}: {error}")
 
     await _bounded_gather(list(grouped.values()), process)
-
-    # Drop state for locations nobody subscribes to anymore.
-    stale_keys = set(rain_state) - set(grouped)
-    if stale_keys:
-        for stale in stale_keys:
-            rain_state.pop(stale, None)
-        state_changed = True
-
     await _persist_chat_data(app, dirty_chats)
-    if state_changed and not dirty_chats and hasattr(app, "update_persistence"):
+
+
+def _alert_episode_key(alert) -> str:
+    """Identify one warning revision: a re-issued warning must alert again."""
+    identity = alert.alert_id or alert.title
+    issued = alert.pub_time.isoformat() if alert.pub_time else ""
+    return f"{identity}@{issued}"
+
+
+def _derived_events(weather) -> list:
+    """Threshold events the official feed does not cover.
+
+    Returns (key, title, detail) tuples; the key must be stable for the day so
+    an ongoing condition alerts once rather than every check.
+    """
+    if not settings.enable_derived_event_alerts:
+        return []
+
+    events = []
+    day_stamp = weather.update_time.strftime("%Y-%m-%d")
+
+    air = weather.air_quality
+    if air is not None and air.aqi is not None and air.aqi >= settings.aqi_alert_threshold:
+        events.append((
+            f"aqi:{day_stamp}",
+            f"🌫️ 空气质量转差（AQI {air.aqi}{'·' + air.category if air.category else ''}）",
+            f"主要污染物 {air.primary}" if air.primary else "建议减少户外活动、关窗并佩戴口罩",
+        ))
+
+    today = weather.get_current_daily_forecast()
+    if today is not None:
+        if today.temp_max is not None and today.temp_max >= settings.high_temp_alert_threshold:
+            events.append((
+                f"heat:{day_stamp}",
+                f"🥵 高温提示（最高 {today.temp_max:.0f}°C）",
+                "注意防暑降温、及时补水，避免正午户外活动",
+            ))
+        if today.temp_min is not None and today.temp_min <= settings.low_temp_alert_threshold:
+            events.append((
+                f"cold:{day_stamp}",
+                f"🥶 低温提示（最低 {today.temp_min:.0f}°C）",
+                "注意保暖防寒，留意道路结冰",
+            ))
+
+    scales = []
+    for hour in weather.hourly[:12]:
         try:
-            await app.update_persistence()
+            scales.append((int(str(hour.wind_scale).split("-")[-1]), hour))
+        except (TypeError, ValueError):
+            continue
+    if scales:
+        peak_scale, peak_hour = max(scales, key=lambda item: item[0])
+        if peak_scale >= settings.wind_alert_scale_threshold:
+            events.append((
+                f"wind:{day_stamp}",
+                f"💨 大风提示（{peak_hour.time.strftime('%H:%M')} 起约 {peak_scale} 级）",
+                "注意高空坠物与出行安全",
+            ))
+    return events
+
+
+async def check_weather_alerts(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    weather_service: WeatherFusionService,
+):
+    """Push official warnings (and threshold events) to rain-alert subscribers.
+
+    Official warnings are the only life-safety data this bot has, so they get
+    their own faster cadence and configurable levels bypass quiet hours. Reuses
+    the rain subscription list — "watching this city" is one intent, not two.
+    """
+    app = context.application
+    if not hasattr(app, "chat_data") or not app.chat_data:
+        return
+
+    quiet_window = parse_quiet_hours(settings.rain_alert_quiet_hours)
+    exempt_levels = settings.alert_exempt_levels
+
+    grouped: dict[str, dict] = {}
+    for chat_id, data in app.chat_data.items():
+        zones = data.get("sub_tz", {})
+        for location in data.get("subs", []):
+            key = _location_key(location)
+            entry = grouped.setdefault(key, {"location": location, "subscribers": []})
+            entry["subscribers"].append((chat_id, data, location, _zone_for(zones.get(location))))
+
+    if not grouped:
+        return
+
+    dirty_chats: set = set()
+    logger.debug(f"Running alert check for {len(grouped)} unique locations")
+
+    async def process(entry):
+        location = entry["location"]
+        try:
+            weather = await asyncio.wait_for(
+                weather_service.get_fused_weather(location, profile="full"),
+                timeout=LOCATION_WEATHER_TIMEOUT,
+            )
+            if not weather:
+                return
+
+            # (key, level, blocks-or-None, html) per pending notification.
+            pending = []
+            for alert in weather.alerts[:3]:
+                level = normalize_warning_level(alert.level)
+                pending.append((
+                    f"warn:{_alert_episode_key(alert)}",
+                    level,
+                    build_alert_push_blocks(weather, alert),
+                    None,
+                ))
+            for key, title, detail in _derived_events(weather):
+                pending.append((
+                    key,
+                    "",
+                    build_event_push_blocks(weather, title, detail),
+                    f"<b>{escape(title)}</b>\n{escape(detail)}\n\n{escape(weather.location_name)}",
+                ))
+
+            if not pending:
+                # Nothing active: forget history so a re-issue alerts again.
+                for chat_id, chat_data, subscribed_location, _zone in entry["subscribers"]:
+                    seen = chat_data.get("alert_seen", {})
+                    if seen.pop(subscribed_location, None) is not None:
+                        chat_data["alert_seen"] = seen
+                        dirty_chats.add(chat_id)
+                return
+
+            active_keys = {key for key, _level, _blocks, _html in pending}
+            for chat_id, chat_data, subscribed_location, zone in entry["subscribers"]:
+                seen_map = chat_data.setdefault("alert_seen", {})
+                seen = set(seen_map.get(subscribed_location, []))
+                in_quiet = quiet_window is not None and is_within_quiet_hours(
+                    datetime.now(zone).time(), quiet_window
+                )
+                thread_id = chat_data.get("push_thread_id")
+                delivered = set()
+
+                for key, level, blocks, html in pending:
+                    if key in seen:
+                        continue
+                    if in_quiet and level not in exempt_levels:
+                        # Held, not dropped: it fires when the window closes.
+                        continue
+                    try:
+                        sent = await rich.send_rich(
+                            context.bot, chat_id, blocks=blocks, message_thread_id=thread_id
+                        )
+                        if sent is None:
+                            await context.bot.send_message(
+                                chat_id=chat_id,
+                                text=html or _alert_fallback_text(weather, blocks),
+                                parse_mode=ParseMode.HTML,
+                                message_thread_id=thread_id,
+                            )
+                        delivered.add(key)
+                        logger.info(f"Sent weather alert to {chat_id} for {subscribed_location}: {key}")
+                    except Forbidden:
+                        _remove_subscription(chat_data, "subs", subscribed_location)
+                        dirty_chats.add(chat_id)
+                        logger.info(f"Removed subscription for blocked chat {chat_id}")
+                        break
+                    except Exception as error:
+                        logger.error(f"Alert delivery failed for {chat_id}/{subscribed_location}: {error}")
+
+                # Keep only still-active keys so expired warnings do not pile up.
+                updated = (seen | delivered) & active_keys
+                if updated != seen:
+                    seen_map[subscribed_location] = sorted(updated)
+                    dirty_chats.add(chat_id)
+        except asyncio.TimeoutError:
+            logger.error(f"Alert check timed out for {location}")
         except Exception as error:
-            logger.debug(f"Rain state persistence failed: {error}")
+            logger.error(f"Alert check failed for {location}: {error}")
+
+    await _bounded_gather(list(grouped.values()), process)
+    await _persist_chat_data(app, dirty_chats)
+
+
+def _alert_fallback_text(weather, blocks) -> str:
+    """Plain-HTML rendering used when rich messages are unavailable."""
+    lines = [f"⚠️ <b>{escape(weather.location_name)} 天气预警</b>"]
+    for alert in weather.alerts[:3]:
+        level = normalize_warning_level(alert.level)
+        title = alert.title if not level or level in alert.title else f"{alert.title}（{level}）"
+        lines.append(f"\n<b>{escape(title)}</b>")
+        text = (alert.text or "").strip()
+        if text:
+            lines.append(escape(text[:400]))
+    return "\n".join(lines)
 
 
 def setup_scheduler(
@@ -375,6 +607,16 @@ def setup_scheduler(
 
     rain_status = "OFF"
     daily_status = "OFF"
+    alert_status = "OFF"
+
+    if settings.enable_alert_push:
+        job_queue.run_repeating(
+            partial(check_weather_alerts, weather_service=weather_service),
+            interval=settings.alert_check_interval_minutes * 60,
+            first=20,
+            name="weather-alerts",
+        )
+        alert_status = f"ON ({settings.alert_check_interval_minutes}min)"
 
     if settings.enable_rain_alerts:
         job_queue.run_repeating(
@@ -399,4 +641,9 @@ def setup_scheduler(
         )
         daily_status = "ON"
 
-    logger.info(f"Scheduler initialized: Rain Alerts [{rain_status}], Daily Brief [{daily_status}]")
+    logger.info(
+        "Scheduler initialized: Rain Alerts [{}], Daily Brief [{}], Warning Push [{}]",
+        rain_status,
+        daily_status,
+        alert_status,
+    )
