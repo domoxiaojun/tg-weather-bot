@@ -20,94 +20,100 @@ from loguru import logger
 # RichText-compatible fragment: plain string or a typed rich dict / list.
 RichIcon = Union[str, dict, list]
 
-# QWeather icon code → Unicode fallback (also used as custom-emoji alternative_text).
+# QWeather icon code → (中文语义, Unicode fallback emoji).
+# Labels follow 和风天气官方图标说明（dev.qweather.com/docs/resource/icons/）。
 # Insertion order == pack upload order. Do not reorder casually: the MDV2 import
 # script pairs custom_emoji_id with codes by this sequence.
-WEATHER_ICONS: dict[str, str] = {
+# Telegram custom-emoji 的关联基础 emoji 必须是「一个」emoji，禁止 ❄️🌨️ 拼接。
+_WEATHER_ICON_ROWS: tuple[tuple[str, str, str], ...] = (
     # —— 白天晴云 ——
-    "100": "☀️",  # 晴
-    "101": "🌤️",  # 多云
-    "102": "☁️",  # 少云
-    "103": "🌥️",  # 晴间多云
-    "104": "⛅",  # 阴
+    ("100", "晴", "☀️"),
+    ("101", "多云", "🌤️"),
+    ("102", "少云", "☁️"),
+    ("103", "晴间多云", "🌥️"),
+    ("104", "阴", "⛅"),
     # —— 夜间晴云 ——
-    "150": "🌙",  # 晴
-    "151": "🌤️",  # 多云
-    "152": "☁️",  # 少云
-    "153": "🌥️",  # 晴间多云
+    ("150", "晴（夜）", "🌙"),
+    ("151", "多云（夜）", "🌤️"),
+    ("152", "少云（夜）", "☁️"),
+    ("153", "晴间多云（夜）", "🌥️"),
     # —— 降雨 ——
-    "300": "🌦️",  # 阵雨
-    "301": "🌧️",  # 强阵雨
-    "302": "🌧️",  # 雷阵雨
-    "303": "⛈️",  # 强雷阵雨
-    "304": "🌦️",  # 雷阵雨伴有冰雹
-    "305": "🌧️",  # 小雨
-    "306": "🌧️",  # 中雨
-    "307": "⛈️",  # 大雨
-    "308": "🌧️",  # 极端降雨
-    "309": "🌦️",  # 毛毛雨/细雨
-    "310": "🌧️",  # 暴雨
-    "311": "🌧️",  # 大暴雨
-    "312": "⛈️",  # 特大暴雨
-    "313": "🌧️",  # 冻雨
-    "314": "🌧️",  # 小到中雨
-    "315": "⛈️",  # 中到大雨
-    "316": "🌧️",  # 大到暴雨
-    "317": "🌧️",  # 暴雨到大暴雨
-    "318": "⛈️",  # 大暴雨到特大暴雨
-    # —— 夜间阵雨 / 雨（代码）——
-    "350": "🌨️",  # 阵雨
-    "351": "🌨️",  # 强阵雨
-    "399": "🌨️",  # 雨
+    ("300", "阵雨", "🌦️"),
+    ("301", "强阵雨", "🌧️"),
+    ("302", "雷阵雨", "🌧️"),
+    ("303", "强雷阵雨", "⛈️"),
+    ("304", "雷阵雨伴有冰雹", "🌦️"),
+    ("305", "小雨", "🌧️"),
+    ("306", "中雨", "🌧️"),
+    ("307", "大雨", "⛈️"),
+    ("308", "极端降雨", "🌧️"),
+    ("309", "毛毛雨/细雨", "🌦️"),
+    ("310", "暴雨", "🌧️"),
+    ("311", "大暴雨", "🌧️"),
+    ("312", "特大暴雨", "⛈️"),
+    ("313", "冻雨", "🌧️"),
+    ("314", "小到中雨", "🌧️"),
+    ("315", "中到大雨", "⛈️"),
+    ("316", "大到暴雨", "🌧️"),
+    ("317", "暴雨到大暴雨", "🌧️"),
+    ("318", "大暴雨到特大暴雨", "⛈️"),
+    # —— 夜间阵雨 / 雨 ——
+    ("350", "阵雨（夜）", "🌨️"),
+    ("351", "强阵雨（夜）", "🌨️"),
+    ("399", "雨", "🌨️"),
     # —— 降雪 ——
-    "400": "❄️",  # 小雪
-    "401": "❄️",  # 中雪
-    "402": "❄️",  # 大雪
-    "403": "❄️",  # 暴雪
-    "404": "🌨️",  # 雨夹雪
-    "405": "❄️",  # 雨雪天气
-    "406": "❄️",  # 阵雨夹雪
-    "407": "❄️",  # 阵雪
-    # Telegram custom-emoji 关联的基础 emoji 必须是「一个」emoji（emoji_list 里一项里
-    # 不要拼两个 ❄️+🌨️），否则 @Stickers / createNewStickerSet 会拒或显示异常。
-    "408": "🌨️",  # 小到中雪
-    "409": "🌨️",  # 中到大雪
-    "410": "🌨️",  # 大到暴雪
-    "456": "🌨️",  # 阵雨夹雪
-    "457": "❄️",  # 阵雪
-    "499": "❄️",  # 雪
+    ("400", "小雪", "❄️"),
+    ("401", "中雪", "❄️"),
+    ("402", "大雪", "❄️"),
+    ("403", "暴雪", "❄️"),
+    ("404", "雨夹雪", "🌨️"),
+    ("405", "雨雪天气", "❄️"),
+    ("406", "阵雨夹雪", "❄️"),
+    ("407", "阵雪", "❄️"),
+    ("408", "小到中雪", "🌨️"),
+    ("409", "中到大雪", "🌨️"),
+    ("410", "大到暴雪", "🌨️"),
+    ("456", "阵雨夹雪（夜）", "🌨️"),
+    ("457", "阵雪（夜）", "❄️"),
+    ("499", "雪", "❄️"),
     # —— 雾霾沙尘 ——
-    "500": "🌫️",  # 薄雾
-    "501": "🌫️",  # 雾
-    "502": "🌫️",  # 霾
-    "503": "🌪️",  # 扬沙
-    "504": "🌪️",  # 浮尘
-    "507": "🌪️",  # 沙尘暴
-    "508": "🌪️",  # 强沙尘暴
-    "509": "🌫️",  # 浓雾
-    "510": "🌫️",  # 强浓雾
-    "511": "🌫️",  # 中度霾
-    "512": "🌫️",  # 重度霾
-    "513": "🌫️",  # 严重霾
-    "514": "🌫️",  # 大雾
-    "515": "🌫️",  # 特强浓雾
-    # —— 新月相/云量扩展（和风附加码，保留映射）——
-    "800": "☀️",
-    "801": "🌤️",
-    "802": "☁️",
-    "803": "☁️",
-    "804": "☁️",
-    "805": "🌫️",
-    "806": "🌫️",
-    "807": "🌧️",
+    ("500", "薄雾", "🌫️"),
+    ("501", "雾", "🌫️"),
+    ("502", "霾", "🌫️"),
+    ("503", "扬沙", "🌪️"),
+    ("504", "浮尘", "🌪️"),
+    ("507", "沙尘暴", "🌪️"),
+    ("508", "强沙尘暴", "🌪️"),
+    ("509", "浓雾", "🌫️"),
+    ("510", "强浓雾", "🌫️"),
+    ("511", "中度霾", "🌫️"),
+    ("512", "重度霾", "🌫️"),
+    ("513", "严重霾", "🌫️"),
+    ("514", "大雾", "🌫️"),
+    ("515", "特强浓雾", "🌫️"),
+    # —— 月相图标（和风 moonPhase 等字段；极少出现在 now.icon）——
+    ("800", "新月", "🌑"),
+    ("801", "蛾眉月", "🌒"),
+    ("802", "上弦月", "🌓"),
+    ("803", "盈凸月", "🌔"),
+    ("804", "满月", "🌕"),
+    ("805", "亏凸月", "🌖"),
+    ("806", "下弦月", "🌗"),
+    ("807", "残月", "🌘"),
     # —— 其他 ——
-    "900": "🌪️",  # 热
-    "901": "🌀",  # 冷
-    "999": "❓",  # 未知
-}
+    ("900", "热", "🥵"),
+    ("901", "冷", "🥶"),
+    ("999", "未知", "❓"),
+)
 
-# Pack upload / MDV2 import order — identical to WEATHER_ICONS insertion order.
-UPLOAD_ICON_CODES: tuple[str, ...] = tuple(WEATHER_ICONS.keys())
+# code → Unicode fallback (charts / alternative_text / unmapped surfaces)
+WEATHER_ICONS: dict[str, str] = {code: emoji for code, _label, emoji in _WEATHER_ICON_ROWS}
+
+# code → 中文语义（LLM / 文档 / 调试）
+WEATHER_ICON_LABELS: dict[str, str] = {code: label for code, label, _emoji in _WEATHER_ICON_ROWS}
+
+# Pack upload / MDV2 import order — identical to table order above.
+UPLOAD_ICON_CODES: tuple[str, ...] = tuple(code for code, _label, _emoji in _WEATHER_ICON_ROWS)
 
 # Repo root (…/tg-weather-bot), independent of process CWD / Docker WORKDIR quirks.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -260,6 +266,53 @@ def emoji_for(icon: Optional[str]) -> str:
         return WEATHER_ICONS[code]
     # Already an emoji (legacy Caiyun path) or unknown code: pass through.
     return code
+
+
+def icon_label(icon: Optional[str], *, fallback: str = "未知") -> str:
+    """Chinese weather meaning for a QWeather icon code.
+
+    Prefers the official label table; if ``icon`` is already free text (legacy
+    path) it is returned as-is.
+    """
+    if not icon:
+        return fallback
+    code = str(icon).strip()
+    if code in WEATHER_ICON_LABELS:
+        return WEATHER_ICON_LABELS[code]
+    # Unknown numeric code or free-text sky description.
+    if code.isdigit():
+        return fallback
+    return code
+
+
+def icon_meta(icon: Optional[str]) -> dict[str, Optional[str]]:
+    """Structured icon info for logs, LLM payloads, and debugging."""
+    code = str(icon).strip() if icon else ""
+    return {
+        "code": code or None,
+        "label": icon_label(code) if code else None,
+        "emoji": emoji_for(code) if code else None,
+        "custom_emoji_id": custom_emoji_id_for(code) if code else None,
+    }
+
+
+def icon_legend(codes: Optional[Any] = None) -> dict[str, str]:
+    """``{code: "中文语义"}`` for the given codes (or the full catalog).
+
+    Used so the LLM only sees labels for icons present in this weather payload
+    instead of the entire 70-row table every time.
+    """
+    if codes is None:
+        return dict(WEATHER_ICON_LABELS)
+    out: dict[str, str] = {}
+    for raw in codes:
+        if raw is None:
+            continue
+        code = str(raw).strip()
+        if not code or code in out:
+            continue
+        out[code] = icon_label(code)
+    return out
 
 
 def custom_emoji_id_for(icon: Optional[str]) -> Optional[str]:

@@ -40,6 +40,19 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         self.assertEqual(emoji_for("301"), "🌧️")
         self.assertEqual(weather_icon(""), "❓")
 
+    def test_icon_label_semantics(self) -> None:
+        from utils.weather_icons import icon_label, icon_legend, WEATHER_ICON_LABELS
+
+        self.assertEqual(icon_label("100"), "晴")
+        self.assertEqual(icon_label("306"), "中雨")
+        self.assertEqual(icon_label("150"), "晴（夜）")
+        self.assertEqual(icon_label("804"), "满月")
+        self.assertEqual(icon_label(""), "未知")
+        self.assertEqual(icon_legend(["100", "301"])["301"], "强阵雨")
+        # Every pack code has a non-empty Chinese label.
+        for code, label in WEATHER_ICON_LABELS.items():
+            self.assertTrue(label.strip(), msg=f"empty label for {code}")
+
     def test_legacy_emoji_passthrough(self) -> None:
         set_custom_emoji_map_for_tests({})
         self.assertEqual(weather_icon("☀️"), "☀️")

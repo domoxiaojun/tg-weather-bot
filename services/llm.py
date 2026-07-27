@@ -28,6 +28,10 @@ from domain.models import WeatherData
 DEFAULT_WEATHER_REPORT_PROMPT = (
     "你是 Domo，一个会读天气数据、会排版、语气轻松但判断严谨的中文天气助手。"
     "你会收到结构化 JSON 天气数据，请生成适合 Telegram 展示的中文天气日报正文。\n\n"
+    "关于天气图标：JSON 里的 weather_icon_code 是和风天气图标编号，"
+    "weather_icon_label / weather_icon_legend 是对应中文现象（如 100=晴、306=中雨）。"
+    "图标由 Bot 在 UI 层渲染，你不要输出自定义 emoji id，也不要编造图标编号；"
+    "写正文时以 weather / weather_icon_label 文字为准。\n\n"
     "输出边界：\n"
     "1. 只输出正文，不要输出标题，不要写“天气日报”“Domo天气日报”“城市｜天气日报”等标题；Bot 外层已经添加标题。\n"
     "2. 不要输出“当前时间：…”之类的时间戳行，Bot 会自动附加数据时间；也不要编造时间。\n"
@@ -467,6 +471,7 @@ class LLMService:
         """Convert WeatherData to a readable text summary for the LLM"""
         priority_indices = {"3", "1", "2", "5", "9", "8", "7", "10", "15", "16"}
         from utils.formatter import select_indices_for_day
+        from utils.weather_icons import icon_label, icon_legend
 
         # 3d indices repeat each type per day; keep today only for the report.
         selected_indices = [
@@ -475,13 +480,28 @@ class LLMService:
         ][:10]
         daily_forecasts = data.get_daily_forecasts(limit=5)
 
+        # Only the icon codes present in this payload — full 70-row table is wasteful.
+        icon_codes = {data.now_icon}
+        for hour in data.hourly[:24]:
+            if hour.icon:
+                icon_codes.add(hour.icon)
+        for day in daily_forecasts:
+            if day.icon_day:
+                icon_codes.add(day.icon_day)
+            if day.icon_night:
+                icon_codes.add(day.icon_night)
+
         payload = {
             "report_contract": {
                 "output_scope": "body_only",
                 "title_is_added_by_bot": True,
                 "do_not_output_title": True,
                 "telegram_parse_mode": "HTML",
+                # UI icons are rendered by the bot from QWeather icon codes;
+                # the model should reason with weather/icon_label text, not invent emoji.
+                "icon_codes_are_for_ui_only": True,
             },
+            "weather_icon_legend": icon_legend(icon_codes),
             "location": {
                 "name": data.location_name,
                 "coords": data.coords,
@@ -492,6 +512,8 @@ class LLMService:
                 "temp_c": self._round_number(data.now_temp),
                 "feels_like_c": self._round_number(data.now_feels_like),
                 "weather": data.now_text,
+                "weather_icon_code": data.now_icon or None,
+                "weather_icon_label": icon_label(data.now_icon) if data.now_icon else None,
                 "wind_direction": data.now_wind_dir or data.now_wind_direction_degrees,
                 "wind_scale": data.now_wind_scale or None,
                 "wind_speed_kmh": self._round_number(data.now_wind_speed),
@@ -553,6 +575,8 @@ class LLMService:
                     ),
                     "feels_like_source": hour.feels_like_source,
                     "weather": hour.text,
+                    "weather_icon_code": hour.icon or None,
+                    "weather_icon_label": icon_label(hour.icon) if hour.icon else None,
                     "pop_pct": hour.pop,
                     "precip_value": self._round_number(hour.precip, 2),
                     "precip_kind": hour.precip_kind,
@@ -578,7 +602,11 @@ class LLMService:
                 {
                     "date": self._date_text(day.date),
                     "day_weather": day.text_day,
+                    "day_weather_icon_code": day.icon_day or None,
+                    "day_weather_icon_label": icon_label(day.icon_day) if day.icon_day else None,
                     "night_weather": day.text_night,
+                    "night_weather_icon_code": day.icon_night or None,
+                    "night_weather_icon_label": icon_label(day.icon_night) if day.icon_night else None,
                     "temp_min_c": self._round_number(day.temp_min),
                     "temp_max_c": self._round_number(day.temp_max),
                     "precip_value": self._round_number(day.precip, 2),

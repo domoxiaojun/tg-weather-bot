@@ -70,6 +70,18 @@ uv run python scripts/upload_weather_emoji.py   # 需 Premium + BOT_TOKEN + SUPE
 
 见 `data/weather_custom_emoji.json.example`。约 70 个 code，低于 pack 上限 200。
 
+## 语义（code → 中文现象）
+
+渲染层只需要 `code → custom_emoji_id`；**含义**在 `utils/weather_icons.py` 的 `WEATHER_ICON_LABELS`（和风官方语义）：
+
+| 用途 | 来源 |
+| --- | --- |
+| Bot UI | `weather_icon_rich/md/html(code)` |
+| LLM 日报 | payload 里的 `weather_icon_code` / `weather_icon_label` + 本次出现的 `weather_icon_legend` |
+| 人读对照 | `data/weather_emoji_order.md`、`resources/weather_icon_semantics.json` |
+
+LLM **不必**也不会拿到 custom emoji id；正文用中文现象描述，图标由 Bot 按 code 渲染。
+
 ## 彩云兼容
 
 Caiyun `skycon` 在 adapter 里映射为**和风 code**，与 custom emoji 共用一张表。
