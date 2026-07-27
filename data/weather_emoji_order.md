@@ -2,8 +2,6 @@
 
 按下面序号 **从 1 到 N** 依次加入表情包。导入 MarkdownV2 时也会按同一顺序对齐 code。
 
-每个 sticker 的关联基础 emoji 必须是 **一个** Unicode emoji（不要 `❄️🌨️` 这种拼接）。
-
 | # | code | fallback |
 | --: | --- | --- |
 | 1 | `100` | ☀️ |
