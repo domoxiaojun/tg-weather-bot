@@ -117,7 +117,20 @@ def parse_query_param(param: str) -> tuple[str, int, Optional[int]]:
 # Pure table lookup — longest match first, and the remainder must keep >=2
 # chars so 大后天 alone or 朝阳 are never mis-split.
 _GLUED_SUFFIXES = sorted(
-    [*RELATIVE_DAY_WORDS, "降水", "降雨", "指数", "预报"], key=len, reverse=True
+    [
+        *RELATIVE_DAY_WORDS,
+        "降水",
+        "降雨",
+        "指数",
+        "预报",
+        "台风",
+        "潮汐",
+        "潮位",
+        "typhoon",
+        "tide",
+    ],
+    key=len,
+    reverse=True,
 )
 
 
