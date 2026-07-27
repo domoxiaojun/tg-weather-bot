@@ -70,7 +70,7 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         self.assertEqual(weather_icon_rich("999"), "❓")  # unmapped → emoji
 
     def test_html_and_md_fragments(self) -> None:
-        set_custom_emoji_map_for_tests({"100": "111"})
+        set_custom_emoji_map_for_tests({"100": "111", "150": "222"})
         self.assertEqual(
             weather_icon_html("100"),
             '<tg-emoji emoji-id="111">☀️</tg-emoji>',
@@ -78,6 +78,16 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         self.assertEqual(weather_icon_md("100"), "![☀️](tg://emoji?id=111)")
         self.assertEqual(weather_icon_html("301"), "🌧️")
         self.assertEqual(weather_icon_md("301"), "🌧️")
+        from utils.weather_icons import build_format_maps, weather_icon_pair_md
+
+        self.assertEqual(
+            weather_icon_pair_md("100", "150"),
+            "![☀️](tg://emoji?id=111)→![🌙](tg://emoji?id=222)",
+        )
+        formats = build_format_maps({"100": "111"})
+        self.assertEqual(formats["markdown_v2"]["100"], "![☀️](tg://emoji?id=111)")
+        self.assertIn("labels", formats)
+        self.assertEqual(formats["labels"]["100"], "晴")
 
     def test_disabled_flag_forces_emoji(self) -> None:
         set_custom_emoji_map_for_tests({"100": "111"})

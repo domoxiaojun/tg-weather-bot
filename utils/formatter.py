@@ -17,6 +17,7 @@ from utils.weather_icons import (  # noqa: F401  — re-export for existing impo
     weather_icon,
     weather_icon_html,
     weather_icon_md,
+    weather_icon_pair_md,
 )
 
 # --- Constants & Mappings ---
@@ -160,9 +161,11 @@ def _day_display_fields(day: DailyForecast) -> dict:
         "temp_min": escape_v2(format_weather_number(day.temp_min)),
         "temp_max": escape_v2(format_weather_number(day.temp_max)),
         "day_icon": weather_icon_md(day.icon_day),
+        "night_icon": weather_icon_md(day.icon_night),
+        # Combined fragment for compact daily rows (both sides already MDV2-safe).
+        "weather_icons": weather_icon_pair_md(day.icon_day, day.icon_night),
         "text_day": escape_v2(day.text_day),
         "day_wind": day_wind or "N/A",
-        "night_icon": weather_icon_md(day.icon_night),
         "text_night": escape_v2(day.text_night),
         "night_wind": night_wind or "N/A",
         "humid": escape_v2(day.humidity if day.humidity is not None else "N/A"),
@@ -176,7 +179,26 @@ def _day_display_fields(day: DailyForecast) -> dict:
 
 # --- Formatters (With Strict Manual Escaping) ---
 
-def format_realtime_weather(data: WeatherData) -> str:
+def _format_air_quality_line(data: WeatherData) -> str:
+    if not data.air_quality:
+        return ""
+    aqi = data.air_quality
+    air_parts = []
+    if aqi.aqi is not None:
+        air_parts.append(f"*{escape_v2(aqi.aqi)}*")
+    if aqi.category:
+        air_parts.append(f"\\({escape_v2(aqi.category)}\\)")
+    if aqi.pm2p5 is not None:
+        air_parts.append(f"PM2\\.5: {escape_v2(format_weather_number(aqi.pm2p5))}")
+    return f"🌫️ 空气: {' '.join(air_parts)}" if air_parts else ""
+
+
+def format_realtime_weather(
+    data: WeatherData,
+    *,
+    include_air: bool = True,
+    include_cloud: bool = True,
+) -> str:
     lines = [
         f"🌍 *{escape_v2(data.location_name)}*",
         f"🕐 {escape_v2(data.update_time.strftime('%m-%d %H:%M'))} 更新",
@@ -221,25 +243,18 @@ def format_realtime_weather(data: WeatherData) -> str:
         environment_parts.append(f"📈 气压: {escape_v2(format_weather_number(data.now_pressure))}hPa")
     if environment_parts:
         lines.append(" \\| ".join(environment_parts))
-    if data.now_cloud is not None or data.now_radiation is not None:
+    if (include_cloud and data.now_cloud is not None) or data.now_radiation is not None:
         extra_parts = []
-        if data.now_cloud is not None:
+        if include_cloud and data.now_cloud is not None:
             extra_parts.append(f"☁️ 云量: {escape_v2(data.now_cloud)}%")
         if data.now_radiation is not None:
             extra_parts.append(f"☀️ 辐射: {escape_v2(format_weather_number(data.now_radiation))}W/m²")
         lines.append(" \\| ".join(extra_parts))
     
-    if data.air_quality:
-        aqi = data.air_quality
-        air_parts = []
-        if aqi.aqi is not None:
-            air_parts.append(f"*{escape_v2(aqi.aqi)}*")
-        if aqi.category:
-            air_parts.append(f"\\({escape_v2(aqi.category)}\\)")
-        if aqi.pm2p5 is not None:
-            air_parts.append(f"PM2\\.5: {escape_v2(format_weather_number(aqi.pm2p5))}")
-        if air_parts:
-            lines.append(f"🌫️ 空气: {' '.join(air_parts)}")
+    if include_air:
+        air_line = _format_air_quality_line(data)
+        if air_line:
+            lines.append(air_line)
     
     if data.alerts:
         lines.append("")
@@ -262,7 +277,8 @@ def format_today_detail(
     day: DailyForecast,
     indices: List[LifeIndex],
     hourly_data: List[HourlyForecast],
-    title: str = "今日详情",
+    title: Optional[str] = "今日详情",
+    cloud: Optional[int] = None,
 ) -> str:
     """专门为今日详情设计的格式，块状布局而非树状"""
     fields = _day_display_fields(day)
@@ -291,20 +307,23 @@ def format_today_detail(
         max_pop = max(available_pops) if available_pops else None
 
     weekday = fields["weekday"]
-    lines = [
-        "━━━━━━━━━━━━━━━━━━━━",
-        f"📅 *{escape_v2(title)} \\({escape_v2(date_str)} {weekday}\\)*",
+    lines = ["━━━━━━━━━━━━━━━━━━━━"]
+    if title:
+        lines.append(f"📅 *{escape_v2(title)} \\({escape_v2(date_str)} {weekday}\\)*")
+    lines.extend([
         f"🌡️ 气温: {temp_min}\\~{temp_max}°C \\| 🌙 {moon} \\(日出 {sunrise} / 日落 {sunset}\\)",
         "",
         f"☀️ 日间: {day_icon} {text_day} \\({day_wind}\\)",
         f"🌙 夜间: {night_icon} {text_night} \\({night_wind}\\)",
         "",
-    ]
+    ])
     stats_parts = [f"☔️ 降水 {precip}"]
     if fields["humid"] != "N/A":
         stats_parts.append(f"💧 湿度 {humid}%")
     if fields["vis"] != "N/A":
         stats_parts.append(f"👁️ 能见度 {vis}km")
+    if cloud is not None:
+        stats_parts.append(f"☁️ 云量 {escape_v2(cloud)}%")
     lines.append(" \\| ".join(stats_parts))
 
     forecast_parts = []
@@ -319,19 +338,6 @@ def format_today_detail(
     if forecast_parts:
         lines.append(" \\| ".join(forecast_parts))
     
-    # 生活指数
-    tips = []
-    target_indices = {"3": "🧥", "8": "😊", "2": "🚗"}
-    
-    if indices:
-        for idx in select_indices_for_day(indices, day.date.date()):
-            if idx.type in target_indices:
-                tips.append(f"{target_indices[idx.type]} {escape_v2(idx.name)}: {escape_v2(idx.category)}")
-    
-    if tips:
-        tips_str = " \\| ".join(tips)
-        lines.append(f"💡 贴士: {tips_str}")
-    
     return "\n".join(lines)
 
 def format_daily_weather(daily_data: List[DailyForecast]) -> str:
@@ -344,7 +350,7 @@ def format_daily_weather(daily_data: List[DailyForecast]) -> str:
             title += f" · {fields['moon']}"
         daily_info = [
             title,
-            f"{fields['day_icon']} {fields['text_day']} → {fields['night_icon']} {fields['text_night']}"
+            f"{fields['weather_icons']} {fields['text_day']} → {fields['text_night']}"
             f" · {fields['temp_min']}\\~{fields['temp_max']}°C",
         ]
 
@@ -473,20 +479,56 @@ def select_indices_for_day(indices: List[LifeIndex], target_date=None) -> List[L
     return same_day + [index for index in indices if index.date is None]
 
 
+_INDEX_DISPLAY_ORDER = (
+    "2", "3", "8", "1", "4", "5", "6", "7",
+    "9", "10", "11", "12", "13", "14", "15", "16",
+)
+
+
+def ordered_indices_for_day(indices: List[LifeIndex], target_date=None) -> List[LifeIndex]:
+    """Return one entry per type, with the most useful daily tips first."""
+    selected = select_indices_for_day(indices, target_date)
+    unique = {}
+    for index in selected:
+        unique.setdefault(index.type, index)
+    rank = {type_id: position for position, type_id in enumerate(_INDEX_DISPLAY_ORDER)}
+    return sorted(
+        unique.values(),
+        key=lambda index: (rank.get(index.type, len(rank)), index.name),
+    )
+
+
+def format_index_pairs(
+    indices: List[LifeIndex],
+    target_date=None,
+    *,
+    include_heading: bool = True,
+) -> str:
+    ordered = ordered_indices_for_day(indices, target_date)
+    if not ordered:
+        return ""
+    lines = ["💡 *生活指数*"] if include_heading else []
+    entries = [
+        f"{escape_v2(index.name)}：{escape_v2(index.category)}"
+        for index in ordered
+    ]
+    for offset in range(0, len(entries), 2):
+        pair = entries[offset:offset + 2]
+        lines.append(" \\| ".join(pair))
+    return "\n".join(lines)
+
+
 def format_indices_data(indices: List[LifeIndex]) -> str:
-    indices = select_indices_for_day(indices)
-    if not indices: return ""
-    result = []
-    for category_name, type_ids in CATEGORIES.items():
-        category_indices = [idx for idx in indices if idx.type in type_ids]
-        if category_indices:
-            result.append(f"\n*【{escape_v2(category_name)}】*")
-            for index in category_indices:
-                emoji = INDICES_EMOJI.get(index.type, "ℹ️")
-                result.append(f"{emoji} *{escape_v2(index.name)}*: {escape_v2(index.category)}")
-                if index.text:
-                    result.append(f"    ↳ {escape_v2(index.text)}")
-    return "\n".join(result)
+    if not indices:
+        return ""
+    sections = [format_index_pairs(indices)]
+    dated_days = sorted({index.date.date() for index in indices if index.date is not None})
+    for offset, day in enumerate(dated_days[1:3], start=1):
+        label = "明天" if offset == 1 else "后天"
+        pairs = format_index_pairs(indices, day, include_heading=False)
+        if pairs:
+            sections.append(f"*{label}（{escape_v2(day.strftime('%m-%d'))}）*\n{pairs}")
+    return "\n\n".join(section for section in sections if section)
 
 def format_minutely_weather(minutely: List[MinutelyPrecipitation], summary: str) -> str:
     result = [f"📝 {escape_v2(summary)}", "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"]
@@ -521,8 +563,15 @@ def format_rain_weather(data: WeatherData) -> str:
     return f"📝 {escape_v2(data.summary or '暂无可用降水预报')}"
 
 def format_weather_response(data: WeatherData, view_type: str="default", days: Optional[int]=None, start_day: int=0) -> str:
-    header = format_realtime_weather(data)
+    default_view = view_type not in {"daily", "hourly", "indices", "rain"}
+    header = format_realtime_weather(
+        data,
+        include_air=not default_view,
+        include_cloud=not default_view,
+    )
     body = ""
+    index_section = ""
+    air_section = ""
     if view_type == "daily":
         s_idx = max(0, start_day)
         available_daily = data.get_daily_forecasts(start_day=s_idx)
@@ -548,7 +597,7 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
         current_day = data.get_current_daily_forecast()
         if current_day:
             detail_title = (
-                "今日详情"
+                None
                 if current_day.date.date() == data.local_update_date
                 else "最近预报"
             )
@@ -557,9 +606,13 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
                 data.indices,
                 data.hourly,
                 title=detail_title,
+                cloud=data.now_cloud,
             )
+            index_section = format_index_pairs(data.indices, current_day.date.date())
         else:
             body = format_unavailable_current_daily_weather(data)
+            index_section = format_index_pairs(data.indices, data.local_update_date)
+        air_section = _format_air_quality_line(data)
     
     source_label = {
         "qweather": "和风天气",
@@ -570,7 +623,13 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
     attribution = format_attribution(data)
     if attribution:
         footer_text = f"{footer_text} · {attribution}"
-    return f"{header}\n\n{body}\n\n_{escape_v2(footer_text)}_"
+    sections = [header, body]
+    if index_section:
+        sections.append(index_section)
+    if air_section:
+        sections.append(air_section)
+    sections.append(f"_{escape_v2(footer_text)}_")
+    return "\n\n".join(section for section in sections if section)
 
 # Telegram limits callback_data to 64 bytes; the longest pattern is
 # "refresh|{token}|indices|0|24", so the location token itself must stay small.

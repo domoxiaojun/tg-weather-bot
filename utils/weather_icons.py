@@ -285,14 +285,45 @@ def icon_label(icon: Optional[str], *, fallback: str = "未知") -> str:
     return code
 
 
+def markdown_v2_custom_emoji(custom_emoji_id: str, alternative_text: str) -> str:
+    """Telegram MarkdownV2 custom-emoji entity (do not escape_v2 this fragment).
+
+    Wire form from Bot API docs::
+
+        ![👍](tg://emoji?id=5368324170671202286)
+    """
+    alt = alternative_text or "▪️"
+    return f"![{alt}](tg://emoji?id={custom_emoji_id})"
+
+
+def html_custom_emoji(custom_emoji_id: str, alternative_text: str) -> str:
+    """Telegram HTML custom-emoji entity."""
+    alt = html_escape(alternative_text or "▪️", quote=True)
+    eid = html_escape(str(custom_emoji_id), quote=True)
+    return f'<tg-emoji emoji-id="{eid}">{alt}</tg-emoji>'
+
+
 def icon_meta(icon: Optional[str]) -> dict[str, Optional[str]]:
     """Structured icon info for logs, LLM payloads, and debugging."""
     code = str(icon).strip() if icon else ""
+    if not code:
+        return {
+            "code": None,
+            "label": None,
+            "emoji": None,
+            "custom_emoji_id": None,
+            "markdown_v2": None,
+            "html": None,
+        }
+    emoji = emoji_for(code)
+    eid = custom_emoji_id_for(code)
     return {
-        "code": code or None,
-        "label": icon_label(code) if code else None,
-        "emoji": emoji_for(code) if code else None,
-        "custom_emoji_id": custom_emoji_id_for(code) if code else None,
+        "code": code,
+        "label": icon_label(code),
+        "emoji": emoji,
+        "custom_emoji_id": eid,
+        "markdown_v2": markdown_v2_custom_emoji(eid, emoji) if eid else emoji,
+        "html": html_custom_emoji(eid, emoji) if eid else html_escape(emoji, quote=True),
     }
 
 
@@ -345,24 +376,75 @@ def weather_icon_html(icon: Optional[str]) -> str:
     """HTML fragment with ``<tg-emoji>`` when mapped."""
     fallback = emoji_for(icon)
     eid = custom_emoji_id_for(icon)
-    safe = html_escape(fallback, quote=True)
     if not eid:
-        return safe
-    return f'<tg-emoji emoji-id="{html_escape(eid, quote=True)}">{safe}</tg-emoji>'
+        return html_escape(fallback, quote=True)
+    return html_custom_emoji(eid, fallback)
 
 
 def weather_icon_md(icon: Optional[str]) -> str:
     """MarkdownV2 fragment; custom emoji uses Telegram's emoji-link syntax.
 
     The returned string is ready to embed in a MarkdownV2 body (do **not**
-    run ``escape_v2`` on it).
+    run ``escape_v2`` on it). Prefer this over plain ``weather_icon`` anywhere
+    ``parse_mode=MarkdownV2`` is used.
     """
     fallback = emoji_for(icon)
     eid = custom_emoji_id_for(icon)
     if not eid:
         return fallback
-    # MarkdownV2 custom emoji: ![👍](tg://emoji?id=…)
-    return f"![{fallback}](tg://emoji?id={eid})"
+    return markdown_v2_custom_emoji(eid, fallback)
+
+
+def weather_icon_pair_md(day_icon: Optional[str], night_icon: Optional[str]) -> str:
+    """Day icon, or ``day→night`` MarkdownV2 when codes differ."""
+    if night_icon and night_icon != day_icon:
+        return f"{weather_icon_md(day_icon)}→{weather_icon_md(night_icon)}"
+    return weather_icon_md(day_icon)
+
+
+def build_format_maps(
+    id_map: Optional[Mapping[str, str]] = None,
+) -> dict[str, dict[str, str]]:
+    """Build full ``code → fragment`` tables for MarkdownV2 / HTML / labels.
+
+    Used when writing ``weather_custom_emoji.json`` and for offline export so
+    operators can paste MarkdownV2 without re-deriving the syntax.
+    """
+    source = dict(id_map) if id_map is not None else dict(custom_emoji_map())
+    markdown_v2: dict[str, str] = {}
+    html: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    emojis: dict[str, str] = {}
+    for code in UPLOAD_ICON_CODES:
+        emoji = emoji_for(code)
+        label = icon_label(code)
+        eid = source.get(code)
+        emojis[code] = emoji
+        labels[code] = label
+        if eid:
+            markdown_v2[code] = markdown_v2_custom_emoji(eid, emoji)
+            html[code] = html_custom_emoji(eid, emoji)
+        else:
+            markdown_v2[code] = emoji
+            html[code] = html_escape(emoji, quote=True)
+    return {
+        "markdown_v2": markdown_v2,
+        "html": html,
+        "labels": labels,
+        "emoji": emojis,
+    }
+
+
+def export_markdown_v2_pack_line(id_map: Optional[Mapping[str, str]] = None) -> str:
+    """Single-line MarkdownV2 dump of the pack in upload order (for paste/import)."""
+    formats = build_format_maps(id_map)
+    # Only real custom-emoji fragments — skip pure unicode fallbacks.
+    parts = []
+    for code in UPLOAD_ICON_CODES:
+        frag = formats["markdown_v2"].get(code, "")
+        if frag.startswith("!["):
+            parts.append(frag)
+    return "".join(parts)
 
 
 def rich_icon_text(icon: Optional[str], text: str, *, sep: str = " ") -> list[Any]:

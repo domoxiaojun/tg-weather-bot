@@ -41,12 +41,18 @@ from telegram.request import HTTPXRequest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from utils.weather_icons import UPLOAD_ICON_CODES, WEATHER_ICONS  # noqa: E402
+from utils.weather_icons import (  # noqa: E402
+    UPLOAD_ICON_CODES,
+    WEATHER_ICONS,
+    build_format_maps,
+    export_markdown_v2_pack_line,
+)
 
 ASSETS = ROOT / "data" / "weather_emoji_assets"
 DEFAULT_MAP = ROOT / "data" / "weather_custom_emoji.json"
 # Shipped with the image; not overwritten by docker-compose ./data volume.
 BUNDLED_MAP = ROOT / "resources" / "weather_custom_emoji.json"
+MDV2_EXPORT = ROOT / "resources" / "weather_custom_emoji.markdown_v2.txt"
 
 # Telegram media uploads can be slow from some networks.
 _CONNECT_TIMEOUT = 30.0
@@ -76,23 +82,36 @@ def _save_map(
     username: str,
     icons: dict[str, str],
 ) -> None:
+    ordered_icons = {
+        code: icons[code]
+        for code in UPLOAD_ICON_CODES
+        if code in icons
+    }
+    # Keep any unexpected keys after the canonical ordered block.
+    for code, eid in sorted(icons.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0):
+        ordered_icons.setdefault(code, eid)
+
+    formats = build_format_maps(ordered_icons)
     payload = {
-        "version": 1,
+        "version": 2,
         "sticker_set_name": name,
         "sticker_set_title": title,
         "bot_username": username,
         "order": list(UPLOAD_ICON_CODES),
-        "icons": {
-            code: icons[code]
-            for code in UPLOAD_ICON_CODES
-            if code in icons
-        },
+        # Runtime loader only needs this flat map (code → custom_emoji_id).
+        "icons": ordered_icons,
+        # Convenience tables for MarkdownV2 / HTML / labels (docs + tooling).
+        "labels": formats["labels"],
+        "emoji": formats["emoji"],
+        "markdown_v2": formats["markdown_v2"],
+        "html": formats["html"],
     }
-    # Keep any unexpected keys after the canonical ordered block.
-    for code, eid in sorted(icons.items(), key=lambda kv: int(kv[0]) if kv[0].isdigit() else 0):
-        payload["icons"].setdefault(code, eid)
     map_path.parent.mkdir(parents=True, exist_ok=True)
     map_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    # Pasteable one-line pack dump (import_weather_emoji_md.py compatible).
+    MDV2_EXPORT.parent.mkdir(parents=True, exist_ok=True)
+    MDV2_EXPORT.write_text(export_markdown_v2_pack_line(ordered_icons) + "\n", encoding="utf-8")
 
 
 async def _retry(label: str, coro_factory, attempts: int = _MAX_ATTEMPTS):

@@ -76,9 +76,29 @@ uv run python scripts/upload_weather_emoji.py   # 需 Premium + BOT_TOKEN + SUPE
 
 | 用途 | 来源 |
 | --- | --- |
-| Bot UI | `weather_icon_rich/md/html(code)` |
-| LLM 日报 | payload 里的 `weather_icon_code` / `weather_icon_label` + 本次出现的 `weather_icon_legend` |
-| 人读对照 | `data/weather_emoji_order.md`、`resources/weather_icon_semantics.json` |
+| Bot UI Rich | `weather_icon_rich(code)` |
+| Bot UI MarkdownV2 | `weather_icon_md(code)` → `![☀️](tg://emoji?id=…)`（**勿**再 `escape_v2`） |
+| Bot UI HTML | `weather_icon_html(code)` → `<tg-emoji emoji-id="…">` |
+| LLM 日报 | `weather_icon_code` / `weather_icon_label` + `weather_icon_legend` |
+| 人读 / 粘贴整包 | `data/weather_emoji_order.md`、`resources/weather_custom_emoji.markdown_v2.txt` |
+
+映射 JSON（`data/` 与 `resources/`）在 v2 起额外带：
+
+```json
+{
+  "icons": { "100": "6287…" },
+  "labels": { "100": "晴" },
+  "emoji": { "100": "☀️" },
+  "markdown_v2": { "100": "![☀️](tg://emoji?id=6287…)" },
+  "html": { "100": "<tg-emoji emoji-id=\"6287…\">☀️</tg-emoji>" }
+}
+```
+
+运行时仍只读 `icons`；`markdown_v2` / `html` 给工具与文档。重新导出：
+
+```bash
+uv run python scripts/export_weather_emoji_formats.py
+```
 
 LLM **不必**也不会拿到 custom emoji id；正文用中文现象描述，图标由 Bot 按 code 渲染。
 
