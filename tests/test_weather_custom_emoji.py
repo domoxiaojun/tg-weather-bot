@@ -129,6 +129,28 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         self.assertEqual(UPLOAD_ICON_CODES[5], "150")
         self.assertEqual(UPLOAD_ICON_CODES[-1], "999")
 
+    def test_each_fallback_is_a_single_emoji(self) -> None:
+        """Telegram custom-emoji base must be one emoji, not ❄️+🌨️ glued together."""
+        import re
+
+        from utils.weather_icons import WEATHER_ICONS
+
+        emoji_seq = re.compile(
+            r"(?:"
+            r"[\U0001F1E6-\U0001F1FF]{2}"
+            r"|[\U0001F300-\U0001FAFF\u2600-\u27BF]"
+            r"(?:\uFE0F)?"
+            r"(?:\u200D[\U0001F300-\U0001FAFF\u2600-\u27BF](?:\uFE0F)?)*"
+            r")"
+        )
+        for code, em in WEATHER_ICONS.items():
+            seqs = emoji_seq.findall(em)
+            self.assertEqual(
+                len(seqs),
+                1,
+                msg=f"code {code} fallback {em!r} must be exactly one emoji, got {seqs!r}",
+            )
+
     def test_import_mdv2_by_order(self) -> None:
         import importlib.util
         from utils.weather_icons import UPLOAD_ICON_CODES
