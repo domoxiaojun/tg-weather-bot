@@ -112,23 +112,57 @@ def main(argv: list[str] | None = None) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     ok = fail = skip = 0
+    # Numbered copies so manual Stickers-bot upload can follow pack order 01…N.
+    order_lines = [
+        "# Weather custom-emoji upload order (do not reshuffle)",
+        f"# total={len(codes)}",
+        "# index | code | fallback_emoji | file",
+    ]
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-        for code in codes:
+        for index, code in enumerate(codes, start=1):
             dest = args.out / f"{code}.png"
+            numbered = args.out / f"{index:02d}_{code}.png"
             if args.skip_existing and dest.is_file():
                 skip += 1
+                emoji = WEATHER_ICONS.get(code, "?")
+                order_lines.append(f"{index:02d} | {code} | {emoji} | {dest.name}")
+                if dest.is_file() and not numbered.is_file():
+                    numbered.write_bytes(dest.read_bytes())
                 continue
             try:
                 svg = download_svg(client, code)
                 png = rasterise_svg(svg)
                 dest.write_bytes(png)
-                print(f"ok  {code} → {dest} ({len(png)} B)")
+                numbered.write_bytes(png)
+                emoji = WEATHER_ICONS.get(code, "?")
+                order_lines.append(f"{index:02d} | {code} | {emoji} | {numbered.name}")
+                print(f"ok  {index:02d} {code} {emoji} → {numbered.name} ({len(png)} B)")
                 ok += 1
             except Exception as exc:  # noqa: BLE001 — surface per-icon failures
-                print(f"FAIL {code}: {exc}", file=sys.stderr)
+                print(f"FAIL {index:02d} {code}: {exc}", file=sys.stderr)
                 fail += 1
 
+    order_path = args.out / "ORDER.txt"
+    order_path.write_text("\n".join(order_lines) + "\n", encoding="utf-8")
+    # Repo-level human checklist (always rewrite from canonical codes).
+    checklist = ROOT / "data" / "weather_emoji_order.md"
+    checklist.parent.mkdir(parents=True, exist_ok=True)
+    md = [
+        "# 和风自定义 Emoji 上传顺序",
+        "",
+        "按下面序号 **从 1 到 N** 依次加入表情包。导入 MarkdownV2 时也会按同一顺序对齐 code。",
+        "",
+        "| # | code | fallback |",
+        "| --: | --- | --- |",
+    ]
+    for index, code in enumerate(UPLOAD_ICON_CODES if not args.codes.strip() else codes, start=1):
+        md.append(f"| {index} | `{code}` | {WEATHER_ICONS.get(code, '?')} |")
+    md.append("")
+    checklist.write_text("\n".join(md), encoding="utf-8")
+
     print(f"\ndone: {ok} written, {skip} skipped, {fail} failed → {args.out}")
+    print(f"order: {order_path}")
+    print(f"checklist: {checklist}")
     return 1 if fail else 0
 
 

@@ -2,6 +2,53 @@
 
 把 QWeather 的 icon code（`100`/`301`/…）渲染成 Telegram **Custom Emoji**。无映射时自动回退 Unicode emoji，行为与改造前一致。
 
+## cairosvg 是什么？
+
+**可选工具，不是 Bot 运行依赖。**
+
+- 和风开源图标是 **SVG**（矢量）
+- Telegram 自定义 emoji 要 **100×100 的 PNG/WEBP**
+- [cairosvg](https://cairosvg.org/) = 用系统 [Cairo](https://www.cairographics.org/) 把 SVG 画成 PNG 的 Python 库
+
+只有跑 `scripts/prepare_weather_emoji_assets.py` 时才需要它。  
+若你在别的地方已经做好 100×100 图、或自己用 Stickers 机器人建包，**完全不用装 cairosvg**。运行时 Bot 只读 `data/weather_custom_emoji.json` 里的 id。
+
+## 推荐流程（你建包 → 给我 MarkdownV2）
+
+1. **按固定顺序**往表情包里加图标（见 `data/weather_emoji_order.md`，与 `UPLOAD_ICON_CODES` 一致）  
+   顺序：白天晴云 → 夜间晴云 → 雨 → 雪 → 雾霾沙尘 → 其它。
+2. 建包成功后，把**整包**导出/复制成 MarkdownV2，形如：
+
+   ```
+   ![☀️](tg://emoji?id=5368324170671202286)![🌤️](tg://emoji?id=…)…
+   ```
+
+3. 导入映射（按出现顺序对齐 code）：
+
+   ```bash
+   uv run python scripts/import_weather_emoji_md.py pack.md
+   # 或
+   pbpaste | uv run python scripts/import_weather_emoji_md.py -
+   ```
+
+4. 确认生成 `data/weather_custom_emoji.json`，重启 Bot。  
+   开关默认开：`ENABLE_CUSTOM_WEATHER_EMOJI=true`。
+
+顺序错了 id 会对错天气；**务必 1…N 与清单一致**。
+
+## 可选：本机自动出图 + API 上传
+
+```bash
+# 仅准备 PNG 时需要（确认后再装）
+# brew install cairo pkg-config
+# uv pip install --python .venv/bin/python cairosvg
+
+uv run python scripts/prepare_weather_emoji_assets.py
+# 产出 data/weather_emoji_assets/01_100.png … 与 ORDER.txt
+
+uv run python scripts/upload_weather_emoji.py   # 需 Premium + BOT_TOKEN + SUPER_ADMIN_ID
+```
+
 ## 能力边界
 
 | 路径 | 渲染方式 |
@@ -11,58 +58,19 @@
 | MarkdownV2 | `![☀️](tg://emoji?id=…)` |
 | 图表/纯文本 | 仍用 Unicode emoji |
 
-**前置条件（Bot API 9.4，2026-02-09）**
+**前置条件（Bot API 9.4）**
 
-- Bot **所有者**开通 Telegram Premium 后，Bot 可在**私聊 / 群 / 超级群**直接发送 custom emoji。
-- 频道、以及未满足 Premium/Fragment 条件的场景会失败或回退；本项目映射缺失时始终回退 emoji。
-- 创建 sticker set 时，所有者必须先给 Bot 发过 `/start`。
-
-## 一键生成流程
-
-```bash
-# 1) 安装光栅化依赖（需先确认；系统 Cairo + Python 包）
-# macOS: brew install cairo pkg-config
-# uv pip install --python .venv/bin/python cairosvg
-
-# 2) 下载和风 SVG 并输出 100×100 PNG（MIT 图标库）
-uv run python scripts/prepare_weather_emoji_assets.py
-
-# 3) 上传为 custom_emoji sticker set，写出映射
-# 需要 .env 里 BOT_TOKEN + SUPER_ADMIN_ID（所有者数字 ID）
-uv run python scripts/upload_weather_emoji.py
-
-# 4) 确认映射文件存在后重启 Bot
-# data/weather_custom_emoji.json
-```
-
-配置（`.env`）：
-
-```env
-ENABLE_CUSTOM_WEATHER_EMOJI=true
-# WEATHER_CUSTOM_EMOJI_MAP_PATH=data/weather_custom_emoji.json
-```
+- Bot **所有者** Premium → 私聊/群/超群可发 custom emoji
+- 映射缺失时始终回退 Unicode emoji
 
 ## 映射文件格式
 
-见 `data/weather_custom_emoji.json.example`：
-
-```json
-{
-  "version": 1,
-  "sticker_set_name": "qweather_icons_by_YourBot",
-  "icons": {
-    "100": "5368…",
-    "301": "5368…"
-  }
-}
-```
-
-当前会上传 `utils/weather_icons.py` 里 `WEATHER_ICONS` 的全部 code（约 70 个），低于 custom emoji pack 上限 200。
+见 `data/weather_custom_emoji.json.example`。约 70 个 code，低于 pack 上限 200。
 
 ## 彩云兼容
 
-Caiyun `skycon` 在 adapter 里已映射为**和风 code**（不再直接塞 emoji），这样 fusion 补全字段时也能走同一套 custom emoji。
+Caiyun `skycon` 在 adapter 里映射为**和风 code**，与 custom emoji 共用一张表。
 
 ## 许可证
 
-图标 SVG 来自 [QWeather Icons](https://icons.qweather.com/)（MIT）。上传到 Telegram 自定义表情包时请自行遵守 Telegram 与 MIT 条款。
+图标 SVG 来自 [QWeather Icons](https://icons.qweather.com/)（MIT）。

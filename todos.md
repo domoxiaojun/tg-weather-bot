@@ -22,11 +22,12 @@
 - [x] `scripts/upload_weather_emoji.py`：创建/更新 custom_emoji sticker set，写出映射 JSON
 - [x] 单元测试：有映射 / 无映射 / 回退
 - [x] 文档简短说明（README 或 docs）
-- [ ] 本地 unittest + compileall；提交 git
-- [ ] （人工）Premium + 安装 cairosvg 后跑 prepare/upload
+- [x] 本地 unittest + compileall；提交 git（`81ae4d1`）
+- [x] 固定上传顺序 + `import_weather_emoji_md.py`（你贴 MDV2 即可生成映射）
+- [ ] （人工）按 `data/weather_emoji_order.md` 建包 → 贴 MarkdownV2 → import
 
 ## 范围说明
 
 - 上传约 70 个项目实际使用的和风 code（`WEATHER_ICONS` 全集），远低于 custom emoji pack 上限 200
-- **不**在本机自动跑实际上传（需 Premium + 用户确认依赖安装）
+- **推荐**：你建包后给 MarkdownV2，用 import 脚本写 JSON；**不强制** cairosvg
 - 映射文件默认 `data/weather_custom_emoji.json`；未生成前行为与现在一致（emoji）

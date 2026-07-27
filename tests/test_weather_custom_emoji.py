@@ -121,6 +121,36 @@ class WeatherCustomEmojiTests(unittest.TestCase):
             },
         )
 
+    def test_upload_order_is_stable_dict_order(self) -> None:
+        from utils.weather_icons import UPLOAD_ICON_CODES, WEATHER_ICONS
+
+        self.assertEqual(list(UPLOAD_ICON_CODES), list(WEATHER_ICONS.keys()))
+        self.assertEqual(UPLOAD_ICON_CODES[0], "100")
+        self.assertEqual(UPLOAD_ICON_CODES[5], "150")
+        self.assertEqual(UPLOAD_ICON_CODES[-1], "999")
+
+    def test_import_mdv2_by_order(self) -> None:
+        import importlib.util
+        from utils.weather_icons import UPLOAD_ICON_CODES
+
+        path = Path(__file__).resolve().parents[1] / "scripts" / "import_weather_emoji_md.py"
+        spec = importlib.util.spec_from_file_location("import_weather_emoji_md", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+
+        sample = (
+            "![☀️](tg://emoji?id=1111111111111111111)"
+            "![🌤️](tg://emoji?id=2222222222222222222)"
+        )
+        ids = mod.extract_ids(sample)
+        self.assertEqual(ids, ["1111111111111111111", "2222222222222222222"])
+        padded = ids + [str(3000 + i) for i in range(len(UPLOAD_ICON_CODES) - 2)]
+        mapping = mod.build_map(padded)
+        self.assertEqual(mapping["100"], "1111111111111111111")
+        self.assertEqual(mapping["101"], "2222222222222222222")
+        self.assertEqual(len(mapping), len(UPLOAD_ICON_CODES))
+
 
 if __name__ == "__main__":
     unittest.main()
