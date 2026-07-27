@@ -151,15 +151,20 @@ class Settings(BaseSettings):
     enable_custom_weather_emoji: bool = Field(
         True,
         description=(
-            "Render QWeather icon codes as Telegram custom emoji when "
-            "data/weather_custom_emoji.json (or WEATHER_CUSTOM_EMOJI_MAP_PATH) "
-            "has ids; falls back to Unicode emoji. Bot owner needs Premium "
-            "for private/group/supergroup (Bot API 9.4)."
+            "Render QWeather icon codes as Telegram custom emoji when a map "
+            "file is present; falls back to Unicode emoji. Lookup order: "
+            "WEATHER_CUSTOM_EMOJI_MAP_PATH, data/weather_custom_emoji.json, "
+            "resources/weather_custom_emoji.json (bundled). Bot owner needs "
+            "Premium for private/group/supergroup (Bot API 9.4)."
         ),
     )
     weather_custom_emoji_map_path: str = Field(
         "data/weather_custom_emoji.json",
-        description="JSON map of QWeather icon code → custom_emoji_id",
+        description=(
+            "Preferred JSON map of QWeather icon code → custom_emoji_id "
+            "(relative paths are resolved from the project root). If missing, "
+            "falls back to resources/weather_custom_emoji.json shipped in the image."
+        ),
     )
 
     # Scheduling

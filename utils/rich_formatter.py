@@ -24,15 +24,13 @@ from services.telegram_rich import (
     table,
 )
 from utils.formatter import (
-    CATEGORIES,
-    INDICES_EMOJI,
     _display_summary_lines,
     _weekday_cn,
     format_attribution,
     format_precip_value,
     format_weather_number,
     normalize_warning_level,
-    select_indices_for_day,
+    ordered_indices_for_day,
 )
 from utils.weather_icons import (
     rich_icon_pair,
@@ -112,7 +110,7 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
             )
         else:
             expanded.append(paragraph(italic(alert.source or "暂无详细说明")))
-        blocks.append(details(marked(f"⚠️ {title}"), expanded))
+        blocks.append(details(["🔴 ⚠️ ", bold(title)], expanded))
     return blocks
 
 
@@ -283,8 +281,6 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
         rows.append(["👁️ 能见度", f"{format_weather_number(data.now_vis)}km"])
     if data.now_pressure is not None:
         rows.append(["📈 气压", f"{format_weather_number(data.now_pressure)}hPa"])
-    if data.now_cloud is not None:
-        rows.append(["☁️ 云量", f"{data.now_cloud}%"])
     if include_air and data.air_quality:
         aqi = data.air_quality
         air_bits = []
@@ -300,11 +296,28 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
 
 
 def _index_pairs_table(entries: List[str]) -> dict:
-    """Life-index tips two per row — five one-line bullets waste vertical space."""
+    """Life-index tips two per row in their own compact section."""
     rows = []
     for i in range(0, len(entries), 2):
         rows.append([entries[i], entries[i + 1] if i + 1 < len(entries) else ""])
-    return table(rows, aligns=["left", "left"])
+    return table(rows, aligns=["left", "left"], bordered=True)
+
+
+def _index_pair_blocks(
+    indices: List,
+    target_date=None,
+    *,
+    include_heading: bool,
+) -> List[dict]:
+    ordered = ordered_indices_for_day(indices, target_date)
+    if not ordered:
+        return []
+    entries = [f"{index.name}：{index.category}" for index in ordered]
+    blocks: List[dict] = []
+    if include_heading:
+        blocks.append(heading("💡 生活指数", size=4))
+    blocks.append(_index_pairs_table(entries))
+    return blocks
 
 
 def _today_detail_blocks(data: WeatherData) -> List[dict]:
@@ -346,6 +359,8 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
         rows.append(["💧 湿度", f"{day.humidity}%"])
     if day.vis is not None:
         rows.append(["👁️ 能见度", f"{format_weather_number(day.vis)}km"])
+    if data.now_cloud is not None:
+        rows.append(["☁️ 云量", f"{data.now_cloud}%"])
     if day.uv_index:
         rows.append(["☀️ UV", str(day.uv_index)])
 
@@ -376,19 +391,9 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
         if deltas:
             rows.append(["📊 比昨天", " · ".join(deltas)])
 
-    # The API can return the same index for three forecast days. Only today's
-    # three compact tips belong here; each remains a label/value table row.
-    wanted = {"2": "🚗", "3": "🧥", "8": "😊"}
-    seen_types = set()
-    for index in select_indices_for_day(data.indices, day.date.date()):
-        if index.type in wanted and index.type not in seen_types:
-            rows.append([f"{wanted[index.type]} {index.name}", index.category])
-            seen_types.add(index.type)
-
     if day.date.date() == data.local_update_date:
-        title = f"📅 今日详情 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})"
-    else:
-        title = f"📅 最近预报 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})"
+        return [table(rows, aligns=["left", "left"], bordered=True)]
+    title = f"📅 最近预报 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})"
     return [paragraph([bold(title)]), table(rows, aligns=["left", "left"], bordered=True)]
 
 
@@ -440,7 +445,13 @@ def build_report_blocks(report_html: str, *, title: Optional[str] = None) -> Lis
 def build_realtime_blocks(data: WeatherData) -> List[dict]:
     blocks = build_header(data)
 
-    hero: list = ["🌡️ 实时 ", bold(f"{format_weather_number(data.now_temp)}°C")]
+    # Icon + temp on one line so custom emoji is visible even if the heading
+    # is truncated on small clients.
+    hero: list = [
+        weather_icon_rich(data.now_icon),
+        " ",
+        bold(f"{format_weather_number(data.now_temp)}°C"),
+    ]
     if data.now_text:
         hero.append(f" {data.now_text}")
     if data.now_feels_like is not None:
@@ -460,6 +471,9 @@ def build_realtime_blocks(data: WeatherData) -> List[dict]:
     if stats_rows:
         blocks.append(table(stats_rows, aligns=["left", "left"], bordered=True))
     blocks.extend(_today_detail_blocks(data))
+    current_day = data.get_current_daily_forecast()
+    index_date = current_day.date.date() if current_day is not None else data.local_update_date
+    blocks.extend(_index_pair_blocks(data.indices, index_date, include_heading=True))
     blocks.extend(air_blocks)
     blocks.append(build_footer(data))
     return blocks
@@ -655,31 +669,12 @@ def build_daily_blocks(
     return blocks
 
 
-def _indices_group_blocks(indices: List) -> List[dict]:
-    groups: List[dict] = []
-    for category_name, type_ids in CATEGORIES.items():
-        group = [index for index in indices if index.type in type_ids]
-        if not group:
-            continue
-        groups.append(heading(category_name, size=4))
-        items = []
-        for index in group:
-            emoji = INDICES_EMOJI.get(index.type, "ℹ️")
-            entry = [paragraph([f"{emoji} ", bold(index.name), f": {index.category}"])]
-            if index.text:
-                entry.append(paragraph(italic(index.text)))
-            items.append(entry)
-        groups.append(bullet_list(items))
-    return groups
-
-
 def build_indices_blocks(data: WeatherData) -> List[dict]:
     if not data.indices:
         return build_realtime_blocks(data)
 
     blocks = build_header(data, "生活指数")
-    today = select_indices_for_day(data.indices)
-    blocks.extend(_indices_group_blocks(today))
+    blocks.extend(_index_pair_blocks(data.indices, include_heading=False))
 
     # With a 3-day range the later days go into collapsed sections instead of
     # repeating every index three times in one wall of text.
@@ -687,7 +682,7 @@ def build_indices_blocks(data: WeatherData) -> List[dict]:
     days = sorted({index.date.date() for index in dated})
     for offset, day in enumerate(days[1:3], start=1):
         label = "明天" if offset == 1 else "后天"
-        group_blocks = _indices_group_blocks(select_indices_for_day(data.indices, day))
+        group_blocks = _index_pair_blocks(data.indices, day, include_heading=False)
         if group_blocks:
             blocks.append(details(f"💡 {label}（{day.strftime('%m-%d')}）", group_blocks))
 

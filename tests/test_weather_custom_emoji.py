@@ -89,9 +89,16 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "map.json"
             path.write_text('{"icons": {"104": "9999"}}', encoding="utf-8")
-            with mock.patch.object(wi, "_map_path", return_value=path):
+            with mock.patch.object(wi, "resolve_custom_emoji_map_path", return_value=path):
                 wi.reload_custom_emoji_map()
                 self.assertEqual(weather_icon_rich("104")["custom_emoji_id"], "9999")
+
+    def test_bundled_resources_map_exists(self) -> None:
+        """Image ships resources/ so docker ./data mounts cannot erase the map."""
+        bundled = Path(__file__).resolve().parents[1] / "resources" / "weather_custom_emoji.json"
+        self.assertTrue(bundled.is_file(), msg=f"missing {bundled}")
+        data = __import__("json").loads(bundled.read_text(encoding="utf-8"))
+        self.assertIn("100", data.get("icons") or data)
 
     def test_header_uses_rich_icon(self) -> None:
         set_custom_emoji_map_for_tests({"101": "555"})

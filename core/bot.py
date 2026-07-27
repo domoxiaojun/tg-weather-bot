@@ -20,6 +20,7 @@ from telegram.ext import (
 from core.config import settings
 from core.handlers.callbacks import CallbackHandlers
 from core.handlers.guide import help_command as guide_help_command
+from core.handlers.guest import GuestHandlers
 from core.handlers.common import BotDependencies
 from core.handlers.inline import InlineHandlers
 from core.handlers.report import ReportHandlers
@@ -29,6 +30,7 @@ from services.fusion import WeatherFusionService
 from services.llm import LLMService
 from utils.cache import cache
 from utils.persistence_backup import rotate_persistence_backups
+from utils.weather_icons import describe_custom_emoji_status, reload_custom_emoji_map
 
 PERSISTENCE_PATH = "data/bot_data.pickle"
 
@@ -129,6 +131,19 @@ async def _register_bot_commands(application: Application):
         except Exception as error:
             logger.warning(f"设置 Bot {label} 失败: {error}")
 
+    if settings.enable_guest_mode:
+        try:
+            me = await application.bot.get_me()
+            if me.supports_guest_queries:
+                logger.info("✅ Telegram Guest Mode 已启用")
+            else:
+                logger.warning(
+                    "Guest Mode 代码已就绪，但 BotFather 尚未开启；"
+                    "请在 BotFather MiniApp > Bot Settings > Guest Mode 中启用"
+                )
+        except Exception as error:
+            logger.warning(f"无法核对 Guest Mode 状态: {error}")
+
 
 def create_app() -> Application:
     """Factory to create the PTB Application."""
@@ -137,6 +152,9 @@ def create_app() -> Application:
         ptb_version,
         BOT_API_VERSION,
     )
+    # Prefer a fresh map each process start (upload/redeploy without code change).
+    reload_custom_emoji_map()
+    logger.info(describe_custom_emoji_status())
     os.makedirs("data", exist_ok=True)
     # Snapshot the previous run's subscriptions before PTB starts rewriting it.
     rotate_persistence_backups(PERSISTENCE_PATH, settings.persistence_backup_count)
@@ -183,9 +201,16 @@ def create_app() -> Application:
     weather = WeatherHandlers(deps)
     reports = ReportHandlers(deps)
     inline = InlineHandlers(deps)
+    guest = GuestHandlers(deps)
     callbacks = CallbackHandlers(deps, weather_handlers=weather, report_handlers=reports)
     subscriptions = SubscriptionHandlers(deps)
 
+    if settings.enable_guest_mode:
+        # Guest updates can contain command-like text and can belong to private
+        # chats, so they must win group 0 before normal command/text handlers.
+        app.add_handler(
+            MessageHandler(filters.UpdateType.GUEST_MESSAGE, guest.handle_guest_message)
+        )
     app.add_handler(CommandHandler("start", weather.start))
     app.add_handler(CommandHandler("help", guide_help_command))
     app.add_handler(CommandHandler("tq", weather.handle_weather_request))

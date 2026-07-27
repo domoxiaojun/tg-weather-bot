@@ -31,8 +31,11 @@
    pbpaste | uv run python scripts/import_weather_emoji_md.py -
    ```
 
-4. 确认生成 `data/weather_custom_emoji.json`，重启 Bot。  
+4. 确认生成 `data/weather_custom_emoji.json`，**并复制到** `resources/weather_custom_emoji.json`（随镜像打包、不被 `./data` 卷盖住），然后重启 Bot。  
    开关默认开：`ENABLE_CUSTOM_WEATHER_EMOJI=true`。
+
+运行时查找顺序：`WEATHER_CUSTOM_EMOJI_MAP_PATH` → `data/…` → `resources/…`。  
+Docker Compose 把 `./data` 挂到 `/app/data` 时，请把映射放在**宿主机** `./data/weather_custom_emoji.json`，或依赖镜像内 `resources/` 兜底。
 
 顺序错了 id 会对错天气；**务必 1…N 与清单一致**。
 

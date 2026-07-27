@@ -45,6 +45,8 @@ from utils.weather_icons import UPLOAD_ICON_CODES, WEATHER_ICONS  # noqa: E402
 
 ASSETS = ROOT / "data" / "weather_emoji_assets"
 DEFAULT_MAP = ROOT / "data" / "weather_custom_emoji.json"
+# Shipped with the image; not overwritten by docker-compose ./data volume.
+BUNDLED_MAP = ROOT / "resources" / "weather_custom_emoji.json"
 
 # Telegram media uploads can be slow from some networks.
 _CONNECT_TIMEOUT = 30.0
@@ -271,6 +273,11 @@ async def _upload(name: str, title: str, map_path: Path, assets: Path) -> int:
 
         _save_map(map_path, name=name, title=title, username=username, icons=icons)
         print(f"wrote {map_path} ({len(icons)} icons)")
+        # Keep the image-bundled copy in sync so VPS rebuilds work without a data/ mount.
+        if map_path.resolve() != BUNDLED_MAP.resolve():
+            BUNDLED_MAP.parent.mkdir(parents=True, exist_ok=True)
+            BUNDLED_MAP.write_text(map_path.read_text(encoding="utf-8"), encoding="utf-8")
+            print(f"synced {BUNDLED_MAP}")
 
         missing = [c for c, _ in pngs if c not in icons]
         if missing:

@@ -109,8 +109,20 @@ WEATHER_ICONS: dict[str, str] = {
 # Pack upload / MDV2 import order — identical to WEATHER_ICONS insertion order.
 UPLOAD_ICON_CODES: tuple[str, ...] = tuple(WEATHER_ICONS.keys())
 
-_DEFAULT_MAP_PATH = Path("data/weather_custom_emoji.json")
+# Repo root (…/tg-weather-bot), independent of process CWD / Docker WORKDIR quirks.
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Runtime lookup order (first existing file wins):
+# 1) WEATHER_CUSTOM_EMOJI_MAP_PATH (absolute, or relative to project root)
+# 2) data/weather_custom_emoji.json  — host volume / upload script output
+# 3) resources/weather_custom_emoji.json — shipped with the image (not under ./data mount)
+_DEFAULT_RELATIVE_CANDIDATES: tuple[str, ...] = (
+    "data/weather_custom_emoji.json",
+    "resources/weather_custom_emoji.json",
+)
+
 _map_override: Optional[Mapping[str, str]] = None
+_resolved_map_path: Optional[Path] = None
 
 
 def _settings_enabled() -> bool:
@@ -121,21 +133,44 @@ def _settings_enabled() -> bool:
         return True
 
 
-def _map_path() -> Path:
+def _settings_map_path_raw() -> Optional[str]:
     try:
         from core.config import settings
-        raw = getattr(settings, "weather_custom_emoji_map_path", None) or str(_DEFAULT_MAP_PATH)
-        return Path(raw)
+        raw = getattr(settings, "weather_custom_emoji_map_path", None)
+        return str(raw).strip() if raw else None
     except Exception:
-        return _DEFAULT_MAP_PATH
+        return None
 
 
-@lru_cache(maxsize=1)
-def _load_custom_emoji_map() -> dict[str, str]:
-    """Load code → custom_emoji_id mapping from disk (cached)."""
-    path = _map_path()
-    if not path.is_file():
-        return {}
+def _as_absolute(path: Path) -> Path:
+    if path.is_absolute():
+        return path
+    return (_PROJECT_ROOT / path).resolve()
+
+
+def resolve_custom_emoji_map_path() -> Optional[Path]:
+    """Return the map file that will be (or was) loaded, if any exists."""
+    candidates: list[Path] = []
+    configured = _settings_map_path_raw()
+    if configured:
+        candidates.append(_as_absolute(Path(configured)))
+    for relative in _DEFAULT_RELATIVE_CANDIDATES:
+        path = _as_absolute(Path(relative))
+        if path not in candidates:
+            candidates.append(path)
+
+    for path in candidates:
+        if path.is_file():
+            return path
+    return candidates[0] if candidates else None
+
+
+def _map_path() -> Path:
+    """Best path for logging; may not exist yet."""
+    return resolve_custom_emoji_map_path() or _as_absolute(Path(_DEFAULT_RELATIVE_CANDIDATES[0]))
+
+
+def _parse_map_file(path: Path) -> dict[str, str]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -160,17 +195,30 @@ def _load_custom_emoji_map() -> dict[str, str]:
     return out
 
 
+@lru_cache(maxsize=1)
+def _load_custom_emoji_map() -> dict[str, str]:
+    """Load code → custom_emoji_id mapping from disk (cached)."""
+    global _resolved_map_path
+    path = resolve_custom_emoji_map_path()
+    _resolved_map_path = path
+    if path is None or not path.is_file():
+        return {}
+    return _parse_map_file(path)
+
+
 def reload_custom_emoji_map() -> None:
     """Drop the cached map (call after regenerating the JSON file)."""
-    global _map_override
+    global _map_override, _resolved_map_path
     _map_override = None
+    _resolved_map_path = None
     _load_custom_emoji_map.cache_clear()
 
 
 def set_custom_emoji_map_for_tests(mapping: Optional[Mapping[str, str]]) -> None:
     """Inject a mapping in unit tests without touching disk."""
-    global _map_override
+    global _map_override, _resolved_map_path
     _map_override = dict(mapping) if mapping is not None else None
+    _resolved_map_path = None
     _load_custom_emoji_map.cache_clear()
 
 
@@ -178,6 +226,29 @@ def custom_emoji_map() -> Mapping[str, str]:
     if _map_override is not None:
         return _map_override
     return _load_custom_emoji_map()
+
+
+def custom_emoji_map_source() -> Optional[Path]:
+    """Path actually used after load (for startup logs)."""
+    if _map_override is not None:
+        return None
+    custom_emoji_map()  # ensure cache warm
+    return _resolved_map_path
+
+
+def describe_custom_emoji_status() -> str:
+    """One-line status for startup logs."""
+    if not _settings_enabled():
+        return "custom weather emoji disabled (ENABLE_CUSTOM_WEATHER_EMOJI=false)"
+    mapping = custom_emoji_map()
+    source = custom_emoji_map_source()
+    if not mapping:
+        return (
+            "custom weather emoji enabled but no map loaded "
+            f"(looked for data/ + resources/; last path={_map_path()})"
+        )
+    where = source if source is not None else "injected"
+    return f"custom weather emoji: {len(mapping)} icons from {where}"
 
 
 def emoji_for(icon: Optional[str]) -> str:
