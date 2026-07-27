@@ -174,19 +174,17 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertFalse(any("湿度" in row[0] for row in detail_rows))
         self.assertFalse(any("能见度" in row[0] for row in detail_rows))
 
-        # Life indices: paragraphs (not table), two tips per line, Unicode emoji.
-        index_blocks = []
-        for block in blocks[index_heading + 1 : air_index]:
-            if block.get("type") == "paragraph":
-                index_blocks.append(block)
-            elif block.get("type") == "table":
-                self.fail("life indices must not use a table on the default card")
-        self.assertEqual(len(index_blocks), 8)
-        first_line = plain_text(index_blocks[0].get("text"))
-        self.assertIn("🚗 洗车：不宜", first_line)
-        self.assertIn("👕 穿衣：热", first_line)
-        self.assertIn("    ", first_line)
-        self.assertNotIn("指数：", first_line)
+        # Life indices: two-column table, one tip per cell, Unicode emoji.
+        index_table = next(
+            block
+            for block in blocks[index_heading + 1 : air_index]
+            if block.get("type") == "table"
+        )
+        index_rows = table_text(index_table)
+        self.assertEqual(len(index_rows), 8)
+        self.assertEqual(index_rows[0][0], "🚗 洗车：不宜")
+        self.assertEqual(index_rows[0][1], "👕 穿衣：热")
+        self.assertNotIn("指数：", index_rows[0][0])
 
     def test_odd_index_count_last_line_has_one_entry(self):
         blocks = build_realtime_blocks(make_weather(index_count=15))
@@ -195,14 +193,12 @@ class WeatherCardLayoutTests(unittest.TestCase):
             for index, block in enumerate(blocks)
             if block.get("type") == "heading" and "生活指数" in _flatten_block_text(block)
         )
-        lines = [
-            plain_text(block.get("text"))
-            for block in blocks[heading + 1 :]
-            if block.get("type") == "paragraph"
-        ]
-        # 15 indices → 8 lines (7 full pairs + 1 single)
-        self.assertEqual(len(lines), 8)
-        self.assertNotIn("    ", lines[-1])
+        index_table = next(
+            block for block in blocks[heading + 1 :] if block.get("type") == "table"
+        )
+        rows = table_text(index_table)
+        self.assertEqual(len(rows), 8)
+        self.assertEqual(rows[-1][1], "")
 
     def test_alert_summary_is_bold_without_marked_background(self):
         blocks = build_realtime_blocks(make_weather())
@@ -215,17 +211,12 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertTrue(any(isinstance(part, dict) and part.get("type") == "bold" for part in summary))
         self.assertFalse(any(isinstance(part, dict) and part.get("type") == "marked" for part in summary))
 
-    def test_indices_view_uses_paragraph_lines_not_table(self):
+    def test_indices_view_uses_two_column_table(self):
         blocks = build_indices_blocks(make_weather())
-        self.assertFalse(any(block.get("type") == "table" for block in blocks))
-        lines = [
-            plain_text(block.get("text"))
-            for block in blocks
-            if block.get("type") == "paragraph" and "：" in plain_text(block.get("text"))
-        ]
-        self.assertGreaterEqual(len(lines), 8)
-        self.assertIn("🚗 洗车：不宜", lines[0])
-        self.assertIn("👕 穿衣：热", lines[0])
+        index_table = next(block for block in blocks if block.get("type") == "table")
+        rows = table_text(index_table)
+        self.assertEqual(rows[0], ["🚗 洗车：不宜", "👕 穿衣：热"])
+        self.assertEqual(len(rows), 8)
 
     def test_air_quality_table_has_three_columns_no_description(self):
         weather = make_weather()
@@ -254,7 +245,6 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertLess(text.index("💡 *生活指数*"), text.index("空气"))
         self.assertIn("🚗 洗车：不宜", text)
         self.assertIn("👕 穿衣：热", text)
-        self.assertIn("    ", text)
         self.assertNotIn("洗车指数：", text)
 
 

@@ -27,10 +27,11 @@ from utils.formatter import (
     _display_summary_lines,
     _weekday_cn,
     format_attribution,
-    format_life_index_lines,
+    format_life_index_entry,
     format_precip_value,
     format_weather_number,
     normalize_warning_level,
+    ordered_indices_for_day,
 )
 from utils.weather_icons import (
     moon_phase_code,
@@ -312,15 +313,20 @@ def _index_pair_blocks(
     *,
     include_heading: bool,
 ) -> List[dict]:
-    """Life indices as plain lines (two tips per line), not a table/list."""
-    lines = format_life_index_lines(indices, target_date, escape=False)
-    if not lines:
+    """Life indices as a two-column table: each cell is one tip (Unicode emoji)."""
+    ordered = ordered_indices_for_day(indices, target_date)
+    if not ordered:
         return []
+    entries = [format_life_index_entry(index, escape=False) for index in ordered]
+    rows: List[list] = []
+    for offset in range(0, len(entries), 2):
+        left = entries[offset]
+        right = entries[offset + 1] if offset + 1 < len(entries) else ""
+        rows.append([left, right])
     blocks: List[dict] = []
     if include_heading:
         blocks.append(heading("💡 生活指数", size=4))
-    for line in lines:
-        blocks.append(paragraph(line))
+    blocks.append(table(rows, aligns=["left", "left"], bordered=True))
     return blocks
 
 

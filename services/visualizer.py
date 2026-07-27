@@ -169,6 +169,22 @@ class Visualizer:
         return f"{cls._format_number(value)}°"
 
     @staticmethod
+    def _rain_label_mask(probability: np.ndarray, precipitation: np.ndarray) -> np.ndarray:
+        """Hours whose exact rain values are useful enough to label directly."""
+        probability_signal = np.isfinite(probability) & (probability >= 30)
+        precipitation_signal = np.isfinite(precipitation) & (precipitation > 0)
+        return probability_signal | precipitation_signal
+
+    @classmethod
+    def _format_precip_label(cls, value: float, style: str) -> str:
+        """Bar/point annotation only — unit lives on the panel title, not every label.
+
+        Dense hourly charts were unreadable when every bar ended with ``mm``.
+        """
+        del style  # amount vs intensity: same compact number on the plot
+        return cls._format_number(value)
+
+    @staticmethod
     def _display_location(location: str, max_length: int = 30) -> str:
         compact = " ".join(str(location).split())
         if len(compact) <= max_length:
@@ -743,7 +759,9 @@ class Visualizer:
             combined = np.concatenate((combined, feels_like[np.isfinite(feels_like)]))
         data_min = float(np.min(combined))
         data_max = float(np.max(combined))
-        padding = max(1.5, (data_max - data_min) * 0.18)
+        # Every hourly point now carries direct labels. Keep enough vertical
+        # breathing room for the labels at the upper/lower extremes.
+        padding = max(2.5, (data_max - data_min) * 0.22)
         y_bottom = np.floor(data_min - padding)
         y_top = np.ceil(data_max + padding)
         if y_top - y_bottom < 5:
@@ -803,14 +821,14 @@ class Visualizer:
                 solid_capstyle="round",
                 zorder=5,
             )
-        skeleton = x[::3]
+        valid_actual = np.isfinite(actual)
         ax.scatter(
-            skeleton,
-            actual[skeleton],
-            s=22,
+            x[valid_actual],
+            actual[valid_actual],
+            s=16,
             color=cls._THEME["surface"],
             edgecolor=cls._THEME["temperature"],
-            linewidth=1.3,
+            linewidth=1.1,
             zorder=6,
         )
 
@@ -825,32 +843,47 @@ class Visualizer:
                     dash_capstyle="round",
                     zorder=4,
                 )
+            valid_feels = np.isfinite(feels_like)
+            ax.scatter(
+                x[valid_feels],
+                feels_like[valid_feels],
+                s=13,
+                color=cls._THEME["surface"],
+                edgecolor=cls._THEME["feels_like"],
+                linewidth=1,
+                zorder=5,
+            )
 
-        # Label only what people look for: the high, the low, and "now".
-        # Periodic labels made chips collide and buried the two that matter.
-        key_indices = {int(np.nanargmax(actual)), int(np.nanargmin(actual))}
-        if all(abs(0 - keyed) > 1 for keyed in key_indices):
-            key_indices.add(0)
-        for index in sorted(key_indices):
+        # Direct labels beat repeated legend/axis lookup on a static Telegram
+        # image. At 24 columns, compact text (without chips) remains readable;
+        # placing the two series on opposite sides prevents same-hour overlap.
+        for index in np.flatnonzero(valid_actual):
             ax.annotate(
                 cls._format_temperature(actual[index]),
                 (x[index], actual[index]),
-                xytext=(0, 11),
+                xytext=(0, 5),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
-                color=cls._THEME["text"],
-                fontsize=9.5,
+                color=cls._THEME["temperature"],
+                fontsize=7.2,
                 fontweight=600,
-                bbox={
-                    "boxstyle": "round,pad=0.26",
-                    "facecolor": cls._THEME["card"],
-                    "edgecolor": cls._THEME["border"],
-                    "linewidth": 0.7,
-                    "alpha": 0.94,
-                },
                 zorder=8,
             )
+        if has_feels_like:
+            for index in np.flatnonzero(np.isfinite(feels_like)):
+                ax.annotate(
+                    cls._format_temperature(feels_like[index]),
+                    (x[index], feels_like[index]),
+                    xytext=(0, -5),
+                    textcoords="offset points",
+                    ha="center",
+                    va="top",
+                    color=cls._THEME["feels_like"],
+                    fontsize=7.2,
+                    fontweight=600,
+                    zorder=8,
+                )
 
         # Rain context: faint probability bars along the bottom, because the
         # person checking temperature is usually also deciding about rain.
@@ -906,12 +939,15 @@ class Visualizer:
         values: np.ndarray,
         peak_value: Optional[float],
         missing_mask: np.ndarray,
+        label_mask: np.ndarray,
         *,
         style: str,
+        panel_label: Optional[str] = None,
+        label_rotation: float = 0,
     ):
         """降水量(bar)与降水强度(dashed line)面板共用的绘制逻辑。"""
         color = cls._THEME[style]
-        label = "每小时雨量 (mm)" if style == "amount" else "雨势"
+        label = panel_label or ("每小时雨量 (mm)" if style == "amount" else "雨势 (mm/h)")
 
         ax = fig.add_axes(rect)
         cls._style_axis(ax)
@@ -947,7 +983,8 @@ class Visualizer:
                 zorder=5,
             )
 
-        top = max(0.5, float(peak_value or 0) * 1.28)
+        top_factor = 1.45 if label_rotation else 1.28
+        top = max(0.5, float(peak_value or 0) * top_factor)
         ax.set_ylim(0, top)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value)))
@@ -962,23 +999,23 @@ class Visualizer:
             fontsize=8.5,
             fontweight=600,
         )
-        if peak_value is not None and peak_value > 0:
-            peak_index = int(np.nanargmax(values))
-            peak_text = (
-                f"{cls._format_number(peak_value)} mm"
-                if style == "amount"
-                else cls._rain_rate_word(peak_value)
-            )
+        # Skip tiny amount bars — labeling every 0.1 stacks into unreadable noise.
+        annotate_mask = label_mask & valid
+        if style == "amount":
+            annotate_mask = annotate_mask & (values >= 0.5)
+        for index in np.flatnonzero(annotate_mask):
             ax.annotate(
-                peak_text,
-                (x[peak_index], peak_value),
-                xytext=(0, 5),
+                cls._format_precip_label(values[index], style),
+                (x[index], values[index]),
+                xytext=(3 if label_rotation else 0, 4),
                 textcoords="offset points",
-                ha="center",
+                ha="left" if label_rotation else "center",
                 va="bottom",
                 color=color,
-                fontsize=8,
+                fontsize=6.8,
                 fontweight=600,
+                rotation=label_rotation,
+                zorder=7,
             )
         if np.any(missing_mask):
             ax.scatter(
@@ -1013,6 +1050,7 @@ class Visualizer:
         x = np.arange(len(times))
         probability = np.array(pops, dtype=float)
         precipitation = np.array(precips, dtype=float)
+        label_mask = cls._rain_label_mask(probability, precipitation)
 
         has_probability_data = bool(np.any(np.isfinite(probability)))
         amount = np.full(len(times), np.nan)
@@ -1067,7 +1105,10 @@ class Visualizer:
             probability_rect = [0.09, 0.16, 0.845, 0.56]
             panel_rects = []
         else:
-            probability_rect = [0.09, 0.40, 0.845, 0.32]
+            # Leave a dedicated band for the probability panel's own time
+            # labels; relying on the lower panel made the upper bars ambiguous
+            # on phone-sized previews.
+            probability_rect = [0.09, 0.43, 0.845, 0.29]
             panel_rects = [[0.09, 0.155, 0.845, 0.185]]
 
         probability_ax = fig.add_axes(probability_rect)
@@ -1075,11 +1116,11 @@ class Visualizer:
         cls._decorate_time_axis(
             probability_ax,
             times,
-            show_ticks=not panel_rects,
+            show_ticks=True,
             show_dates=True,
-            now_at_start=not panel_rects,
+            now_at_start=True,
         )
-        probability_ax.set_ylim(0, 108)
+        probability_ax.set_ylim(0, 110)
         probability_ax.set_yticks([0, 50, 100])
         probability_ax.yaxis.set_major_formatter(PercentFormatter(100, decimals=0))
         probability_ax.tick_params(axis="y", colors=cls._THEME["muted"])
@@ -1151,24 +1192,17 @@ class Visualizer:
                     alpha=0.8,
                     zorder=4,
                 )
-            if max_probability is not None and max_probability > 0:
-                peak_index = int(np.nanargmax(probability))
+            for index in np.flatnonzero(label_mask & valid_probability):
                 probability_ax.annotate(
-                    f"{int(round(max_probability))}%",
-                    (x[peak_index], max_probability),
-                    xytext=(0, 8),
+                    f"{int(round(probability[index]))}%",
+                    (x[index], probability[index]),
+                    xytext=(0, 4),
                     textcoords="offset points",
                     ha="center",
                     va="bottom",
                     color=cls._THEME["text"],
-                    fontsize=9,
+                    fontsize=7.1,
                     fontweight=600,
-                    bbox={
-                        "boxstyle": "round,pad=0.24",
-                        "facecolor": cls._THEME["card"],
-                        "edgecolor": cls._THEME["probability"],
-                        "linewidth": 0.8,
-                    },
                     zorder=6,
                 )
         elif has_visual_signal:
@@ -1237,16 +1271,19 @@ class Visualizer:
             # One combined panel: amount bars, with the (rare) intensity
             # estimate overlaid as a dashed line instead of a third strip.
             primary = amount if has_amount else intensity
-            primary_peak = max_amount if has_amount else max_intensity
+            panel_peak = max(value or 0 for value in (max_amount, max_intensity))
             panel_ax = cls._draw_precip_panel(
                 fig,
                 panel_rects[0],
                 times,
                 x,
                 primary,
-                primary_peak,
+                panel_peak,
                 missing_precipitation,
+                label_mask,
                 style="amount" if has_amount else "intensity",
+                panel_label="雨量 mm / 雨势 mm/h" if has_amount and has_intensity else None,
+                label_rotation=90 if has_intensity else 0,
             )
             if has_amount and has_intensity:
                 for smooth_x, smooth_y in cls._smooth_segments(x, intensity):
@@ -1257,6 +1294,30 @@ class Visualizer:
                         linewidth=1.8,
                         linestyle=(0, (5, 3)),
                         zorder=4,
+                    )
+                valid_intensity = np.isfinite(intensity)
+                panel_ax.scatter(
+                    x[valid_intensity],
+                    intensity[valid_intensity],
+                    s=16,
+                    color=cls._THEME["surface"],
+                    edgecolor=cls._THEME["intensity"],
+                    linewidth=1,
+                    zorder=5,
+                )
+                for index in np.flatnonzero(label_mask & valid_intensity):
+                    panel_ax.annotate(
+                        cls._format_precip_label(intensity[index], "intensity"),
+                        (x[index], intensity[index]),
+                        xytext=(3, 4),
+                        textcoords="offset points",
+                        ha="left",
+                        va="bottom",
+                        color=cls._THEME["intensity"],
+                        fontsize=6.8,
+                        fontweight=600,
+                        rotation=90,
+                        zorder=7,
                     )
             precip_axes.append(panel_ax)
             cls._decorate_time_axis(
@@ -1325,7 +1386,7 @@ class Visualizer:
 
         data_min = float(np.min(lows))
         data_max = float(np.max(highs))
-        padding = max(1.5, (data_max - data_min) * 0.18)
+        padding = max(2.5, (data_max - data_min) * 0.22)
         ax.set_ylim(np.floor(data_min - padding), np.ceil(data_max + padding))
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
@@ -1344,26 +1405,33 @@ class Visualizer:
                 zorder=4,
             )
 
-        # Label only the extremes (and today for orientation) — a number on
-        # every point is exactly the clutter the redesign removes.
+        # Each range bar is a compact daily answer: high on top, low below.
+        # Use direct labels so users do not have to estimate from the Y axis.
         hottest = int(np.argmax(highs))
         coolest = int(np.argmin(lows))
-        for index, value, above, emphasized in {
-            (hottest, highs[hottest], True, True),
-            (coolest, lows[coolest], False, True),
-            (0, highs[0], True, hottest == 0),
-            (0, lows[0], False, coolest == 0),
-        }:
+        for index in range(len(days)):
             ax.annotate(
-                cls._format_temperature(value),
-                (x[index], value),
-                xytext=(0, 10 if above else -10),
+                cls._format_temperature(highs[index]),
+                (x[index], highs[index]),
+                xytext=(0, 6),
                 textcoords="offset points",
                 ha="center",
-                va="bottom" if above else "top",
-                color=cls._THEME["text"] if emphasized else cls._THEME["muted"],
-                fontsize=9.5 if emphasized else 8.5,
-                fontweight=600,
+                va="bottom",
+                color=cls._THEME["text"] if index == hottest else cls._THEME["temperature"],
+                fontsize=8.2,
+                fontweight=700 if index == hottest else 600,
+                zorder=8,
+            )
+            ax.annotate(
+                cls._format_temperature(lows[index]),
+                (x[index], lows[index]),
+                xytext=(0, -6),
+                textcoords="offset points",
+                ha="center",
+                va="top",
+                color=cls._THEME["text"] if index == coolest else cls._THEME["muted"],
+                fontsize=8.2,
+                fontweight=700 if index == coolest else 600,
                 zorder=8,
             )
 

@@ -3,6 +3,7 @@ import hashlib
 import io
 import json
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Callable, Literal, Optional
 
 from loguru import logger
@@ -14,6 +15,16 @@ from services.visualizer import Visualizer
 from utils.cache import cache
 
 ChartType = Literal["temp", "rain", "daily", "minutely"]
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedChart:
+    """Chart media ready to embed in one rich weather message."""
+
+    chart_type: ChartType
+    caption: str
+    file_id: Optional[str] = None
+    png_bytes: Optional[bytes] = None
 
 # Which QWeather request profile each chart needs.
 CHART_PROFILES = {
@@ -48,14 +59,20 @@ def normalize_chart_type(chart_type: str) -> ChartType:
 
 
 def get_chart_caption(weather_data: WeatherData, chart_type: str) -> str:
+    """Photo caption under the embedded chart.
+
+    Location already appears on the weather card heading *and* inside the PNG
+    header — repeating it in the caption just looks like a duplicate city line.
+    """
+    del weather_data  # reserved for future per-chart context
     normalized = normalize_chart_type(chart_type)
     if normalized == "rain":
-        return f"🌧️ {weather_data.location_name} 逐小时降水"
+        return "🌧️ 逐小时降水"
     if normalized == "daily":
-        return f"📈 {weather_data.location_name} 逐日温度"
+        return "📈 逐日温度"
     if normalized == "minutely":
-        return f"☔️ {weather_data.location_name} 分钟级降水"
-    return f"📈 {weather_data.location_name} 逐小时温度"
+        return "☔️ 分钟级降水"
+    return "📈 逐小时温度"
 
 
 def render_chart_bytes(weather_data: WeatherData, chart_type: str) -> Optional[bytes]:
@@ -71,6 +88,27 @@ def render_chart_bytes(weather_data: WeatherData, chart_type: str) -> Optional[b
 
 async def render_chart_bytes_async(weather_data: WeatherData, chart_type: str) -> Optional[bytes]:
     return await run_chart_render(render_chart_bytes, weather_data, chart_type)
+
+
+async def prepare_chart(weather_data: WeatherData, chart_type: str) -> Optional[PreparedChart]:
+    """Resolve cached Telegram media or render bytes for a rich-message upload."""
+    normalized = normalize_chart_type(chart_type)
+    file_id = await get_cached_chart_file_id(weather_data, normalized)
+    if file_id:
+        return PreparedChart(
+            chart_type=normalized,
+            caption=get_chart_caption(weather_data, normalized),
+            file_id=file_id,
+        )
+
+    png_bytes = await render_chart_bytes_async(weather_data, normalized)
+    if not png_bytes:
+        return None
+    return PreparedChart(
+        chart_type=normalized,
+        caption=get_chart_caption(weather_data, normalized),
+        png_bytes=png_bytes,
+    )
 
 
 def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
@@ -109,7 +147,7 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:16]
-    return f"chart:v7:{weather_data.coords}:{normalized}:{fingerprint}"
+    return f"chart:v9:{weather_data.coords}:{normalized}:{fingerprint}"
 
 
 async def remember_chart_file_id(weather_data: WeatherData, chart_type: str, message) -> None:
@@ -120,9 +158,27 @@ async def remember_chart_file_id(weather_data: WeatherData, chart_type: str, mes
     """
     try:
         photos = getattr(message, "photo", None)
-        if not photos:
-            return
-        file_id = photos[-1].file_id
+        file_id = photos[-1].file_id if photos else None
+        if not file_id:
+            # PTB 22.8 predates Message.rich_message. Unknown Bot API 10.2
+            # fields are retained in api_kwargs, so recover the uploaded
+            # photo from the raw RichBlockPhoto response.
+            api_kwargs = getattr(message, "api_kwargs", None) or {}
+            rich_message = api_kwargs.get("rich_message") or {}
+            blocks = rich_message.get("blocks") or []
+            for block in blocks:
+                if not isinstance(block, dict) or block.get("type") != "photo":
+                    continue
+                rich_photos = block.get("photo") or []
+                if rich_photos:
+                    largest = rich_photos[-1]
+                    file_id = (
+                        largest.get("file_id")
+                        if isinstance(largest, dict)
+                        else getattr(largest, "file_id", None)
+                    )
+                if file_id:
+                    break
         if file_id:
             await cache.set(chart_cache_key(weather_data, chart_type), file_id, ttl=CHART_CACHE_TTL)
     except Exception as e:
