@@ -53,6 +53,18 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         for code, label in WEATHER_ICON_LABELS.items():
             self.assertTrue(label.strip(), msg=f"empty label for {code}")
 
+    def test_ui_labels_use_custom_emoji(self) -> None:
+        from utils.weather_icons import moon_phase_code, ui_icon_code, ui_label_rich
+
+        set_custom_emoji_map_for_tests({"100": "111", "150": "222", "305": "333", "803": "444"})
+        self.assertEqual(ui_icon_code("day"), "100")
+        self.assertEqual(ui_icon_code("night"), "150")
+        self.assertEqual(moon_phase_code("盈凸月"), "803")
+        label = ui_label_rich("day", "日间")
+        self.assertEqual(label[0]["type"], "custom_emoji")
+        self.assertEqual(label[0]["custom_emoji_id"], "111")
+        self.assertEqual(label[1], " 日间")
+
     def test_legacy_emoji_passthrough(self) -> None:
         set_custom_emoji_map_for_tests({})
         self.assertEqual(weather_icon("☀️"), "☀️")

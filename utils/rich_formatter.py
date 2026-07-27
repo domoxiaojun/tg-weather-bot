@@ -33,8 +33,11 @@ from utils.formatter import (
     ordered_indices_for_day,
 )
 from utils.weather_icons import (
+    moon_phase_code,
     rich_icon_pair,
     rich_icon_text,
+    ui_icon_rich,
+    ui_label_rich,
     weather_icon_rich,
 )
 
@@ -110,7 +113,7 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
             )
         else:
             expanded.append(paragraph(italic(alert.source or "暂无详细说明")))
-        blocks.append(details(["🔴 ⚠️ ", bold(title)], expanded))
+        blocks.append(details([ui_icon_rich("storm"), " ", bold(title)], expanded))
     return blocks
 
 
@@ -257,13 +260,17 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
     if data.air_stations:
         inner.append(paragraph(italic(f"附近监测站: {'、'.join(data.air_stations[:3])}")))
 
-    summary_bits = ["🌫️ 空气质量"]
+    summary = [
+        ui_icon_rich("air"),
+        " 空气质量",
+    ]
     if air.aqi is not None:
-        summary_bits.append(f"AQI {air.aqi}")
+        summary.append(f" · AQI {air.aqi}")
     if air.category:
-        summary_bits.append(air.category)
+        summary.append(f" · {air.category}")
     # Collapsed by default — say so, or nobody discovers the breakdown.
-    return [details(" · ".join(summary_bits) + "（点击展开详情）", inner)]
+    summary.append("（点击展开详情）")
+    return [details(summary, inner)]
 
 
 def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[list]:
@@ -272,15 +279,16 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
         data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
     )
     if wind:
-        rows.append(["💨 风况", wind])
+        # Pack has no dedicated wind icon; dust/扬沙 is the closest motion cue.
+        rows.append([ui_label_rich("dust", "风况"), wind])
     if data.now_humidity is not None:
-        rows.append(["💧 湿度", f"{data.now_humidity}%"])
+        rows.append([ui_label_rich("fog", "湿度"), f"{data.now_humidity}%"])
     if data.now_precip is not None:
-        rows.append(["☔️ 降水", format_precip_value(data.now_precip, data.now_precip_kind)])
+        rows.append([ui_label_rich("rain", "降水"), format_precip_value(data.now_precip, data.now_precip_kind)])
     if data.now_vis is not None:
-        rows.append(["👁️ 能见度", f"{format_weather_number(data.now_vis)}km"])
+        rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(data.now_vis)}km"])
     if data.now_pressure is not None:
-        rows.append(["📈 气压", f"{format_weather_number(data.now_pressure)}hPa"])
+        rows.append([ui_label_rich("cloud", "气压"), f"{format_weather_number(data.now_pressure)}hPa"])
     if include_air and data.air_quality:
         aqi = data.air_quality
         air_bits = []
@@ -291,7 +299,7 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
         if aqi.pm2p5 is not None:
             air_bits.append(f"PM2.5 {format_weather_number(aqi.pm2p5)}")
         if air_bits:
-            rows.append(["🌫️ 空气", " · ".join(air_bits)])
+            rows.append([ui_label_rich("air", "空气"), " · ".join(air_bits)])
     return rows
 
 
@@ -315,7 +323,7 @@ def _index_pair_blocks(
     entries = [f"{index.name}：{index.category}" for index in ordered]
     blocks: List[dict] = []
     if include_heading:
-        blocks.append(heading("💡 生活指数", size=4))
+        blocks.append(heading(ui_label_rich("sun", "生活指数"), size=4))
     blocks.append(_index_pairs_table(entries))
     return blocks
 
@@ -326,8 +334,11 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
     if day is None:
         return []
 
+    temp_key = "hot" if (day.temp_max is not None and day.temp_max >= 30) else (
+        "cold" if (day.temp_min is not None and day.temp_min <= 5) else "sun"
+    )
     rows: List[list] = [[
-        "🌡️ 气温",
+        ui_label_rich(temp_key, "气温"),
         f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°C",
     ]]
 
@@ -335,9 +346,15 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
         moon_value = day.moon_phase
         if day.sunrise or day.sunset:
             moon_value += f"（日出 {day.sunrise or 'N/A'} / 日落 {day.sunset or 'N/A'}）"
-        rows.append(["🌙 月相", moon_value])
+        rows.append([
+            [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月相"],
+            moon_value,
+        ])
     elif day.sunrise or day.sunset:
-        rows.append(["🌅 日出/日落", f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}"])
+        rows.append([
+            ui_label_rich("sun", "日出/日落"),
+            f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}",
+        ])
 
     day_wind = _plain_wind(
         day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
@@ -350,31 +367,35 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
     )
     day_desc = day.text_day + (f"（{day_wind}）" if day_wind else "")
     night_desc = day.text_night + (f"（{night_wind}）" if night_wind else "")
-    rows.append(["☀️ 日间", rich_icon_text(day.icon_day, day_desc)])
-    rows.append(["🌙 夜间", rich_icon_text(day.icon_night, night_desc)])
+    # Label + phenomenon both use QWeather custom emoji (day/night chrome + icon_day/night).
+    rows.append([ui_label_rich("day", "日间"), rich_icon_text(day.icon_day, day_desc)])
+    rows.append([ui_label_rich("night", "夜间"), rich_icon_text(day.icon_night, night_desc)])
 
     if day.precip is not None:
-        rows.append(["☔️ 降水", format_precip_value(day.precip, day.precip_kind)])
+        rows.append([ui_label_rich("rain", "降水"), format_precip_value(day.precip, day.precip_kind)])
     if day.humidity is not None:
-        rows.append(["💧 湿度", f"{day.humidity}%"])
+        rows.append([ui_label_rich("fog", "湿度"), f"{day.humidity}%"])
     if day.vis is not None:
-        rows.append(["👁️ 能见度", f"{format_weather_number(day.vis)}km"])
+        rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(day.vis)}km"])
     if data.now_cloud is not None:
-        rows.append(["☁️ 云量", f"{data.now_cloud}%"])
+        rows.append([ui_label_rich("cloud", "云量"), f"{data.now_cloud}%"])
     if day.uv_index:
-        rows.append(["☀️ UV", str(day.uv_index)])
+        rows.append([ui_label_rich("sun", "UV"), str(day.uv_index)])
 
     pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
     if pops:
-        rows.append(["☔️ 未来6h降概", f"{int(max(pops))}%"])
+        rows.append([ui_label_rich("rain", "未来6h降概"), f"{int(max(pops))}%"])
 
     if day.temp_avg is not None:
-        rows.append(["🌡️ 日均温", f"{format_weather_number(day.temp_avg)}°C"])
+        rows.append([ui_label_rich(temp_key, "日均温"), f"{format_weather_number(day.temp_avg)}°C"])
     if day.moon_rise or day.moon_set:
-        rows.append(["🌙 月升/月落", f"{day.moon_rise or 'N/A'} / {day.moon_set or 'N/A'}"])
+        rows.append([
+            [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月升/月落"],
+            f"{day.moon_rise or 'N/A'} / {day.moon_set or 'N/A'}",
+        ])
     if day.precip_day is not None or day.precip_night is not None:
         rows.append([
-            "☔️ 昼/夜降水",
+            ui_label_rich("rain", "昼/夜降水"),
             f"{format_precip_value(day.precip_day, day.precip_kind)} / "
             f"{format_precip_value(day.precip_night, day.precip_kind)}",
         ])
@@ -389,11 +410,14 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
             delta = day.temp_min - data.yesterday.temp_min
             deltas.append(f"最低 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
         if deltas:
-            rows.append(["📊 比昨天", " · ".join(deltas)])
+            rows.append([ui_label_rich("cloud", "比昨天"), " · ".join(deltas)])
 
     if day.date.date() == data.local_update_date:
         return [table(rows, aligns=["left", "left"], bordered=True)]
-    title = f"📅 最近预报 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})"
+    title = [
+        ui_icon_rich("cloud"),
+        f" 最近预报 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})",
+    ]
     return [paragraph([bold(title)]), table(rows, aligns=["left", "left"], bordered=True)]
 
 
@@ -684,7 +708,9 @@ def build_indices_blocks(data: WeatherData) -> List[dict]:
         label = "明天" if offset == 1 else "后天"
         group_blocks = _index_pair_blocks(data.indices, day, include_heading=False)
         if group_blocks:
-            blocks.append(details(f"💡 {label}（{day.strftime('%m-%d')}）", group_blocks))
+            blocks.append(
+                details(ui_label_rich("sun", f"{label}（{day.strftime('%m-%d')}）"), group_blocks)
+            )
 
     blocks.append(build_footer(data))
     return blocks

@@ -115,6 +115,53 @@ WEATHER_ICON_LABELS: dict[str, str] = {code: label for code, label, _emoji in _W
 # Pack upload / MDV2 import order — identical to table order above.
 UPLOAD_ICON_CODES: tuple[str, ...] = tuple(code for code, _label, _emoji in _WEATHER_ICON_ROWS)
 
+# UI chrome keys → nearest QWeather icon code (pack has weather phenomena only).
+# Used for table row labels / section headings so the card is not a mix of
+# system emoji + custom weather icons.
+UI_ICON_CODES: dict[str, str] = {
+    "sun": "100",
+    "day": "100",
+    "clear": "100",
+    "cloud": "104",
+    "night": "150",
+    "rain": "305",
+    "shower": "300",
+    "storm": "303",
+    "snow": "400",
+    "fog": "501",
+    "haze": "502",
+    "dust": "503",
+    "air": "502",
+    "hot": "900",
+    "cold": "901",
+    "unknown": "999",
+    # Moon-phase defaults (override with moon_phase_code() when text is known).
+    "moon": "804",
+    "moon_new": "800",
+    "moon_crescent": "801",
+    "moon_first": "802",
+    "moon_waxing": "803",
+    "moon_full": "804",
+    "moon_waning": "805",
+    "moon_last": "806",
+    "moon_waning_crescent": "807",
+}
+
+# 和风/中文月相名 → icon code
+MOON_PHASE_CODES: dict[str, str] = {
+    "新月": "800",
+    "蛾眉月": "801",
+    "娥眉月": "801",
+    "上弦月": "802",
+    "盈凸月": "803",
+    "满月": "804",
+    "亏凸月": "805",
+    "下弦月": "806",
+    "残月": "807",
+    "新月(New Moon)": "800",
+    "峨眉月": "801",
+}
+
 # Repo root (…/tg-weather-bot), independent of process CWD / Docker WORKDIR quirks.
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -357,6 +404,49 @@ def custom_emoji_id_for(icon: Optional[str]) -> Optional[str]:
 def weather_icon(icon: Optional[str]) -> str:
     """Plain Unicode fallback (charts, logs, string-only surfaces)."""
     return emoji_for(icon)
+
+
+def moon_phase_code(phase: Optional[str]) -> str:
+    """Map a moon-phase name to a QWeather moon icon code."""
+    if not phase:
+        return UI_ICON_CODES["moon"]
+    text = str(phase).strip()
+    if text in MOON_PHASE_CODES:
+        return MOON_PHASE_CODES[text]
+    for name, code in MOON_PHASE_CODES.items():
+        if name in text:
+            return code
+    return UI_ICON_CODES["moon"]
+
+
+def ui_icon_code(key: str) -> str:
+    """Resolve a UI chrome key to a QWeather icon code."""
+    return UI_ICON_CODES.get(key, UI_ICON_CODES["unknown"])
+
+
+def ui_icon_rich(key: str) -> RichIcon:
+    """Custom-emoji (or unicode fallback) for a UI chrome key."""
+    return weather_icon_rich(ui_icon_code(key))
+
+
+def ui_icon_md(key: str) -> str:
+    """MarkdownV2 fragment for a UI chrome key."""
+    return weather_icon_md(ui_icon_code(key))
+
+
+def ui_icon_html(key: str) -> str:
+    """HTML fragment for a UI chrome key."""
+    return weather_icon_html(ui_icon_code(key))
+
+
+def ui_label_rich(key: str, label: str) -> list[Any]:
+    """``[custom_emoji, ' 日间']`` style RichText for table row labels."""
+    return [ui_icon_rich(key), f" {label}"]
+
+
+def ui_label_md(key: str, label: str) -> str:
+    """MarkdownV2 label: custom emoji + plain label (label is not escaped)."""
+    return f"{ui_icon_md(key)} {label}"
 
 
 def weather_icon_rich(icon: Optional[str]) -> RichIcon:

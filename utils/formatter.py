@@ -14,6 +14,7 @@ from domain.models import (
 )
 from utils.weather_icons import (  # noqa: F401  — re-export for existing imports
     WEATHER_ICONS,
+    ui_icon_md,
     weather_icon,
     weather_icon_html,
     weather_icon_md,
@@ -190,7 +191,7 @@ def _format_air_quality_line(data: WeatherData) -> str:
         air_parts.append(f"\\({escape_v2(aqi.category)}\\)")
     if aqi.pm2p5 is not None:
         air_parts.append(f"PM2\\.5: {escape_v2(format_weather_number(aqi.pm2p5))}")
-    return f"🌫️ 空气: {' '.join(air_parts)}" if air_parts else ""
+    return f"{ui_icon_md('air')} 空气: {' '.join(air_parts)}" if air_parts else ""
 
 
 def format_realtime_weather(
@@ -200,7 +201,7 @@ def format_realtime_weather(
     include_cloud: bool = True,
 ) -> str:
     lines = [
-        f"🌍 *{escape_v2(data.location_name)}*",
+        f"{weather_icon_md(data.now_icon)} *{escape_v2(data.location_name)}*",
         f"🕐 {escape_v2(data.update_time.strftime('%m-%d %H:%M'))} 更新",
         "",
     ]
@@ -209,13 +210,17 @@ def format_realtime_weather(
         lines.append(f"*{escape_v2(line)}*")
 
     lines.append("")
-    temperature_line = f"🌡️ 温度: *{escape_v2(format_weather_number(data.now_temp))}°C*"
+    temperature_line = (
+        f"{ui_icon_md('sun')} 温度: *{escape_v2(format_weather_number(data.now_temp))}°C*"
+    )
     if data.now_feels_like is not None:
         temperature_line += (
             f" \\(体感 {escape_v2(format_weather_number(data.now_feels_like))}°C\\)"
         )
     lines.append(temperature_line)
-    lines.append(f"🌤️ 天气: {weather_icon_md(data.now_icon)} {escape_v2(data.now_text or '暂无描述')}")
+    lines.append(
+        f"{weather_icon_md(data.now_icon)} 天气: {escape_v2(data.now_text or '暂无描述')}"
+    )
 
     wind_parts = _wind_parts(
         data.now_wind_dir,
@@ -224,31 +229,37 @@ def format_realtime_weather(
         data.now_wind_speed,
     )
     if wind_parts:
-        lines.append(f"💨 风况: {' '.join(wind_parts)}")
+        lines.append(f"{ui_icon_md('dust')} 风况: {' '.join(wind_parts)}")
 
     moisture_parts = []
     if data.now_humidity is not None:
-        moisture_parts.append(f"💧 湿度: {escape_v2(data.now_humidity)}%")
+        moisture_parts.append(f"{ui_icon_md('fog')} 湿度: {escape_v2(data.now_humidity)}%")
     if data.now_precip is not None:
         moisture_parts.append(
-            f"☔️ 降水: {escape_v2(format_precip_value(data.now_precip, data.now_precip_kind))}"
+            f"{ui_icon_md('rain')} 降水: {escape_v2(format_precip_value(data.now_precip, data.now_precip_kind))}"
         )
     if moisture_parts:
         lines.append(" \\| ".join(moisture_parts))
 
     environment_parts = []
     if data.now_vis is not None:
-        environment_parts.append(f"👁️ 能见度: {escape_v2(format_weather_number(data.now_vis))}km")
+        environment_parts.append(
+            f"{ui_icon_md('fog')} 能见度: {escape_v2(format_weather_number(data.now_vis))}km"
+        )
     if data.now_pressure is not None:
-        environment_parts.append(f"📈 气压: {escape_v2(format_weather_number(data.now_pressure))}hPa")
+        environment_parts.append(
+            f"{ui_icon_md('cloud')} 气压: {escape_v2(format_weather_number(data.now_pressure))}hPa"
+        )
     if environment_parts:
         lines.append(" \\| ".join(environment_parts))
     if (include_cloud and data.now_cloud is not None) or data.now_radiation is not None:
         extra_parts = []
         if include_cloud and data.now_cloud is not None:
-            extra_parts.append(f"☁️ 云量: {escape_v2(data.now_cloud)}%")
+            extra_parts.append(f"{ui_icon_md('cloud')} 云量: {escape_v2(data.now_cloud)}%")
         if data.now_radiation is not None:
-            extra_parts.append(f"☀️ 辐射: {escape_v2(format_weather_number(data.now_radiation))}W/m²")
+            extra_parts.append(
+                f"{ui_icon_md('sun')} 辐射: {escape_v2(format_weather_number(data.now_radiation))}W/m²"
+            )
         lines.append(" \\| ".join(extra_parts))
     
     if include_air:
@@ -260,17 +271,17 @@ def format_realtime_weather(
         lines.append("")
         for a in data.alerts:
             level = alert_level_suffix(a.title, a.level)
-            lines.append(f"⚠️ *{escape_v2(a.title)}*{level}")
+            lines.append(f"{ui_icon_md('storm')} *{escape_v2(a.title)}*{level}")
     
     return "\n".join(lines)
 
 def format_forecast_header(data: WeatherData, title: Optional[str] = None) -> str:
     lines = [
-        f"🌍 *{escape_v2(data.location_name)}*",
+        f"{weather_icon_md(data.now_icon)} *{escape_v2(data.location_name)}*",
         f"🕐 {escape_v2(data.update_time.strftime('%m-%d %H:%M'))} 更新",
     ]
     if title:
-        lines.append(f"📅 *{escape_v2(title)}*")
+        lines.append(f"{ui_icon_md('cloud')} *{escape_v2(title)}*")
     return "\n".join(lines)
 
 def format_today_detail(
@@ -309,28 +320,32 @@ def format_today_detail(
     weekday = fields["weekday"]
     lines = ["━━━━━━━━━━━━━━━━━━━━"]
     if title:
-        lines.append(f"📅 *{escape_v2(title)} \\({escape_v2(date_str)} {weekday}\\)*")
+        lines.append(
+            f"{ui_icon_md('cloud')} *{escape_v2(title)} \\({escape_v2(date_str)} {weekday}\\)*"
+        )
+    moon_icon = ui_icon_md("moon")
     lines.extend([
-        f"🌡️ 气温: {temp_min}\\~{temp_max}°C \\| 🌙 {moon} \\(日出 {sunrise} / 日落 {sunset}\\)",
+        f"{ui_icon_md('sun')} 气温: {temp_min}\\~{temp_max}°C \\| {moon_icon} {moon} "
+        f"\\(日出 {sunrise} / 日落 {sunset}\\)",
         "",
-        f"☀️ 日间: {day_icon} {text_day} \\({day_wind}\\)",
-        f"🌙 夜间: {night_icon} {text_night} \\({night_wind}\\)",
+        f"{ui_icon_md('day')} 日间: {day_icon} {text_day} \\({day_wind}\\)",
+        f"{ui_icon_md('night')} 夜间: {night_icon} {text_night} \\({night_wind}\\)",
         "",
     ])
-    stats_parts = [f"☔️ 降水 {precip}"]
+    stats_parts = [f"{ui_icon_md('rain')} 降水 {precip}"]
     if fields["humid"] != "N/A":
-        stats_parts.append(f"💧 湿度 {humid}%")
+        stats_parts.append(f"{ui_icon_md('fog')} 湿度 {humid}%")
     if fields["vis"] != "N/A":
-        stats_parts.append(f"👁️ 能见度 {vis}km")
+        stats_parts.append(f"{ui_icon_md('fog')} 能见度 {vis}km")
     if cloud is not None:
-        stats_parts.append(f"☁️ 云量 {escape_v2(cloud)}%")
+        stats_parts.append(f"{ui_icon_md('cloud')} 云量 {escape_v2(cloud)}%")
     lines.append(" \\| ".join(stats_parts))
 
     forecast_parts = []
     if fields["uv"] != "N/A":
-        forecast_parts.append(f"☀️ UV {uv}")
+        forecast_parts.append(f"{ui_icon_md('sun')} UV {uv}")
     if max_pop is not None:
-        forecast_parts.append(f"未来6h降概 {escape_v2(int(max_pop))}%")
+        forecast_parts.append(f"{ui_icon_md('rain')} 未来6h降概 {escape_v2(int(max_pop))}%")
     if day.precip_day_probability is not None:
         forecast_parts.append(f"白天降概 {escape_v2(int(day.precip_day_probability))}%")
     if day.precip_night_probability is not None:
