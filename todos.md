@@ -1,15 +1,6 @@
-# 适配已上传的和风 custom emoji
+# /tq 生活指数 + 去重 + 空气三列
 
-## 目标
-
-让运行时稳定加载 `data/weather_custom_emoji.json`，Docker/VPS 不丢映射，启动可观测。
-
-## 任务
-
-- [x] 映射路径相对项目根解析（不依赖 CWD）
-- [x] 启动时 log 已加载图标数 / 开关状态
-- [x] `.dockerignore`：排除 `data/*` 但保留 `weather_custom_emoji.json`
-- [x] 打包 `resources/weather_custom_emoji.json` 作镜像兜底（不被 `./data` 卷盖住）
-- [x] 实时卡片 hero 也显示 custom emoji
-- [x] 文档 / .env.example 说明查找顺序
-- [x] 单测 + 提交
+- [x] 生活指数 format 函数 + Rich/MD 去 table（Unicode 一行两个）
+- [x] 空气质量 4 列 → 3 列（去掉说明）
+- [x] 默认卡去重（湿度/能见度、当前降水标签、地名）
+- [x] 测试 + 提交

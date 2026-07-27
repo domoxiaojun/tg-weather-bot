@@ -27,10 +27,10 @@ from utils.formatter import (
     _display_summary_lines,
     _weekday_cn,
     format_attribution,
+    format_life_index_lines,
     format_precip_value,
     format_weather_number,
     normalize_warning_level,
-    ordered_indices_for_day,
 )
 from utils.weather_icons import (
     moon_phase_code,
@@ -237,7 +237,7 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         level_cell = (
             marked(level) if level and level not in ("优", "良") else (level or "—")
         )
-        rows.append([name, format_weather_number(value), level_cell, _POLLUTANT_META[name][0]])
+        rows.append([name, format_weather_number(value), level_cell])
     if not rows and air.aqi is None and not air.category and not air.description and not air.primary:
         return []
 
@@ -246,9 +246,9 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         inner.append(
             table(
                 rows,
-                headers=["污染物", "浓度", "水平", "说明"],
-                aligns=["left", "right", "center", "left"],
-                caption="浓度单位 μg/m³（CO 为 mg/m³）· 水平按国标单项指数分级",
+                headers=["污染物", "浓度", "水平"],
+                aligns=["left", "right", "center"],
+                caption="μg/m³（CO 为 mg/m³）",
             )
         )
     else:
@@ -284,7 +284,10 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
     if data.now_humidity is not None:
         rows.append([ui_label_rich("fog", "湿度"), f"{data.now_humidity}%"])
     if data.now_precip is not None:
-        rows.append([ui_label_rich("rain", "降水"), format_precip_value(data.now_precip, data.now_precip_kind)])
+        rows.append([
+            ui_label_rich("rain", "当前降水"),
+            format_precip_value(data.now_precip, data.now_precip_kind),
+        ])
     if data.now_vis is not None:
         rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(data.now_vis)}km"])
     if data.now_pressure is not None:
@@ -303,28 +306,21 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
     return rows
 
 
-def _index_pairs_table(entries: List[str]) -> dict:
-    """Life-index tips two per row in their own compact section."""
-    rows = []
-    for i in range(0, len(entries), 2):
-        rows.append([entries[i], entries[i + 1] if i + 1 < len(entries) else ""])
-    return table(rows, aligns=["left", "left"], bordered=True)
-
-
 def _index_pair_blocks(
     indices: List,
     target_date=None,
     *,
     include_heading: bool,
 ) -> List[dict]:
-    ordered = ordered_indices_for_day(indices, target_date)
-    if not ordered:
+    """Life indices as plain lines (two tips per line), not a table/list."""
+    lines = format_life_index_lines(indices, target_date, escape=False)
+    if not lines:
         return []
-    entries = [f"{index.name}：{index.category}" for index in ordered]
     blocks: List[dict] = []
     if include_heading:
-        blocks.append(heading(ui_label_rich("sun", "生活指数"), size=4))
-    blocks.append(_index_pairs_table(entries))
+        blocks.append(heading("💡 生活指数", size=4))
+    for line in lines:
+        blocks.append(paragraph(line))
     return blocks
 
 
@@ -372,11 +368,9 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
     rows.append([ui_label_rich("night", "夜间"), rich_icon_text(day.icon_night, night_desc)])
 
     if day.precip is not None:
+        # Daily total — distinct from 当前降水 on the realtime stats table.
         rows.append([ui_label_rich("rain", "降水"), format_precip_value(day.precip, day.precip_kind)])
-    if day.humidity is not None:
-        rows.append([ui_label_rich("fog", "湿度"), f"{day.humidity}%"])
-    if day.vis is not None:
-        rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(day.vis)}km"])
+    # Humidity / visibility already shown on the realtime stats table — skip here.
     if data.now_cloud is not None:
         rows.append([ui_label_rich("cloud", "云量"), f"{data.now_cloud}%"])
     if day.uv_index:

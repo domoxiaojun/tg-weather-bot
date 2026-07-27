@@ -513,23 +513,61 @@ def ordered_indices_for_day(indices: List[LifeIndex], target_date=None) -> List[
     )
 
 
+_INDEX_PAIR_SEP = "    "  # 4 spaces between two indices on one line
+
+
+def life_index_short_name(name: str) -> str:
+    """Strip trailing 指数 so '穿衣指数' → '穿衣' (keeps full name if bare)."""
+    text = (name or "").strip()
+    if text.endswith("指数") and len(text) > 2:
+        return text[: -len("指数")].strip() or text
+    return text
+
+
+def format_life_index_entry(index: LifeIndex, *, escape: bool = False) -> str:
+    """One tip: Unicode emoji + short name + category (no table cells)."""
+    emoji = INDICES_EMOJI.get(str(index.type), "ℹ️")
+    short = life_index_short_name(index.name)
+    category = index.category or ""
+    if escape:
+        short = escape_v2(short)
+        category = escape_v2(category)
+    return f"{emoji} {short}：{category}"
+
+
+def format_life_index_lines(
+    indices: List[LifeIndex],
+    target_date=None,
+    *,
+    escape: bool = False,
+) -> List[str]:
+    """Pair life indices two-per-line, separated by spaces (not a table)."""
+    ordered = ordered_indices_for_day(indices, target_date)
+    if not ordered:
+        return []
+    entries = [format_life_index_entry(index, escape=escape) for index in ordered]
+    lines: List[str] = []
+    for offset in range(0, len(entries), 2):
+        left = entries[offset]
+        if offset + 1 < len(entries):
+            lines.append(f"{left}{_INDEX_PAIR_SEP}{entries[offset + 1]}")
+        else:
+            lines.append(left)
+    return lines
+
+
 def format_index_pairs(
     indices: List[LifeIndex],
     target_date=None,
     *,
     include_heading: bool = True,
 ) -> str:
-    ordered = ordered_indices_for_day(indices, target_date)
-    if not ordered:
+    """MarkdownV2 life-index block: heading + two tips per line."""
+    lines = format_life_index_lines(indices, target_date, escape=True)
+    if not lines:
         return ""
-    lines = ["💡 *生活指数*"] if include_heading else []
-    entries = [
-        f"{escape_v2(index.name)}：{escape_v2(index.category)}"
-        for index in ordered
-    ]
-    for offset in range(0, len(entries), 2):
-        pair = entries[offset:offset + 2]
-        lines.append(" \\| ".join(pair))
+    if include_heading:
+        return "\n".join(["💡 *生活指数*", *lines])
     return "\n".join(lines)
 
 
