@@ -21,7 +21,8 @@ from domain.models import (
 from services.chart_cache import PreparedChart, remember_chart_file_id
 from services.telegram_rich import rich
 from utils.formatter import format_weather_response
-from utils.rich_formatter import build_indices_blocks, build_realtime_blocks
+from utils.rich_formatter import build_indices_blocks, build_realtime_blocks, build_report_blocks
+from utils.weather_icons import set_custom_emoji_map_for_tests
 
 
 INDEX_NAMES = {
@@ -150,20 +151,22 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertNotIn("今日详情", all_text)
         self.assertEqual(all_text.count("潮安, 广东省"), 1)
 
-        index_heading = next(
+        index_details = next(
             index
             for index, block in enumerate(blocks)
-            if block.get("type") == "heading" and "生活指数" in _flatten_block_text(block)
+            if block.get("type") == "details" and "生活指数" in _flatten_block_text(block)
         )
         air_index = next(
             index
             for index, block in enumerate(blocks)
             if block.get("type") == "details" and "空气质量" in _flatten_block_text(block)
         )
-        self.assertLess(index_heading, air_index)
+        self.assertLess(index_details, air_index)
+        # Collapsed by default (same pattern as air quality).
+        self.assertFalse(blocks[index_details].get("is_open"))
 
         tables_before_indices = [
-            block for block in blocks[:index_heading] if block.get("type") == "table"
+            block for block in blocks[:index_details] if block.get("type") == "table"
         ]
         self.assertGreaterEqual(len(tables_before_indices), 2)
         current_rows = table_text(tables_before_indices[0])
@@ -174,11 +177,11 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertFalse(any("湿度" in row[0] for row in detail_rows))
         self.assertFalse(any("能见度" in row[0] for row in detail_rows))
 
-        # Life indices: two-column table, one tip per cell, Unicode emoji.
+        # Life indices: collapsed details wrapping a two-column table.
         index_table = next(
-            block
-            for block in blocks[index_heading + 1 : air_index]
-            if block.get("type") == "table"
+            nested
+            for nested in blocks[index_details].get("blocks") or []
+            if nested.get("type") == "table"
         )
         index_rows = table_text(index_table)
         self.assertEqual(len(index_rows), 8)
@@ -188,13 +191,15 @@ class WeatherCardLayoutTests(unittest.TestCase):
 
     def test_odd_index_count_last_line_has_one_entry(self):
         blocks = build_realtime_blocks(make_weather(index_count=15))
-        heading = next(
-            index
-            for index, block in enumerate(blocks)
-            if block.get("type") == "heading" and "生活指数" in _flatten_block_text(block)
+        index_details = next(
+            block
+            for block in blocks
+            if block.get("type") == "details" and "生活指数" in _flatten_block_text(block)
         )
         index_table = next(
-            block for block in blocks[heading + 1 :] if block.get("type") == "table"
+            nested
+            for nested in index_details.get("blocks") or []
+            if nested.get("type") == "table"
         )
         rows = table_text(index_table)
         self.assertEqual(len(rows), 8)
@@ -213,10 +218,60 @@ class WeatherCardLayoutTests(unittest.TestCase):
 
     def test_indices_view_uses_two_column_table(self):
         blocks = build_indices_blocks(make_weather())
+        # Dedicated indices view stays expanded (not collapsed details).
+        self.assertFalse(
+            any(
+                block.get("type") == "details" and "生活指数" in _flatten_block_text(block)
+                for block in blocks
+            )
+        )
         index_table = next(block for block in blocks if block.get("type") == "table")
         rows = table_text(index_table)
         self.assertEqual(rows[0], ["🚗 洗车：不宜", "👕 穿衣：热"])
         self.assertEqual(len(rows), 8)
+
+    def test_report_section_titles_use_weather_custom_emoji(self):
+        set_custom_emoji_map_for_tests({"104": "id-104", "1003": "id-1003", "305": "id-305"})
+        try:
+            html = (
+                "🟡 <b>预警</b>\n"
+                "注意暴雨。\n"
+                "☀️ <b>现在</b>\n"
+                "阴天。\n"
+                "⏱️ <b>接下来</b>\n"
+                "稍后有雨。\n"
+            )
+            weather = make_weather()
+            weather.now_icon = "104"
+            blocks = build_report_blocks(
+                html, title=f"🤖 {weather.location_name} 天气日报", weather=weather
+            )
+            title = blocks[0]["text"]
+            self.assertIsInstance(title, list)
+            self.assertEqual(title[0]["type"], "custom_emoji")
+            self.assertEqual(title[0]["custom_emoji_id"], "id-104")
+
+            def first_emoji(block):
+                text = block.get("text")
+                if isinstance(text, list) and text and isinstance(text[0], dict):
+                    return text[0]
+                return None
+
+            alert_line = next(
+                b for b in blocks if b.get("type") == "paragraph" and first_emoji(b)
+                and "预警" in _flatten_block_text(b)
+            )
+            self.assertEqual(first_emoji(alert_line)["custom_emoji_id"], "id-1003")
+            now_line = next(
+                b for b in blocks if b.get("type") == "paragraph" and "现在" in _flatten_block_text(b)
+            )
+            self.assertEqual(first_emoji(now_line)["custom_emoji_id"], "id-104")
+            next_line = next(
+                b for b in blocks if b.get("type") == "paragraph" and "接下来" in _flatten_block_text(b)
+            )
+            self.assertEqual(first_emoji(next_line)["custom_emoji_id"], "id-305")
+        finally:
+            set_custom_emoji_map_for_tests(None)
 
     def test_air_quality_table_has_three_columns_no_description(self):
         weather = make_weather()

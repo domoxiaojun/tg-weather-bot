@@ -312,8 +312,13 @@ def _index_pair_blocks(
     target_date=None,
     *,
     include_heading: bool,
+    collapsible: bool = False,
 ) -> List[dict]:
-    """Life indices as a two-column table: each cell is one tip (Unicode emoji)."""
+    """Life indices as a two-column table: each cell is one tip (Unicode emoji).
+
+    On the default /tq card pass ``collapsible=True`` so the block matches air
+    quality (``details``, collapsed until the user taps).
+    """
     ordered = ordered_indices_for_day(indices, target_date)
     if not ordered:
         return []
@@ -323,10 +328,14 @@ def _index_pair_blocks(
         left = entries[offset]
         right = entries[offset + 1] if offset + 1 < len(entries) else ""
         rows.append([left, right])
+    table_block = table(rows, aligns=["left", "left"], bordered=True)
+    if collapsible:
+        summary: list = ["💡 生活指数", f" · {len(ordered)}项", "（点击展开详情）"]
+        return [details(summary, [table_block])]
     blocks: List[dict] = []
     if include_heading:
         blocks.append(heading("💡 生活指数", size=4))
-    blocks.append(table(rows, aligns=["left", "left"], bordered=True))
+    blocks.append(table_block)
     return blocks
 
 
@@ -422,6 +431,39 @@ def _today_detail_blocks(data: WeatherData) -> List[dict]:
 
 
 _REPORT_TAG_RE = re.compile(r"<(/?)([bi])>")
+_REPORT_SECTION_TITLES = ("预警", "现在", "接下来", "未来几天", "建议")
+# Leading unicode emoji(s) then optional <b>title</b> or bare title.
+_REPORT_SECTION_RE = re.compile(
+    r"^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF\u23F0-\u23FA\u2190-\u21FF]"
+    r"(?:\uFE0F)?\s*)*"
+    r"(?:<b>)?(?P<title>预警|现在|接下来|未来几天|建议)(?:</b>)?",
+)
+
+_ALERT_ICON_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("台风", "1001"),
+    ("龙卷", "1002"),
+    ("暴雨", "1003"),
+    ("暴雪", "1004"),
+    ("寒潮", "1005"),
+    ("大风", "1006"),
+    ("沙尘暴", "1007"),
+    ("沙尘", "1044"),
+    ("高温", "1009"),
+    ("热浪", "1010"),
+    ("雷电", "1014"),
+    ("雷暴", "1042"),
+    ("冰雹", "1015"),
+    ("大雾", "1017"),
+    ("雾", "1017"),
+    ("霾", "1019"),
+    ("道路结冰", "1021"),
+    ("干旱", "1022"),
+    ("火险", "1025"),
+    ("强对流", "1031"),
+    ("大雪", "1033"),
+    ("寒冷", "1034"),
+    ("海浪", "1045"),
+)
 
 
 def _report_line_richtext(line: str) -> list:
@@ -444,16 +486,91 @@ def _report_line_richtext(line: str) -> list:
     return segments or [""]
 
 
-def build_report_blocks(report_html: str, *, title: Optional[str] = None) -> List[dict]:
+def _warning_icon_code(weather: Optional[WeatherData]) -> str:
+    if weather is None or not weather.alerts:
+        return "1003"
+    for alert in weather.alerts:
+        hay = f"{alert.title or ''} {alert.type or ''}"
+        for keyword, code in _ALERT_ICON_KEYWORDS:
+            if keyword in hay:
+                return code
+    return "1003"
+
+
+def _report_section_icon(title: str, weather: Optional[WeatherData]):
+    if title == "现在" and weather is not None and weather.now_icon:
+        return weather_icon_rich(weather.now_icon)
+    if title == "预警":
+        return weather_icon_rich(_warning_icon_code(weather))
+    if title == "接下来":
+        return weather_icon_rich("305")
+    if title == "未来几天":
+        return weather_icon_rich("104")
+    return None
+
+
+def _strip_leading_section_emoji(line: str) -> str:
+    return re.sub(
+        r"^(?:[\U0001F300-\U0001FAFF\u2600-\u27BF\u23F0-\u23FA\u2190-\u21FF]"
+        r"(?:\uFE0F)?\s*)+",
+        "",
+        line,
+    ).lstrip()
+
+
+def _report_line_with_weather_icons(line: str, weather: Optional[WeatherData]) -> list:
+    """Section titles get QWeather custom emoji; body stays LLM HTML text."""
+    plain = unescape(_REPORT_TAG_RE.sub("", line)).strip()
+    match = _REPORT_SECTION_RE.match(line) or _REPORT_SECTION_RE.match(plain)
+    if not match:
+        return _report_line_richtext(line)
+
+    title = match.group("title")
+    if title not in _REPORT_SECTION_TITLES:
+        return _report_line_richtext(line)
+
+    icon = _report_section_icon(title, weather)
+    if icon is None:
+        return _report_line_richtext(line)
+
+    stripped = _strip_leading_section_emoji(line)
+    # Ensure the section title is still bold after emoji strip.
+    if not stripped.lower().startswith("<b>") and not stripped.startswith(title):
+        stripped = f"<b>{title}</b>"
+    elif stripped.startswith(title) and not stripped.lower().startswith("<b>"):
+        stripped = f"<b>{title}</b>{stripped[len(title):]}"
+    body = _report_line_richtext(stripped)
+    return [icon, " ", *body]
+
+
+def build_report_blocks(
+    report_html: str,
+    *,
+    title: Optional[str] = None,
+    weather: Optional[WeatherData] = None,
+) -> List[dict]:
     """AI report / daily brief as rich blocks.
 
     Never send reports via rich ``html=``: InputRichMessage treats content as
     real HTML, so newlines collapse and the report becomes one blob. Blocks
     keep the paragraph structure AND the rich look.
+
+    When ``weather`` is set, section headings (现在/预警/…) are re-prefixed
+    with QWeather custom emoji; the model only outputs Unicode + HTML.
     """
     blocks: List[dict] = []
     if title:
-        blocks.append(heading(title, size=4))
+        if weather is not None and weather.now_icon:
+            title_text = title
+            for prefix in ("🤖 ", "🤖"):
+                if title_text.startswith(prefix):
+                    title_text = title_text[len(prefix) :]
+                    break
+            blocks.append(
+                heading([weather_icon_rich(weather.now_icon), f" {title_text}"], size=4)
+            )
+        else:
+            blocks.append(heading(title, size=4))
     for raw_line in report_html.split("\n"):
         line = raw_line.strip()
         if not line:
@@ -462,7 +579,10 @@ def build_report_blocks(report_html: str, *, title: Optional[str] = None) -> Lis
         if plain.startswith(("🤖 Generated by", "Generated by")):
             blocks.append(footer(unescape(plain)))
             continue
-        blocks.append(paragraph(_report_line_richtext(line)))
+        if weather is not None:
+            blocks.append(paragraph(_report_line_with_weather_icons(line, weather)))
+        else:
+            blocks.append(paragraph(_report_line_richtext(line)))
     return blocks
 
 
@@ -497,7 +617,11 @@ def build_realtime_blocks(data: WeatherData) -> List[dict]:
     blocks.extend(_today_detail_blocks(data))
     current_day = data.get_current_daily_forecast()
     index_date = current_day.date.date() if current_day is not None else data.local_update_date
-    blocks.extend(_index_pair_blocks(data.indices, index_date, include_heading=True))
+    blocks.extend(
+        _index_pair_blocks(
+            data.indices, index_date, include_heading=True, collapsible=True
+        )
+    )
     blocks.extend(air_blocks)
     blocks.append(build_footer(data))
     return blocks

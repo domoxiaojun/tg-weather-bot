@@ -393,7 +393,9 @@ async def dispatch_daily_briefs(
                 try:
                     # Rich BLOCKS, never rich html= (HTML semantics collapse
                     # newlines and squash the brief into one blob).
-                    brief_blocks = build_report_blocks(report_text, title=plain_header)
+                    brief_blocks = build_report_blocks(
+                        report_text, title=plain_header, weather=weather
+                    )
                     if await rich.send_rich(
                         context.bot,
                         chat_id,
@@ -517,12 +519,33 @@ async def check_rain_alerts(
 
             async def deliver(chat_id, thread_id=None):
                 nonlocal chart_file_id, chart_bytes
-                # A rich message carries the chart AND the full text together,
-                # sidestepping the 1024-char photo caption limit.
-                if chart_file_id and rich.supports(FEATURE_SEND):
+                chart_sent = False
+                # Prefer one rich alert. Cached Telegram media can be embedded
+                # directly; a first-time byte upload is sent as a visual lead,
+                # followed by the same rich alert card instead of degrading the
+                # whole notification to a photo caption.
+                if rich.supports(FEATURE_SEND):
+                    embed_file_id = chart_file_id
+                    if embed_file_id is None and chart_bytes:
+                        try:
+                            chart_message = await context.bot.send_photo(
+                                chat_id=chat_id,
+                                photo=InputFile(io.BytesIO(chart_bytes), filename="rain.png"),
+                                message_thread_id=thread_id,
+                            )
+                            await remember_chart_file_id(weather, chart_type, chart_message)
+                            photos = getattr(chart_message, "photo", None)
+                            if photos:
+                                chart_file_id = photos[-1].file_id
+                                chart_bytes = None
+                            chart_sent = True
+                        except Exception as error:
+                            logger.warning(f"Rich rain chart lead failed; sending alert card only: {error}")
+
                     blocks = build_rain_alert_blocks(weather)
-                    caption = "未来 2 小时分钟级降水" if chart_type == "minutely" else "逐小时降水"
-                    blocks.insert(2, photo_block(chart_file_id, caption))
+                    if embed_file_id:
+                        caption = "未来 2 小时分钟级降水" if chart_type == "minutely" else "逐小时降水"
+                        blocks.insert(2, photo_block(embed_file_id, caption))
                     if await rich.send_rich(
                         context.bot,
                         chat_id,
@@ -530,6 +553,15 @@ async def check_rain_alerts(
                         message_thread_id=thread_id,
                         reply_markup=keyboard,
                     ) is not None:
+                        return
+                    if chart_sent:
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=alert_text,
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                            message_thread_id=thread_id,
+                            reply_markup=keyboard,
+                        )
                         return
 
                 caption_fits = len(alert_text) <= 1000
