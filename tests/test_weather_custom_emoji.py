@@ -169,7 +169,9 @@ class WeatherCustomEmojiTests(unittest.TestCase):
         self.assertEqual(list(UPLOAD_ICON_CODES), list(WEATHER_ICONS.keys()))
         self.assertEqual(UPLOAD_ICON_CODES[0], "100")
         self.assertEqual(UPLOAD_ICON_CODES[5], "150")
-        self.assertEqual(UPLOAD_ICON_CODES[-1], "999")
+        self.assertEqual(UPLOAD_ICON_CODES[-1], "1050")
+        self.assertIn("1003", UPLOAD_ICON_CODES)  # 暴雨预警
+        self.assertLessEqual(len(UPLOAD_ICON_CODES), 200)
 
     def test_each_fallback_is_a_single_emoji(self) -> None:
         """Telegram custom-emoji base must be one emoji, not ❄️+🌨️ glued together."""

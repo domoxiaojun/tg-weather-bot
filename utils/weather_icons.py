@@ -104,6 +104,58 @@ _WEATHER_ICON_ROWS: tuple[tuple[str, str, str], ...] = (
     ("900", "热", "🥵"),
     ("901", "冷", "🥶"),
     ("999", "未知", "❓"),
+    # —— 常用预警图标（和风 warning.icon / 预警类型，官网 icons 1000+）——
+    # 名称对齐 dev.qweather.com 预警图标与国内预警业务常用叫法。
+    ("1001", "台风预警", "🌀"),
+    ("1002", "龙卷风预警", "🌪️"),
+    ("1003", "暴雨预警", "🌧️"),
+    ("1004", "暴雪预警", "❄️"),
+    ("1005", "寒潮预警", "🥶"),
+    ("1006", "大风预警", "💨"),
+    ("1007", "沙尘暴预警", "🌪️"),
+    ("1008", "低温冻害预警", "🥶"),
+    ("1009", "高温预警", "🥵"),
+    ("1010", "热浪预警", "🥵"),
+    ("1011", "干热风预警", "💨"),
+    ("1012", "下击暴流预警", "💨"),
+    ("1013", "雪崩预警", "❄️"),
+    ("1014", "雷电预警", "⚡"),
+    ("1015", "冰雹预警", "🧊"),
+    ("1016", "霜冻预警", "❄️"),
+    ("1017", "大雾预警", "🌫️"),
+    ("1018", "低空风切变预警", "💨"),
+    ("1019", "霾预警", "🌫️"),
+    ("1020", "雷暴大风预警", "⛈️"),
+    ("1021", "道路结冰预警", "🧊"),
+    ("1022", "干旱预警", "☀️"),
+    ("1023", "海上大风预警", "💨"),
+    ("1024", "高温中暑预警", "🥵"),
+    ("1025", "森林火险预警", "🔥"),
+    ("1026", "草原火险预警", "🔥"),
+    ("1027", "冰冻预警", "🧊"),
+    ("1028", "空间天气预警", "🌌"),
+    ("1029", "重污染预警", "😷"),
+    ("1030", "低温雨雪冰冻预警", "❄️"),
+    ("1031", "强对流预警", "⛈️"),
+    ("1032", "臭氧预警", "😷"),
+    ("1033", "大雪预警", "❄️"),
+    ("1034", "寒冷预警", "🥶"),
+    ("1035", "连阴雨预警", "🌧️"),
+    ("1036", "渍涝风险预警", "🌊"),
+    ("1037", "地质灾害气象风险预警", "⛰️"),
+    ("1038", "强降雨预警", "🌧️"),
+    ("1039", "强降温预警", "🥶"),
+    ("1040", "雪灾预警", "❄️"),
+    ("1041", "森林（草原）火险预警", "🔥"),
+    ("1042", "雷暴预警", "⛈️"),
+    ("1043", "严寒预警", "🥶"),
+    ("1044", "沙尘预警", "🌪️"),
+    ("1045", "海浪预警", "🌊"),
+    ("1046", "海上雷电预警", "⚡"),
+    ("1047", "海上大雾预警", "🌫️"),
+    ("1048", "海上雷雨大风预警", "⛈️"),
+    ("1049", "海上台风预警", "🌀"),
+    ("1050", "寒冷潮预警", "🥶"),
 )
 
 # code → Unicode fallback (charts / alternative_text / unmapped surfaces)
@@ -114,6 +166,41 @@ WEATHER_ICON_LABELS: dict[str, str] = {code: label for code, label, _emoji in _W
 
 # Pack upload / MDV2 import order — identical to table order above.
 UPLOAD_ICON_CODES: tuple[str, ...] = tuple(code for code, _label, _emoji in _WEATHER_ICON_ROWS)
+
+
+def color_for_icon_code(code: str) -> str:
+    """Hex fill for rasterising QWeather SVGs (they use currentColor).
+
+    Colours are chosen to read well on Telegram dark/light bubbles — not a
+    1:1 clone of the marketing site CSS, but clearly non-black.
+    """
+    try:
+        n = int(str(code).strip())
+    except ValueError:
+        return "#5D6D7E"
+    if 100 <= n <= 104:
+        return "#F5A623"  # 白天晴云 — 金黄
+    if 150 <= n <= 153:
+        return "#8FA4E8"  # 夜间 — 淡紫蓝
+    if 300 <= n <= 399:
+        return "#3B8EEA"  # 雨 — 蓝
+    if 400 <= n <= 499:
+        return "#6EC6E6"  # 雪 — 冰蓝
+    if 500 <= n <= 515:
+        return "#A0A7B0"  # 雾霾 — 灰
+    if 800 <= n <= 807:
+        return "#E6D39A"  # 月相 — 月色
+    if n == 900:
+        return "#E74C3C"  # 热
+    if n == 901:
+        return "#5DADE2"  # 冷
+    if n == 999:
+        return "#95A5A6"
+    if 1000 <= n < 2000:
+        return "#E67E22"  # 预警 — 橙
+    if n >= 2000:
+        return "#C0392B"
+    return "#5D6D7E"
 
 # UI chrome keys → nearest QWeather icon code (pack has weather phenomena only).
 # Used for table row labels / section headings so the card is not a mix of

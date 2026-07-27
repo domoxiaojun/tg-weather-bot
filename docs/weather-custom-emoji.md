@@ -82,6 +82,11 @@ uv run python scripts/upload_weather_emoji.py   # 需 Premium + BOT_TOKEN + SUPE
 | LLM 日报 | `weather_icon_code` / `weather_icon_label` + `weather_icon_legend` |
 | 人读 / 粘贴整包 | `data/weather_emoji_order.md`、`resources/weather_custom_emoji.markdown_v2.txt` |
 
+彩色包 short name：`qweather_color_by_domoweather_bot`  
+添加：https://t.me/addemoji/qweather_color_by_domoweather_bot  
+
+栅格化时会把官方 SVG 的 `currentColor` 换成分类色（晴金 / 雨蓝 / 雪冰蓝 / 预警橙…），避免黑剪影。
+
 映射 JSON（`data/` 与 `resources/`）在 v2 起额外带：
 
 ```json

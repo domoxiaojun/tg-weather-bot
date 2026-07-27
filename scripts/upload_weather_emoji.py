@@ -310,13 +310,28 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--name",
-        default="qweather_icons",
-        help="Sticker set short name (auto-suffixed with _by_<bot>)",
+        default="qweather_color",
+        help="Sticker set short name (auto-suffixed with _by_<bot>); default is the colored pack",
     )
-    parser.add_argument("--title", default="QWeather Icons", help="Sticker set title")
+    parser.add_argument(
+        "--title",
+        default="QWeather Color Icons",
+        help="Sticker set title",
+    )
     parser.add_argument("--map", type=Path, default=DEFAULT_MAP, help="Output JSON map path")
     parser.add_argument("--assets", type=Path, default=ASSETS, help="PNG assets directory")
+    parser.add_argument(
+        "--fresh-map",
+        action="store_true",
+        help="Ignore existing map JSON and rebuild ids from this run (use with a new --name)",
+    )
     args = parser.parse_args(argv)
+    if args.fresh_map and args.map.is_file():
+        # Keep a backup so the previous pack remains recoverable.
+        bak = args.map.with_suffix(args.map.suffix + ".bak")
+        bak.write_text(args.map.read_text(encoding="utf-8"), encoding="utf-8")
+        args.map.write_text("{}\n", encoding="utf-8")
+        print(f"backed up previous map → {bak}; starting fresh map at {args.map}")
     return asyncio.run(_upload(args.name, args.title, args.map, args.assets))
 
 
