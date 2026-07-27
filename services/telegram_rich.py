@@ -23,7 +23,7 @@ import warnings
 from typing import Any, Optional, Union
 
 from loguru import logger
-from telegram import Message
+from telegram import Message, SentGuestMessage
 from telegram.error import BadRequest, EndPointNotFound, Forbidden
 from telegram.warnings import PTBUserWarning
 
@@ -37,6 +37,8 @@ RichText = Union[str, list, dict]
 FEATURE_SEND = "send_rich_message"
 FEATURE_EDIT = "edit_rich_message"
 FEATURE_DRAFT = "send_rich_message_draft"
+FEATURE_INLINE = "inline_rich_message"
+FEATURE_GUEST = "guest_rich_message"
 FEATURE_EPHEMERAL = "ephemeral_message"
 
 # A wrong payload is deterministic, so a couple of 400s mean "stop trying".
@@ -73,6 +75,20 @@ def marked(text: RichText) -> dict:
 
 def link(text: RichText, url: str) -> dict:
     return {"type": "url", "text": text, "url": url}
+
+
+def custom_emoji(custom_emoji_id: str, alternative_text: str = "▪️") -> dict:
+    """Bot API 10.1 ``RichTextCustomEmoji``.
+
+    ``alternative_text`` is shown on clients that cannot render the pack.
+    Requires the bot owner to have Telegram Premium (private/group/supergroup)
+    or a Fragment username upgrade for broader surfaces.
+    """
+    return {
+        "type": "custom_emoji",
+        "custom_emoji_id": str(custom_emoji_id),
+        "alternative_text": alternative_text or "▪️",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -278,6 +294,27 @@ def rich_message(
     return payload
 
 
+def input_rich_message_content(
+    *,
+    blocks: Optional[list] = None,
+    html: Optional[str] = None,
+    markdown: Optional[str] = None,
+) -> dict:
+    """Build Bot API 10.1 ``InputRichMessageContent`` for query results.
+
+    PTB 22.8 does not type this object yet, but its TelegramObject serializer
+    safely carries this raw dictionary inside ``InlineQueryResultArticle``.
+    The same shape is valid for inline, guest and Web App query results.
+    """
+    return {"rich_message": rich_message(blocks=blocks, html=html, markdown=markdown)}
+
+
+def _api_dict(value: Any) -> Any:
+    """Convert PTB TelegramObjects while leaving already-raw payloads intact."""
+    converter = getattr(value, "to_dict", None)
+    return converter() if callable(converter) else value
+
+
 # --------------------------------------------------------------------------- #
 # Transport
 # --------------------------------------------------------------------------- #
@@ -300,6 +337,9 @@ class RichMessenger:
     def supports(self, feature: str) -> bool:
         if feature == FEATURE_EPHEMERAL:
             if not settings.enable_ephemeral_messages:
+                return False
+        elif feature == FEATURE_GUEST:
+            if not settings.enable_guest_mode or not self.rich_enabled:
                 return False
         elif not self.rich_enabled:
             return False
@@ -426,6 +466,56 @@ class RichMessenger:
         }
         result = await self._call(bot, "sendRichMessageDraft", payload, FEATURE_DRAFT)
         return result is not None
+
+    async def answer_inline_query(
+        self,
+        bot,
+        inline_query_id: str,
+        results: list,
+        *,
+        cache_time: int = 300,
+        is_personal: bool = False,
+        next_offset: Optional[str] = None,
+        button=None,
+    ) -> bool:
+        """Answer an inline query containing ``InputRichMessageContent``.
+
+        ``answerInlineQuery`` itself is old, but PTB's typed result union does
+        not include the 10.1 rich content variant. Calling through the public
+        raw endpoint keeps the new payload intact and gives it an independent
+        capability/fallback circuit breaker.
+        """
+        if not self.supports(FEATURE_INLINE):
+            return False
+        payload: dict = {
+            "inline_query_id": inline_query_id,
+            "results": [_api_dict(result) for result in results],
+            "cache_time": cache_time,
+            "is_personal": is_personal,
+        }
+        if next_offset is not None:
+            payload["next_offset"] = next_offset
+        if button is not None:
+            payload["button"] = _api_dict(button)
+        result = await self._call(bot, "answerInlineQuery", payload, FEATURE_INLINE)
+        return result is True
+
+    async def answer_guest_query(self, bot, guest_query_id: str, result) -> bool:
+        """Answer one Guest Mode summon with a rich inline-query result."""
+        if not self.supports(FEATURE_GUEST):
+            return False
+        payload = {
+            "guest_query_id": guest_query_id,
+            "result": _api_dict(result),
+        }
+        sent = await self._call(
+            bot,
+            "answerGuestQuery",
+            payload,
+            FEATURE_GUEST,
+            return_type=SentGuestMessage,
+        )
+        return isinstance(sent, SentGuestMessage)
 
     async def send_ephemeral(
         self,

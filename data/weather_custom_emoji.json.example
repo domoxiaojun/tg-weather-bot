@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "sticker_set_name": "qweather_icons_by_YourBot",
+  "sticker_set_title": "QWeather Icons",
+  "bot_username": "YourBot",
+  "icons": {
+    "100": "5368324170671202286",
+    "301": "5368324170671202287"
+  }
+}

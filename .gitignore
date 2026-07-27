@@ -42,6 +42,9 @@ htmlcov/
 # bot_data.pickle
 data/bot_data.pickle
 
+# Generated weather custom-emoji PNGs (run prepare_weather_emoji_assets.py)
+data/weather_emoji_assets/
+
 # Docker
 .docker/
 

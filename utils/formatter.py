@@ -12,27 +12,14 @@ from domain.models import (
     WeatherData,
     normalize_warning_level,
 )
+from utils.weather_icons import (  # noqa: F401  — re-export for existing imports
+    WEATHER_ICONS,
+    weather_icon,
+    weather_icon_html,
+    weather_icon_md,
+)
 
 # --- Constants & Mappings ---
-
-WEATHER_ICONS = {
-    "100": "☀️", "101": "🌤️", "102": "☁️", "103": "🌥️", "104": "⛅",
-    "150": "🌙", "151": "🌤️", "152": "☁️", "153": "🌥️", 
-    "300": "🌦️", "301": "🌧️", "302": "🌧️", "303": "⛈️", "304": "🌦️",
-    "305": "🌧️", "306": "🌧️", "307": "⛈️", "308": "🌧️", "309": "🌦️",
-    "310": "🌧️", "311": "🌧️", "312": "⛈️", "313": "🌧️", "314": "🌧️",
-    "315": "⛈️", "316": "🌧️", "317": "🌧️", "318": "⛈️",
-    "350": "🌨️", "351": "🌨️", "399": "🌨️",
-    "400": "❄️", "401": "❄️", "402": "❄️", "403": "❄️", "404": "🌨️",
-    "405": "❄️", "406": "❄️", "407": "❄️", "408": "❄️🌨️", "409": "❄️🌨️", "410": "❄️🌨️",
-    "456": "🌪️", "457": "🌪️", "499": "❓",
-    "500": "⛈️", "501": "⛈️", "502": "⛈️", "503": "⛈️", "504": "⛈️",
-    "507": "⛈️🌨️", "508": "⛈️🌨️", "509": "⚡", "510": "⚡", "511": "⚡",
-    "512": "⚡", "513": "⚡", "514": "⚡", "515": "⚡",
-    "800": "☀️", "801": "🌤️", "802": "☁️", "803": "☁️", "804": "☁️",
-    "805": "🌫️", "806": "🌫️", "807": "🌧️",
-    "900": "🌪️", "901": "🌀", "999": "❓",
-}
 
 INDICES_EMOJI = {
     "1": "🏃", "2": "🚗", "3": "👕", "4": "🎣", "5": "☀️", "6": "🏞️",
@@ -90,13 +77,6 @@ def format_attribution(data, limit: int = 2) -> str:
     shown = entries[:limit]
     suffix = " 等" if len(entries) > limit else ""
     return f"{' · '.join(shown)}{suffix}"
-
-
-def weather_icon(icon: str) -> str:
-    """Support both QWeather icon codes and Caiyun emoji fallbacks."""
-    if not icon:
-        return "❓"
-    return WEATHER_ICONS.get(icon, icon)
 
 
 def alert_level_suffix(title: str, level: str) -> str:
@@ -179,10 +159,10 @@ def _day_display_fields(day: DailyForecast) -> dict:
         "moon": escape_v2(day.moon_phase) if day.moon_phase else "",
         "temp_min": escape_v2(format_weather_number(day.temp_min)),
         "temp_max": escape_v2(format_weather_number(day.temp_max)),
-        "day_icon": weather_icon(day.icon_day),
+        "day_icon": weather_icon_md(day.icon_day),
         "text_day": escape_v2(day.text_day),
         "day_wind": day_wind or "N/A",
-        "night_icon": weather_icon(day.icon_night),
+        "night_icon": weather_icon_md(day.icon_night),
         "text_night": escape_v2(day.text_night),
         "night_wind": night_wind or "N/A",
         "humid": escape_v2(day.humidity if day.humidity is not None else "N/A"),
@@ -213,7 +193,7 @@ def format_realtime_weather(data: WeatherData) -> str:
             f" \\(体感 {escape_v2(format_weather_number(data.now_feels_like))}°C\\)"
         )
     lines.append(temperature_line)
-    lines.append(f"🌤️ 天气: {weather_icon(data.now_icon)} {escape_v2(data.now_text or '暂无描述')}")
+    lines.append(f"🌤️ 天气: {weather_icon_md(data.now_icon)} {escape_v2(data.now_text or '暂无描述')}")
 
     wind_parts = _wind_parts(
         data.now_wind_dir,
@@ -344,9 +324,9 @@ def format_today_detail(
     target_indices = {"3": "🧥", "8": "😊", "2": "🚗"}
     
     if indices:
-        for idx in indices:
-             if idx.type in target_indices:
-                 tips.append(f"{target_indices[idx.type]} {escape_v2(idx.name)}: {escape_v2(idx.category)}")
+        for idx in select_indices_for_day(indices, day.date.date()):
+            if idx.type in target_indices:
+                tips.append(f"{target_indices[idx.type]} {escape_v2(idx.name)}: {escape_v2(idx.category)}")
     
     if tips:
         tips_str = " \\| ".join(tips)
@@ -440,7 +420,7 @@ def format_hourly_weather(hourly_data: List[HourlyForecast]) -> str:
 
         time_str = escape_v2(hour.time.strftime("%H:%M"))
         temp = escape_v2(format_weather_number(hour.temp))
-        icon = weather_icon(hour.icon)
+        icon = weather_icon_md(hour.icon)
         text = escape_v2(hour.text)
         precip = escape_v2(format_precip_value(hour.precip, hour.precip_kind))
 

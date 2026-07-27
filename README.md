@@ -62,14 +62,16 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 Rich output is **enabled by default** (`ENABLE_RICH_MESSAGES=true`) through a thin wrapper over PTB's public `Bot.do_api_request` escape hatch — `python-telegram-bot 22.8` is typed only through Bot API 10.0, so the newer methods are called directly while every surface keeps its MarkdownV2/HTML fallback.
 
 - **Tables** for the hourly and daily views (real column alignment instead of emoji-prefixed text runs), with a full-width date separator row when the hourly table crosses midnight.
-- **Collapsible `details`** for "今日详情" and per-day descriptions, so long views stay scrollable.
-- **`blockquote`** for weather warnings and **`marked`** highlights on precipitation peaks.
+- **Two-column tables** for realtime observations and "今日详情"; official warnings and air quality use collapsible `details`.
+- **`marked`** highlights on warning summaries and precipitation peaks.
 - **Native streaming** for AI reports in private chats via `sendRichMessageDraft` (an animated 30-second preview using the `thinking` block), finalized with `sendRichMessage`; groups and inline messages use throttled rich edits instead.
-- **Rain alerts embed the chart as a `photo` block** inside the same rich message, sidestepping Telegram's 1024-character photo caption limit.
+- **Rich Inline Mode results** via `InputRichMessageContent`, including weather tables, the help card, life indices and the AI-report placeholder.
+- **Guest Mode** (`ENABLE_GUEST_MODE=true`): mention the bot in a chat it has not joined and it replies once with the same rich weather card via `answerGuestQuery`.
+- **Rain alerts stay Rich even with charts**: cached charts embed as a `photo` block; a first-time upload is sent as a visual lead followed by the full Rich alert card.
 - **Ephemeral messages** (`ENABLE_EPHEMERAL_MESSAGES=true`): in groups, subscription management replies are visible only to the requesting user, and those commands are registered with `is_ephemeral`.
 - Unsupported servers/proxies are detected once (`EndPointNotFound`) and the capability is disabled for the process — functionality degrades, nothing breaks.
 
-See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, the transport audit of PTB 22.8, and what is intentionally not wired yet (inline query *results* still use text content).
+See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, PTB 22.8 transport audit, Inline/Guest implementation and deliberate ephemeral boundary.
 
 ## 🐳 Docker Deploy (Recommended)
 
@@ -100,6 +102,7 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - `/daily_sub <city> [HH:MM]` / `/daily_unsub <city>` / `/daily_my` - Manage daily brief subscriptions with an optional custom push time (default 08:00 in `TIMEZONE`). `/daily_my` is a card too: quick-pick time buttons (06:30/07:00/07:30/08:00) per city, unsubscribe, and a flip to the rain card. The weather card offers both `🔔 降雨提醒` and `📅 早安简报` one-tap subscribe buttons.
 - **Send Location** - Auto-query + Rain Chart.
 - **Inline**: `@your_bot Beijing` - Share weather anywhere.
+- **Guest**: mention `@your_bot Beijing` in a chat where the bot is not a member; the bot replies as itself once.
 
 ## 🔔 Subscriptions
 
@@ -146,6 +149,7 @@ QWEATHER_JWT_SUB=<Project ID>
 
 - **Inline mode**: enable via `/setinline`.
 - **Inline feedback**: set `/setinlinefeedback` to **Enabled (100%)** — the inline AI report relies on `chosen_inline_result` to replace its placeholder message; without feedback the placeholder never updates.
+- **Guest Mode**: open the BotFather MiniApp → Bot Settings → **Guest Mode** and enable it. Code startup logs whether Telegram reports `supports_guest_queries=true`.
 
 ## 📚 API Notes
 
@@ -154,5 +158,6 @@ QWEATHER_JWT_SUB=<Project ID>
 - [彩云天气当前套餐 API 整理](docs/caiyun-api-reference-2026-07.md)
 - [和风天气完整 API 整理](docs/qweather-api-reference-2026-07.md)
 - [和风天气 2026-07 更新核对](docs/qweather-api-update-2026-07.md)
+- [和风图标 → Telegram 自定义 Emoji](docs/weather-custom-emoji.md)
 - [Telegram Bot API 10.1/10.2 与 PTB 兼容性核对](docs/telegram-bot-api-update-2026-07.md)
 - [OpenAI SDK 2.48 与 GPT-5.6 Sol 迁移记录](docs/openai-gpt-5p6-upgrade-2026-07.md)

@@ -12,29 +12,30 @@ from domain.models import (
     HourlyForecast, DailyForecast, AirQuality, LifeIndex
 )
 
-# Helper: Map Caiyun Skycon to Text & Icon
+# Helper: Map Caiyun Skycon → (中文现象, 和风 icon code)
+# Codes match QWeather so custom-emoji / emoji tables stay unified.
 # Source: https://docs.caiyunapp.com/docs/tables/skycon/
 SKYCON_MAP = {
-    "CLEAR_DAY": ("晴", "☀️"),
-    "CLEAR_NIGHT": ("晴", "🌙"),
-    "PARTLY_CLOUDY_DAY": ("多云", "⛅"),
-    "PARTLY_CLOUDY_NIGHT": ("多云", "☁️"),
-    "CLOUDY": ("阴", "☁️"),
-    "LIGHT_HAZE": ("轻度雾霾", "🌫️"),
-    "MODERATE_HAZE": ("中度雾霾", "🌫️"),
-    "HEAVY_HAZE": ("重度雾霾", "🌫️"),
-    "LIGHT_RAIN": ("小雨", "🌧️"),
-    "MODERATE_RAIN": ("中雨", "🌧️"),
-    "HEAVY_RAIN": ("大雨", "🌧️"),
-    "STORM_RAIN": ("暴雨", "⛈️"),
-    "FOG": ("雾", "🌫️"),
-    "LIGHT_SNOW": ("小雪", "🌨️"),
-    "MODERATE_SNOW": ("中雪", "🌨️"),
-    "HEAVY_SNOW": ("大雪", "🌨️"),
-    "STORM_SNOW": ("暴雪", "❄️"),
-    "DUST": ("浮尘", "🌪️"),
-    "SAND": ("沙尘", "🌪️"),
-    "WIND": ("大风", "🌬️"),
+    "CLEAR_DAY": ("晴", "100"),
+    "CLEAR_NIGHT": ("晴", "150"),
+    "PARTLY_CLOUDY_DAY": ("多云", "101"),
+    "PARTLY_CLOUDY_NIGHT": ("多云", "151"),
+    "CLOUDY": ("阴", "104"),
+    "LIGHT_HAZE": ("轻度雾霾", "502"),
+    "MODERATE_HAZE": ("中度雾霾", "511"),
+    "HEAVY_HAZE": ("重度雾霾", "512"),
+    "LIGHT_RAIN": ("小雨", "305"),
+    "MODERATE_RAIN": ("中雨", "306"),
+    "HEAVY_RAIN": ("大雨", "307"),
+    "STORM_RAIN": ("暴雨", "310"),
+    "FOG": ("雾", "501"),
+    "LIGHT_SNOW": ("小雪", "400"),
+    "MODERATE_SNOW": ("中雪", "401"),
+    "HEAVY_SNOW": ("大雪", "402"),
+    "STORM_SNOW": ("暴雪", "403"),
+    "DUST": ("浮尘", "504"),
+    "SAND": ("沙尘", "503"),
+    "WIND": ("大风", "900"),
 }
 
 class CaiyunAdapter(WeatherAdapter):

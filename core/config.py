@@ -141,6 +141,26 @@ class Settings(BaseSettings):
         True,
         description="Stream AI reports with sendRichMessageDraft in private chats (native animated preview)",
     )
+    enable_guest_mode: bool = Field(
+        True,
+        description=(
+            "Handle Telegram Guest Mode summons with answerGuestQuery; "
+            "the bot must also be enabled under BotFather MiniApp > Guest Mode"
+        ),
+    )
+    enable_custom_weather_emoji: bool = Field(
+        True,
+        description=(
+            "Render QWeather icon codes as Telegram custom emoji when "
+            "data/weather_custom_emoji.json (or WEATHER_CUSTOM_EMOJI_MAP_PATH) "
+            "has ids; falls back to Unicode emoji. Bot owner needs Premium "
+            "for private/group/supergroup (Bot API 9.4)."
+        ),
+    )
+    weather_custom_emoji_map_path: str = Field(
+        "data/weather_custom_emoji.json",
+        description="JSON map of QWeather icon code → custom_emoji_id",
+    )
 
     # Scheduling
     timezone: str = Field("Asia/Shanghai", description="Timezone for scheduled pushes (daily brief)")
