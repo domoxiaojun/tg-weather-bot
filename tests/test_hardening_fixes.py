@@ -211,3 +211,23 @@ class ChartFailureSentinelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LogTimestampTests(unittest.TestCase):
+    def test_log_records_are_stamped_cst(self):
+        from datetime import timedelta
+
+        import main  # noqa: F401 - importing configures the logger
+        from loguru import logger
+
+        captured = {}
+
+        def sink(message):
+            captured["time"] = message.record["time"]
+
+        handle = logger.add(sink, level="INFO")
+        try:
+            logger.info("timestamp probe")
+        finally:
+            logger.remove(handle)
+        self.assertEqual(captured["time"].utcoffset(), timedelta(hours=8))

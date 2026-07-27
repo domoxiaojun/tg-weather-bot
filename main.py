@@ -1,4 +1,5 @@
 import sys
+from datetime import timedelta, timezone
 
 from loguru import logger
 
@@ -12,11 +13,28 @@ except ImportError:
 from core.bot import create_app
 from core.config import settings
 
-# Configure Loguru
+# Configure Loguru.
+# Timestamps are pinned to CST (UTC+8, no DST) at the record level, so they
+# stay Beijing time even if the container/host TZ or tzdata is missing.
+_CST = timezone(timedelta(hours=8), name="CST")
+
+
+def _stamp_cst(record):
+    record["time"] = record["time"].astimezone(_CST)
+
+
 logger.remove()
+logger.configure(patcher=_stamp_cst)
 logger.add(sys.stderr, level=settings.log_level.upper())
 
-logger.add("logs/weather_bot.log", rotation="10 MB", retention="10 days", level="DEBUG")
+# File sink follows LOG_LEVEL too (owner decision 2026-07-27): one knob
+# controls both sinks instead of a hardcoded DEBUG black box.
+logger.add(
+    "logs/weather_bot.log",
+    rotation="10 MB",
+    retention="10 days",
+    level=settings.log_level.upper(),
+)
 
 def main():
     """Main Entry Point"""
