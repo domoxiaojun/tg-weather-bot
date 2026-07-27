@@ -1,286 +1,607 @@
 {
-  "version": 1,
-  "source": "QWeather icon docs + project WEATHER_ICON_LABELS",
+  "version": 2,
+  "source": "QWeather icon docs + project WEATHER_ICON_LABELS (color pack)",
+  "sticker_set_name": "qweather_color_by_domoweather_bot",
   "icons": {
     "100": {
       "label": "晴",
-      "emoji": "☀️"
+      "emoji": "☀️",
+      "color": "#F5A623"
     },
     "101": {
       "label": "多云",
-      "emoji": "🌤️"
+      "emoji": "🌤️",
+      "color": "#F5A623"
     },
     "102": {
       "label": "少云",
-      "emoji": "☁️"
+      "emoji": "☁️",
+      "color": "#F5A623"
     },
     "103": {
       "label": "晴间多云",
-      "emoji": "🌥️"
+      "emoji": "🌥️",
+      "color": "#F5A623"
     },
     "104": {
       "label": "阴",
-      "emoji": "⛅"
+      "emoji": "⛅",
+      "color": "#F5A623"
     },
     "150": {
       "label": "晴（夜）",
-      "emoji": "🌙"
+      "emoji": "🌙",
+      "color": "#8FA4E8"
     },
     "151": {
       "label": "多云（夜）",
-      "emoji": "🌤️"
+      "emoji": "🌤️",
+      "color": "#8FA4E8"
     },
     "152": {
       "label": "少云（夜）",
-      "emoji": "☁️"
+      "emoji": "☁️",
+      "color": "#8FA4E8"
     },
     "153": {
       "label": "晴间多云（夜）",
-      "emoji": "🌥️"
+      "emoji": "🌥️",
+      "color": "#8FA4E8"
     },
     "300": {
       "label": "阵雨",
-      "emoji": "🌦️"
+      "emoji": "🌦️",
+      "color": "#3B8EEA"
     },
     "301": {
       "label": "强阵雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "302": {
       "label": "雷阵雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "303": {
       "label": "强雷阵雨",
-      "emoji": "⛈️"
+      "emoji": "⛈️",
+      "color": "#3B8EEA"
     },
     "304": {
       "label": "雷阵雨伴有冰雹",
-      "emoji": "🌦️"
+      "emoji": "🌦️",
+      "color": "#3B8EEA"
     },
     "305": {
       "label": "小雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "306": {
       "label": "中雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "307": {
       "label": "大雨",
-      "emoji": "⛈️"
+      "emoji": "⛈️",
+      "color": "#3B8EEA"
     },
     "308": {
       "label": "极端降雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "309": {
       "label": "毛毛雨/细雨",
-      "emoji": "🌦️"
+      "emoji": "🌦️",
+      "color": "#3B8EEA"
     },
     "310": {
       "label": "暴雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "311": {
       "label": "大暴雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "312": {
       "label": "特大暴雨",
-      "emoji": "⛈️"
+      "emoji": "⛈️",
+      "color": "#3B8EEA"
     },
     "313": {
       "label": "冻雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "314": {
       "label": "小到中雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "315": {
       "label": "中到大雨",
-      "emoji": "⛈️"
+      "emoji": "⛈️",
+      "color": "#3B8EEA"
     },
     "316": {
       "label": "大到暴雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "317": {
       "label": "暴雨到大暴雨",
-      "emoji": "🌧️"
+      "emoji": "🌧️",
+      "color": "#3B8EEA"
     },
     "318": {
       "label": "大暴雨到特大暴雨",
-      "emoji": "⛈️"
+      "emoji": "⛈️",
+      "color": "#3B8EEA"
     },
     "350": {
       "label": "阵雨（夜）",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#3B8EEA"
     },
     "351": {
       "label": "强阵雨（夜）",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#3B8EEA"
     },
     "399": {
       "label": "雨",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#3B8EEA"
     },
     "400": {
       "label": "小雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "401": {
       "label": "中雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "402": {
       "label": "大雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "403": {
       "label": "暴雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "404": {
       "label": "雨夹雪",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#6EC6E6"
     },
     "405": {
       "label": "雨雪天气",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "406": {
       "label": "阵雨夹雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "407": {
       "label": "阵雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "408": {
       "label": "小到中雪",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#6EC6E6"
     },
     "409": {
       "label": "中到大雪",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#6EC6E6"
     },
     "410": {
       "label": "大到暴雪",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#6EC6E6"
     },
     "456": {
       "label": "阵雨夹雪（夜）",
-      "emoji": "🌨️"
+      "emoji": "🌨️",
+      "color": "#6EC6E6"
     },
     "457": {
       "label": "阵雪（夜）",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "499": {
       "label": "雪",
-      "emoji": "❄️"
+      "emoji": "❄️",
+      "color": "#6EC6E6"
     },
     "500": {
       "label": "薄雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "501": {
       "label": "雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "502": {
       "label": "霾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "503": {
       "label": "扬沙",
-      "emoji": "🌪️"
+      "emoji": "🌪️",
+      "color": "#A0A7B0"
     },
     "504": {
       "label": "浮尘",
-      "emoji": "🌪️"
+      "emoji": "🌪️",
+      "color": "#A0A7B0"
     },
     "507": {
       "label": "沙尘暴",
-      "emoji": "🌪️"
+      "emoji": "🌪️",
+      "color": "#A0A7B0"
     },
     "508": {
       "label": "强沙尘暴",
-      "emoji": "🌪️"
+      "emoji": "🌪️",
+      "color": "#A0A7B0"
     },
     "509": {
       "label": "浓雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "510": {
       "label": "强浓雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "511": {
       "label": "中度霾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "512": {
       "label": "重度霾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "513": {
       "label": "严重霾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "514": {
       "label": "大雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "515": {
       "label": "特强浓雾",
-      "emoji": "🌫️"
+      "emoji": "🌫️",
+      "color": "#A0A7B0"
     },
     "800": {
       "label": "新月",
-      "emoji": "🌑"
+      "emoji": "🌑",
+      "color": "#E6D39A"
     },
     "801": {
       "label": "蛾眉月",
-      "emoji": "🌒"
+      "emoji": "🌒",
+      "color": "#E6D39A"
     },
     "802": {
       "label": "上弦月",
-      "emoji": "🌓"
+      "emoji": "🌓",
+      "color": "#E6D39A"
     },
     "803": {
       "label": "盈凸月",
-      "emoji": "🌔"
+      "emoji": "🌔",
+      "color": "#E6D39A"
     },
     "804": {
       "label": "满月",
-      "emoji": "🌕"
+      "emoji": "🌕",
+      "color": "#E6D39A"
     },
     "805": {
       "label": "亏凸月",
-      "emoji": "🌖"
+      "emoji": "🌖",
+      "color": "#E6D39A"
     },
     "806": {
       "label": "下弦月",
-      "emoji": "🌗"
+      "emoji": "🌗",
+      "color": "#E6D39A"
     },
     "807": {
       "label": "残月",
-      "emoji": "🌘"
+      "emoji": "🌘",
+      "color": "#E6D39A"
     },
     "900": {
       "label": "热",
-      "emoji": "🥵"
+      "emoji": "🥵",
+      "color": "#E74C3C"
     },
     "901": {
       "label": "冷",
-      "emoji": "🥶"
+      "emoji": "🥶",
+      "color": "#5DADE2"
     },
     "999": {
       "label": "未知",
-      "emoji": "❓"
+      "emoji": "❓",
+      "color": "#95A5A6"
+    },
+    "1001": {
+      "label": "台风预警",
+      "emoji": "🌀",
+      "color": "#E67E22"
+    },
+    "1002": {
+      "label": "龙卷风预警",
+      "emoji": "🌪️",
+      "color": "#E67E22"
+    },
+    "1003": {
+      "label": "暴雨预警",
+      "emoji": "🌧️",
+      "color": "#E67E22"
+    },
+    "1004": {
+      "label": "暴雪预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1005": {
+      "label": "寒潮预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
+    },
+    "1006": {
+      "label": "大风预警",
+      "emoji": "💨",
+      "color": "#E67E22"
+    },
+    "1007": {
+      "label": "沙尘暴预警",
+      "emoji": "🌪️",
+      "color": "#E67E22"
+    },
+    "1008": {
+      "label": "低温冻害预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
+    },
+    "1009": {
+      "label": "高温预警",
+      "emoji": "🥵",
+      "color": "#E67E22"
+    },
+    "1010": {
+      "label": "热浪预警",
+      "emoji": "🥵",
+      "color": "#E67E22"
+    },
+    "1011": {
+      "label": "干热风预警",
+      "emoji": "💨",
+      "color": "#E67E22"
+    },
+    "1012": {
+      "label": "下击暴流预警",
+      "emoji": "💨",
+      "color": "#E67E22"
+    },
+    "1013": {
+      "label": "雪崩预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1014": {
+      "label": "雷电预警",
+      "emoji": "⚡",
+      "color": "#E67E22"
+    },
+    "1015": {
+      "label": "冰雹预警",
+      "emoji": "🧊",
+      "color": "#E67E22"
+    },
+    "1016": {
+      "label": "霜冻预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1017": {
+      "label": "大雾预警",
+      "emoji": "🌫️",
+      "color": "#E67E22"
+    },
+    "1018": {
+      "label": "低空风切变预警",
+      "emoji": "💨",
+      "color": "#E67E22"
+    },
+    "1019": {
+      "label": "霾预警",
+      "emoji": "🌫️",
+      "color": "#E67E22"
+    },
+    "1020": {
+      "label": "雷暴大风预警",
+      "emoji": "⛈️",
+      "color": "#E67E22"
+    },
+    "1021": {
+      "label": "道路结冰预警",
+      "emoji": "🧊",
+      "color": "#E67E22"
+    },
+    "1022": {
+      "label": "干旱预警",
+      "emoji": "☀️",
+      "color": "#E67E22"
+    },
+    "1023": {
+      "label": "海上大风预警",
+      "emoji": "💨",
+      "color": "#E67E22"
+    },
+    "1024": {
+      "label": "高温中暑预警",
+      "emoji": "🥵",
+      "color": "#E67E22"
+    },
+    "1025": {
+      "label": "森林火险预警",
+      "emoji": "🔥",
+      "color": "#E67E22"
+    },
+    "1026": {
+      "label": "草原火险预警",
+      "emoji": "🔥",
+      "color": "#E67E22"
+    },
+    "1027": {
+      "label": "冰冻预警",
+      "emoji": "🧊",
+      "color": "#E67E22"
+    },
+    "1028": {
+      "label": "空间天气预警",
+      "emoji": "🌌",
+      "color": "#E67E22"
+    },
+    "1029": {
+      "label": "重污染预警",
+      "emoji": "😷",
+      "color": "#E67E22"
+    },
+    "1030": {
+      "label": "低温雨雪冰冻预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1031": {
+      "label": "强对流预警",
+      "emoji": "⛈️",
+      "color": "#E67E22"
+    },
+    "1032": {
+      "label": "臭氧预警",
+      "emoji": "😷",
+      "color": "#E67E22"
+    },
+    "1033": {
+      "label": "大雪预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1034": {
+      "label": "寒冷预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
+    },
+    "1035": {
+      "label": "连阴雨预警",
+      "emoji": "🌧️",
+      "color": "#E67E22"
+    },
+    "1036": {
+      "label": "渍涝风险预警",
+      "emoji": "🌊",
+      "color": "#E67E22"
+    },
+    "1037": {
+      "label": "地质灾害气象风险预警",
+      "emoji": "⛰️",
+      "color": "#E67E22"
+    },
+    "1038": {
+      "label": "强降雨预警",
+      "emoji": "🌧️",
+      "color": "#E67E22"
+    },
+    "1039": {
+      "label": "强降温预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
+    },
+    "1040": {
+      "label": "雪灾预警",
+      "emoji": "❄️",
+      "color": "#E67E22"
+    },
+    "1041": {
+      "label": "森林（草原）火险预警",
+      "emoji": "🔥",
+      "color": "#E67E22"
+    },
+    "1042": {
+      "label": "雷暴预警",
+      "emoji": "⛈️",
+      "color": "#E67E22"
+    },
+    "1043": {
+      "label": "严寒预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
+    },
+    "1044": {
+      "label": "沙尘预警",
+      "emoji": "🌪️",
+      "color": "#E67E22"
+    },
+    "1045": {
+      "label": "海浪预警",
+      "emoji": "🌊",
+      "color": "#E67E22"
+    },
+    "1046": {
+      "label": "海上雷电预警",
+      "emoji": "⚡",
+      "color": "#E67E22"
+    },
+    "1047": {
+      "label": "海上大雾预警",
+      "emoji": "🌫️",
+      "color": "#E67E22"
+    },
+    "1048": {
+      "label": "海上雷雨大风预警",
+      "emoji": "⛈️",
+      "color": "#E67E22"
+    },
+    "1049": {
+      "label": "海上台风预警",
+      "emoji": "🌀",
+      "color": "#E67E22"
+    },
+    "1050": {
+      "label": "寒冷潮预警",
+      "emoji": "🥶",
+      "color": "#E67E22"
     }
   }
 }

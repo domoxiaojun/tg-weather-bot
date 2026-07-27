@@ -1,10 +1,27 @@
 {
-  "version": 1,
-  "sticker_set_name": "qweather_icons_by_YourBot",
-  "sticker_set_title": "QWeather Icons",
+  "version": 2,
+  "sticker_set_name": "qweather_color_by_YourBot",
+  "sticker_set_title": "QWeather Color",
   "bot_username": "YourBot",
+  "order": ["100", "301"],
   "icons": {
     "100": "5368324170671202286",
     "301": "5368324170671202287"
+  },
+  "labels": {
+    "100": "晴",
+    "301": "强阵雨"
+  },
+  "emoji": {
+    "100": "☀️",
+    "301": "🌧️"
+  },
+  "markdown_v2": {
+    "100": "![☀️](tg://emoji?id=5368324170671202286)",
+    "301": "![🌧️](tg://emoji?id=5368324170671202287)"
+  },
+  "html": {
+    "100": "<tg-emoji emoji-id=\"5368324170671202286\">☀️</tg-emoji>",
+    "301": "<tg-emoji emoji-id=\"5368324170671202287\">🌧️</tg-emoji>"
   }
 }
