@@ -61,10 +61,32 @@ def build_weather() -> WeatherData:
     )
 
 
+# Debian/Ubuntu fonts-noto-cjk ships these; Docker build asserts they exist.
+_REQUIRED_FONT_FILES = (
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+)
+
+
 def main() -> int:
+    failures = []
+
+    # Linux 镜像里应有 Regular + Bold；本机 macOS 可跳过路径检查。
+    if sys.platform.startswith("linux"):
+        for path in _REQUIRED_FONT_FILES:
+            if os.path.isfile(path):
+                print(f"system font OK: {path}")
+            else:
+                failures.append(
+                    f"missing system font {path} — install fonts-noto-cjk "
+                    "(apt install fonts-noto-cjk fontconfig && fc-cache -f)"
+                )
+
     Visualizer._setup_style()
     family = Visualizer._cjk_font_family
-    print(f"detected CJK family: {family!r}")
+    regular_w = Visualizer._weight_regular
+    bold_w = Visualizer._weight_bold
+    print(f"detected CJK family: {family!r} regular={regular_w} bold={bold_w}")
 
     # findfont falls back to DejaVu Sans when nothing can render the glyphs.
     resolved = font_manager.findfont(
@@ -72,11 +94,15 @@ def main() -> int:
     )
     print(f"resolved sans-serif font: {resolved}")
 
-    failures = []
     if not family:
         failures.append("no CJK font registered — charts would show tofu boxes")
     if "DejaVu" in resolved and not family:
         failures.append(f"matplotlib fell back to {resolved}")
+    if family and regular_w == bold_w:
+        print(
+            f"note: regular and bold weights collapsed to {regular_w} "
+            "(single-face font; titles still render)"
+        )
 
     weather = build_weather()
     for name, render in (

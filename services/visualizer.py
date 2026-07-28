@@ -79,7 +79,9 @@ class Visualizer:
         """剥离时区信息"""
         return [t.replace(tzinfo=None) if hasattr(t, 'replace') else t for t in times]
 
-    # Regular/Bold pairs — Noto CJK 与系统黑体通常只有 400/700，避免请求 300/600 触发 findfont 警告。
+    # Regular/Bold pairs.
+    # Docker/Debian: apt 包 fonts-noto-cjk 提供下列路径（Dockerfile 会 assert 存在）。
+    # macOS 开发机回退到系统黑体。
     _CJK_FONT_CANDIDATES = (
         (
             "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
