@@ -122,25 +122,23 @@ class ChartLabelLogicTests(unittest.TestCase):
         self.assertEqual(Visualizer._format_precip_label(0.8, "amount"), "0.8")
         self.assertEqual(Visualizer._format_precip_label(1.2, "intensity"), "1.2")
 
-    def test_hourly_temperature_labels_are_glanceable_on_mobile(self):
+    def test_hourly_temperature_labels_are_glanceable(self):
         data = make_weather()
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_temp_chart(data)
         temperature_labels = [call.args[1] for call in annotate.call_args_list if "°" in call.args[1]]
-        # 手机扫一眼：现在/最高/最低/终点，体感不贴数字。
+        # 现在 / 最高 / 最低，体感不贴数字。
         self.assertGreaterEqual(len(temperature_labels), 2)
-        self.assertLessEqual(len(temperature_labels), 6)
+        self.assertLessEqual(len(temperature_labels), 4)
 
-    def test_daily_temperature_labels_prioritize_highs_on_mobile(self):
+    def test_daily_temperature_labels_both_ends(self):
         data = make_weather()
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_daily_temp_chart(data)
         temperature_labels = [call.args[1] for call in annotate.call_args_list if "°" in call.args[1]]
-        # 全部高温 + 隔天/极值低温，少于 15×2。
-        self.assertGreaterEqual(len(temperature_labels), 15)
-        self.assertLessEqual(len(temperature_labels), 15 * 2)
+        self.assertEqual(len(temperature_labels), 15 * 2)
 
-    def test_rain_chart_labels_probability_and_amount_for_each_signal(self):
+    def test_rain_chart_labels_only_peaks(self):
         data = make_weather().model_copy(deep=True)
         data.hourly[2].pop = 30
         data.hourly[3].pop = 20
@@ -151,16 +149,14 @@ class ChartLabelLogicTests(unittest.TestCase):
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_rain_chart(data)
         labels = [call.args[1] for call in annotate.call_args_list]
-        # 概率只标 ≥50%（及峰值）；30%/20% 不贴字。
+        # 概率、雨量各自只标峰值。
         self.assertEqual(sum(label.endswith("%") for label in labels), 1)
         self.assertIn("60%", labels)
-        # Amount labels omit unit; sub-0.5 mm bars are not annotated (clutter).
         self.assertFalse(any(" mm" in label for label in labels))
-        self.assertIn("0.5", labels)
         self.assertIn("0.8", labels)
-        self.assertNotIn("0", labels)
+        self.assertNotIn("0.5", labels)
 
-    def test_rain_probability_and_amount_panels_share_time_ticks(self):
+    def test_rain_chart_uses_single_time_axis(self):
         data = make_weather()
         with patch.object(Axes, "set_xticklabels", autospec=True, return_value=None) as labels:
             Visualizer.draw_hourly_rain_chart(data)
@@ -169,14 +165,13 @@ class ChartLabelLogicTests(unittest.TestCase):
             for call in labels.call_args_list
             if call.args[1] and call.args[1][0] == "现在"
         ]
-        self.assertGreaterEqual(len(time_labels), 2)
-        self.assertEqual(time_labels[0], time_labels[1])
-        # 手机轴标用「11时」而不是「11:00」
+        # 单图区只有一条时间轴
+        self.assertEqual(len(time_labels), 1)
         self.assertTrue(time_labels[0][1].endswith("时") or time_labels[0][1] == "现在")
 
 
 class ChartRenderingTests(unittest.TestCase):
-    def test_all_updated_charts_render_as_square_mobile_pngs(self):
+    def test_all_updated_charts_render_as_landscape_pngs(self):
         data = make_weather().model_copy(deep=True)
         data.hourly[3].pop = 65
         data.hourly[3].precip = 0.8
@@ -184,7 +179,9 @@ class ChartRenderingTests(unittest.TestCase):
             int(round(Visualizer.FIGSIZE[0] * Visualizer.DPI)),
             int(round(Visualizer.FIGSIZE[1] * Visualizer.DPI)),
         )
-        self.assertEqual(expected[0], expected[1], "mobile charts must be square")
+        self.assertGreater(expected[0], expected[1], "charts should be landscape")
+        # 3:2 附近，避免过扁
+        self.assertLess(expected[0] / expected[1], 1.8)
         renderers = (
             Visualizer.draw_hourly_temp_chart,
             Visualizer.draw_hourly_rain_chart,
@@ -197,7 +194,7 @@ class ChartRenderingTests(unittest.TestCase):
                 self.assertEqual(struct.unpack(">II", png[16:24]), expected)
 
     def test_cache_namespace_is_bumped_for_new_rendering(self):
-        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v12:"))
+        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v13:"))
 
 
 class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):
