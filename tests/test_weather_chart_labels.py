@@ -169,10 +169,14 @@ class ChartLabelLogicTests(unittest.TestCase):
 
 
 class ChartRenderingTests(unittest.TestCase):
-    def test_all_updated_charts_render_as_square_pngs(self):
+    def test_all_updated_charts_render_as_landscape_pngs(self):
         data = make_weather().model_copy(deep=True)
         data.hourly[3].pop = 65
         data.hourly[3].precip = 0.8
+        expected = (
+            int(round(Visualizer.FIGSIZE[0] * Visualizer.DPI)),
+            int(round(Visualizer.FIGSIZE[1] * Visualizer.DPI)),
+        )
         renderers = (
             Visualizer.draw_hourly_temp_chart,
             Visualizer.draw_hourly_rain_chart,
@@ -182,10 +186,10 @@ class ChartRenderingTests(unittest.TestCase):
             with self.subTest(renderer=renderer.__name__):
                 png = renderer(data)
                 self.assertTrue(png.startswith(b"\x89PNG\r\n\x1a\n"))
-                self.assertEqual(struct.unpack(">II", png[16:24]), (1080, 1080))
+                self.assertEqual(struct.unpack(">II", png[16:24]), expected)
 
     def test_cache_namespace_is_bumped_for_new_rendering(self):
-        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v9:"))
+        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v10:"))
 
 
 class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):

@@ -21,30 +21,41 @@ matplotlib.use("Agg")
 
 class Visualizer:
     _cjk_font_family: Optional[str] = None
+    # 运行时按本机实际字体探测（Noto 多为 400/700，Hiragino 多为 300/600）
+    _weight_regular: int = 400
+    _weight_bold: int = 700
     _style_lock = threading.Lock()
     _style_ready = False
     HOURLY_POINT_LIMIT = 24
     _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+    # Telegram 气泡按宽度缩放：横向短卡比正方形更省纵向空间，手机预览也更像信息卡。
+    FIGSIZE = (9.6, 5.15)
+    DPI = 160
+    # 图区统一锚点（figure fraction），header/footer 压扁后给曲线更多高度。
+    AXES_MAIN = [0.068, 0.14, 0.875, 0.60]
+    AXES_RAIN_POP = [0.068, 0.40, 0.875, 0.34]
+    AXES_RAIN_PRECIP = [0.068, 0.125, 0.875, 0.21]
     _THEME = {
-        "canvas": "#050B14",
-        "card": "#0A1625",
-        "surface": "#0D1B2D",
-        "surface_alt": "#102238",
-        "border": "#20344D",
-        "grid": "#29415E",
-        "text": "#F4F7FB",
-        "muted": "#9AACBF",
-        "subtle": "#61758C",
+        "canvas": "#07111D",
+        "card": "#0E1A2B",
+        "surface": "#132235",
+        "surface_alt": "#182A41",
+        "border": "#2A3F5A",
+        "grid": "#314E6E",
+        "text": "#F3F6FA",
+        "muted": "#9AABC0",
+        "subtle": "#6A7E96",
         "temperature": "#FFB454",
+        "temperature_low": "#5BA8F5",  # 日温条低温端
         # 体感与概率蓝曾经 ΔE 6.7（正常视力都难分辨），验证后改粉
         "feels_like": "#F472B6",
-        "water": "#52D3F5",       # 潮汐水位（原体感色的正确归宿）
-        "track": "#FB923C",       # 台风路径
+        "water": "#52D3F5",
+        "track": "#FB923C",
         "probability": "#38BDF8",
         # 概率柱按可能性分三档亮度（同色相顺序渐变，色弱安全）
-        "pop_low": "#26547A",
-        "pop_mid": "#2E8FC7",
-        "pop_high": "#4FC3FF",
+        "pop_low": "#274F73",
+        "pop_mid": "#2F8FC7",
+        "pop_high": "#5AC8FF",
         "amount": "#4FC3FF",
         "intensity": "#A5D8FF",
         "missing": "#73859A",
@@ -70,16 +81,40 @@ class Visualizer:
         """剥离时区信息"""
         return [t.replace(tzinfo=None) if hasattr(t, 'replace') else t for t in times]
 
-    # macOS and Linux (Docker: fonts-noto-cjk) candidates for CJK rendering.
-    _CJK_FONT_PATHS = (
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
-        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+    # Regular/Bold pairs — Noto CJK 与系统黑体通常只有 400/700，避免请求 300/600 触发 findfont 警告。
+    _CJK_FONT_CANDIDATES = (
+        (
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        ),
+        (
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Regular.otf",
+            "/usr/share/fonts/opentype/noto/NotoSansCJKsc-Bold.otf",
+        ),
+        (
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+            "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+        ),
+        (
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+            "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        ),
+        (
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+            "/System/Library/Fonts/STHeiti Medium.ttc",
+        ),
+        (
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        ),
+        (
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        ),
+        (
+            "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+            "/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc",
+        ),
     )
 
     @classmethod
@@ -89,37 +124,61 @@ class Visualizer:
             if cls._style_ready:
                 return
 
-            for font_path in cls._CJK_FONT_PATHS:
-                if not os.path.exists(font_path):
+            for regular_path, bold_path in cls._CJK_FONT_CANDIDATES:
+                if not os.path.exists(regular_path):
                     continue
                 try:
-                    font_manager.fontManager.addfont(font_path)
-                    cls._cjk_font_family = font_manager.FontProperties(fname=font_path).get_name()
+                    font_manager.fontManager.addfont(regular_path)
+                    if bold_path != regular_path and os.path.exists(bold_path):
+                        font_manager.fontManager.addfont(bold_path)
+                    cls._cjk_font_family = font_manager.FontProperties(
+                        fname=regular_path
+                    ).get_name()
                     break
                 except Exception:
                     continue
 
+            if cls._cjk_font_family:
+                available = sorted(
+                    {
+                        int(entry.weight)
+                        for entry in font_manager.fontManager.ttflist
+                        if entry.name == cls._cjk_font_family and entry.weight
+                    }
+                )
+                if available:
+                    cls._weight_regular = min(available, key=lambda weight: abs(weight - 400))
+                    cls._weight_bold = min(available, key=lambda weight: abs(weight - 700))
+                    if cls._weight_bold == cls._weight_regular and len(available) >= 2:
+                        cls._weight_bold = max(available)
+
             preferred_fonts = [
                 cls._cjk_font_family,
-                'Noto Sans CJK SC',
-                'Microsoft YaHei',
-                'SimHei',
-                'Arial Unicode MS',
-                'Arial',
+                "Noto Sans CJK SC",
+                "Noto Sans CJK JP",
+                "Hiragino Sans GB",
+                "PingFang SC",
+                "Microsoft YaHei",
+                "SimHei",
+                "Arial Unicode MS",
+                "DejaVu Sans",
+                "Arial",
             ]
             matplotlib.rcdefaults()
             matplotlib.rcParams.update({
-                'font.family': 'sans-serif',
-                'font.sans-serif': [font for font in preferred_fonts if font],
-                'font.weight': 300,
-                'axes.unicode_minus': False,
-                'axes.edgecolor': cls._THEME['border'],
-                'text.color': cls._THEME['text'],
-                'xtick.color': cls._THEME['muted'],
-                'ytick.color': cls._THEME['muted'],
-                'figure.facecolor': cls._THEME['canvas'],
-                'axes.facecolor': cls._THEME['surface'],
-                'savefig.facecolor': cls._THEME['canvas'],
+                "font.family": "sans-serif",
+                "font.sans-serif": [font for font in preferred_fonts if font],
+                # 只用字体真实存在的字重，避免 findfont 300/400/600/700 回退警告
+                "font.weight": cls._weight_regular,
+                "axes.unicode_minus": False,
+                "axes.edgecolor": cls._THEME["border"],
+                "text.color": cls._THEME["text"],
+                "xtick.color": cls._THEME["muted"],
+                "ytick.color": cls._THEME["muted"],
+                "figure.facecolor": cls._THEME["canvas"],
+                "axes.facecolor": cls._THEME["surface"],
+                "savefig.facecolor": cls._THEME["canvas"],
+                "savefig.bbox": None,
             })
             cls._style_ready = True
 
@@ -127,19 +186,21 @@ class Visualizer:
     def _create_card_figure(cls):
         """OO API figure（不注册进 pyplot，线程安全，GC 自动回收）。"""
         cls._setup_style()
-        # Square, not 16:9: chat bubbles scale by width, so the same point
-        # sizes read ~1.7x larger on a 7.2" square than on a 12" banner.
-        fig = Figure(figsize=(7.2, 7.2), dpi=150, facecolor=cls._THEME["canvas"])
+        fig = Figure(
+            figsize=cls.FIGSIZE,
+            dpi=cls.DPI,
+            facecolor=cls._THEME["canvas"],
+        )
         FigureCanvasAgg(fig)
         card = FancyBboxPatch(
-            (0.018, 0.026),
-            0.964,
-            0.948,
-            boxstyle="round,pad=0,rounding_size=0.028",
+            (0.012, 0.028),
+            0.976,
+            0.944,
+            boxstyle="round,pad=0,rounding_size=0.018",
             transform=fig.transFigure,
             facecolor=cls._THEME["card"],
             edgecolor=cls._THEME["border"],
-            linewidth=1.1,
+            linewidth=0.9,
             zorder=-10,
         )
         fig.add_artist(card)
@@ -151,8 +212,10 @@ class Visualizer:
         fig.savefig(
             buf,
             format="png",
+            dpi=cls.DPI,
             facecolor=cls._THEME["canvas"],
             edgecolor="none",
+            pad_inches=0.02,
         )
         buf.seek(0)
         return buf.getvalue()
@@ -202,66 +265,65 @@ class Visualizer:
         metrics: List[tuple[str, str]],
     ) -> None:
         fig.text(
-            0.075,
-            0.916,
+            0.055,
+            0.905,
             kicker,
             color=cls._THEME["muted"],
-            fontsize=9,
-            fontweight=600,
+            fontsize=8.5,
+            fontweight=cls._weight_bold,
         )
         fig.text(
-            0.075,
-            0.846,
+            0.055,
+            0.848,
             title,
             color=cls._THEME["text"],
-            fontsize=22,
-            fontweight=600,
+            fontsize=18,
+            fontweight=cls._weight_bold,
         )
         update_text = data.update_time.strftime("%m/%d %H:%M")
         fig.text(
-            0.075,
-            0.792,
+            0.055,
+            0.800,
             f"{cls._display_location(data.location_name)}  ·  更新 {update_text}",
             color=cls._THEME["muted"],
-            fontsize=10,
+            fontsize=9,
         )
 
-        # Square canvas fits two metrics; a third collides with the title.
-        # Keep the FIRST two — callers list metrics in importance order.
+        # 横向卡右侧可放 2 个关键指标；第三个仍会挤标题，保持前两个。
         visible_metrics = metrics[:2]
         count = len(visible_metrics)
         if not count:
             return
-        spacing = 0.19
-        positions = [0.925 - spacing * (count - 1 - index) for index in range(count)]
+        spacing = 0.145
+        positions = [0.945 - spacing * (count - 1 - index) for index in range(count)]
         for index, ((label, value), x_pos) in enumerate(zip(visible_metrics, positions)):
             if index:
-                separator_x = x_pos - spacing * 0.57
+                separator_x = x_pos - spacing * 0.52
                 fig.add_artist(
                     Line2D(
                         [separator_x, separator_x],
-                        [0.825, 0.91],
+                        [0.805, 0.905],
                         transform=fig.transFigure,
                         color=cls._THEME["border"],
-                        linewidth=1,
+                        linewidth=0.9,
                     )
                 )
             fig.text(
                 x_pos,
-                0.899,
+                0.888,
                 label,
                 ha="right",
                 color=cls._THEME["muted"],
-                fontsize=8.5,
+                fontsize=8,
             )
             fig.text(
                 x_pos,
-                0.837,
+                0.832,
                 value,
                 ha="right",
                 color=cls._THEME["text"],
-                fontsize=15,
-                fontweight=600,
+                fontsize=14,
+                fontweight=cls._weight_bold,
             )
 
     @classmethod
@@ -269,13 +331,13 @@ class Visualizer:
         ax.set_facecolor(cls._THEME["surface"])
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.tick_params(axis="both", length=0, labelsize=9, pad=8)
+        ax.tick_params(axis="both", length=0, labelsize=8.5, pad=5)
         if grid:
             ax.grid(
                 axis="y",
                 color=cls._THEME["grid"],
-                alpha=0.3,
-                linewidth=0.8,
+                alpha=0.28,
+                linewidth=0.7,
                 zorder=1,
             )
 
@@ -319,14 +381,14 @@ class Visualizer:
             if show_dates:
                 ax.text(
                     (first + last) / 2,
-                    1.035,
+                    1.028,
                     f"{day.month:02d}/{day.day:02d}  {cls._WEEKDAYS[day.weekday()]}",
                     transform=ax.get_xaxis_transform(),
                     ha="center",
                     va="bottom",
                     color=cls._THEME["subtle"],
-                    fontsize=8.5,
-                    fontweight=600,
+                    fontsize=8,
+                    fontweight=cls._weight_bold,
                     clip_on=False,
                 )
 
@@ -344,7 +406,7 @@ class Visualizer:
         if now_at_start and tick_indices and tick_indices[0] == 0:
             labels[0] = "现在"
             ax.axvline(0, color=cls._THEME["subtle"], linewidth=1, alpha=0.55, zorder=2)
-        ax.set_xticklabels(labels, color=cls._THEME["muted"], fontsize=9)
+        ax.set_xticklabels(labels, color=cls._THEME["muted"], fontsize=8.5)
 
     @staticmethod
     def _finite_runs(values: np.ndarray) -> List[np.ndarray]:
@@ -388,11 +450,11 @@ class Visualizer:
     @classmethod
     def _add_footer(cls, fig, text: str, handles: List, labels: List[str]) -> None:
         fig.text(
-            0.075,
-            0.064,
+            0.055,
+            0.055,
             text,
             color=cls._THEME["subtle"],
-            fontsize=8.5,
+            fontsize=8,
             va="center",
         )
         if handles:
@@ -400,13 +462,13 @@ class Visualizer:
                 handles,
                 labels,
                 loc="lower right",
-                bbox_to_anchor=(0.925, 0.047),
+                bbox_to_anchor=(0.945, 0.038),
                 borderaxespad=0,
                 frameon=False,
                 ncol=len(handles),
-                handlelength=2.4,
-                columnspacing=1.4,
-                fontsize=8.5,
+                handlelength=2.0,
+                columnspacing=1.15,
+                fontsize=8,
             )
             for label in legend.get_texts():
                 label.set_color(cls._THEME["muted"])
@@ -470,7 +532,7 @@ class Visualizer:
             ],
         )
 
-        ax = fig.add_axes([0.075, 0.16, 0.85, 0.53])
+        ax = fig.add_axes(cls.AXES_MAIN)
         cls._style_axis(ax)
         ax.set_xlim(-0.5, len(times) - 0.5)
         span = float(np.max(heights) - np.min(heights)) or 1.0
@@ -478,8 +540,8 @@ class Visualizer:
         ax.yaxis.set_major_locator(MaxNLocator(nbins=5))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: cls._format_number(value, 1)))
         ax.tick_params(axis="y", colors=cls._THEME["water"])
-        ax.text(-0.05, 1.02, "m", transform=ax.transAxes,
-                color=cls._THEME["subtle"], fontsize=8.5, ha="left")
+        ax.text(-0.04, 1.02, "m", transform=ax.transAxes,
+                color=cls._THEME["subtle"], fontsize=8, ha="left")
 
         for smooth_x, smooth_y in cls._smooth_segments(x, heights):
             ax.fill_between(smooth_x, smooth_y, ax.get_ylim()[0],
@@ -504,7 +566,7 @@ class Visualizer:
                 ha="center",
                 color=colour,
                 fontsize=8.5,
-                fontweight=600,
+                fontweight=cls._weight_bold,
                 zorder=8,
             )
 
@@ -514,10 +576,10 @@ class Visualizer:
             ticks.append(len(times) - 1)
         ax.set_xticks(ticks)
         ax.set_xticklabels([times[index].strftime("%H:%M") for index in ticks],
-                           color=cls._THEME["muted"], fontsize=9)
+                           color=cls._THEME["muted"], fontsize=8.5)
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["water"], linewidth=2.6),
+            Line2D([0], [0], color=cls._THEME["water"], linewidth=2.4),
             Line2D([0], [0], color=cls._THEME["temperature"], marker="^", linestyle="none"),
             Line2D([0], [0], color=cls._THEME["probability"], marker="v", linestyle="none"),
         ]
@@ -562,7 +624,7 @@ class Visualizer:
             metrics=metrics,
         )
 
-        ax = fig.add_axes([0.075, 0.14, 0.85, 0.56])
+        ax = fig.add_axes(cls.AXES_MAIN)
         cls._style_axis(ax)
 
         if history:
@@ -579,13 +641,13 @@ class Visualizer:
             ax.scatter([current[0]], [current[1]], s=170, marker="*",
                        color=cls._THEME["temperature"], zorder=8)
             ax.annotate("现在", current, xytext=(0, 12), textcoords="offset points",
-                        ha="center", color=cls._THEME["text"], fontsize=9, fontweight=600, zorder=9)
+                        ha="center", color=cls._THEME["text"], fontsize=9, fontweight=cls._weight_bold, zorder=9)
         if user_lon is not None and user_lat is not None:
             ax.scatter([user_lon], [user_lat], s=90, marker="^",
                        color=cls._THEME["probability"], zorder=8)
             ax.annotate("你的位置", (user_lon, user_lat), xytext=(0, -18),
                         textcoords="offset points", ha="center",
-                        color=cls._THEME["probability"], fontsize=9, fontweight=600, zorder=9)
+                        color=cls._THEME["probability"], fontsize=9, fontweight=cls._weight_bold, zorder=9)
 
         ax.set_xlabel("东经", color=cls._THEME["muted"], fontsize=9)
         ax.set_ylabel("北纬", color=cls._THEME["muted"], fontsize=9)
@@ -605,16 +667,16 @@ class Visualizer:
     @classmethod
     def _add_header_text(cls, fig, *, kicker: str, title: str, subtitle: str, metrics) -> None:
         """Header for charts that are not tied to a WeatherData location."""
-        fig.text(0.075, 0.916, kicker, color=cls._THEME["muted"], fontsize=9, fontweight=600)
-        fig.text(0.075, 0.846, title, color=cls._THEME["text"], fontsize=22, fontweight=600)
+        fig.text(0.055, 0.905, kicker, color=cls._THEME["muted"], fontsize=8.5, fontweight=cls._weight_bold)
+        fig.text(0.055, 0.848, title, color=cls._THEME["text"], fontsize=18, fontweight=cls._weight_bold)
         if subtitle:
-            fig.text(0.075, 0.792, subtitle, color=cls._THEME["muted"], fontsize=10)
+            fig.text(0.055, 0.800, subtitle, color=cls._THEME["muted"], fontsize=9)
         visible = list(metrics)[-2:]
-        positions = [0.925 - 0.145 * (len(visible) - 1 - index) for index in range(len(visible))]
+        positions = [0.945 - 0.145 * (len(visible) - 1 - index) for index in range(len(visible))]
         for (label, value), x_pos in zip(visible, positions):
-            fig.text(x_pos, 0.899, label, ha="right", color=cls._THEME["muted"], fontsize=8.5)
-            fig.text(x_pos, 0.837, value, ha="right", color=cls._THEME["text"],
-                     fontsize=15, fontweight=600)
+            fig.text(x_pos, 0.888, label, ha="right", color=cls._THEME["muted"], fontsize=8)
+            fig.text(x_pos, 0.832, value, ha="right", color=cls._THEME["text"],
+                     fontsize=14, fontweight=cls._weight_bold)
 
     @classmethod
     def _render_minutely_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
@@ -653,7 +715,7 @@ class Visualizer:
             metrics=metrics,
         )
 
-        ax = fig.add_axes([0.09, 0.16, 0.83, 0.56])
+        ax = fig.add_axes(cls.AXES_MAIN)
         cls._style_axis(ax, grid=False)
         ax.set_xlim(-0.55, len(times) - 0.45)
         top = max(3.2, peak_rate * 1.35)
@@ -667,7 +729,7 @@ class Visualizer:
             ax.axhline(
                 threshold,
                 color=cls._THEME["grid"],
-                linewidth=0.9,
+                linewidth=0.85,
                 linestyle=(0, (3, 4)),
                 alpha=0.9,
                 zorder=1,
@@ -678,14 +740,14 @@ class Visualizer:
                 word,
                 transform=ax.get_yaxis_transform(),
                 color=cls._THEME["subtle"],
-                fontsize=8.5,
+                fontsize=8,
                 va="center",
                 ha="left",
             )
 
         for smooth_x, smooth_y in cls._smooth_segments(x, rates):
-            ax.fill_between(smooth_x, smooth_y, 0, color=cls._THEME["probability"], alpha=0.22, zorder=2)
-            ax.plot(smooth_x, smooth_y, color=cls._THEME["probability"], linewidth=2.6, zorder=4)
+            ax.fill_between(smooth_x, smooth_y, 0, color=cls._THEME["probability"], alpha=0.20, zorder=2)
+            ax.plot(smooth_x, smooth_y, color=cls._THEME["probability"], linewidth=2.4, zorder=4)
 
         step = max(1, len(times) // 8)
         ticks = list(range(0, len(times), step))
@@ -695,24 +757,24 @@ class Visualizer:
         tick_labels = [times[index].strftime("%H:%M") for index in ticks]
         tick_labels[0] = "现在"
         ax.axvline(0, color=cls._THEME["subtle"], linewidth=1, alpha=0.55, zorder=2)
-        ax.set_xticklabels(tick_labels, color=cls._THEME["muted"], fontsize=9)
+        ax.set_xticklabels(tick_labels, color=cls._THEME["muted"], fontsize=8.5)
 
         if peak_rate > 0:
             peak_index = int(np.nanargmax(rates))
             ax.annotate(
                 f"{times[peak_index].strftime('%H:%M')} {cls._rain_rate_word(peak_rate)}",
                 (x[peak_index], rates[peak_index]),
-                xytext=(0, 10),
+                xytext=(0, 9),
                 textcoords="offset points",
                 ha="center",
                 color=cls._THEME["text"],
-                fontsize=9,
-                fontweight=600,
+                fontsize=8.5,
+                fontweight=cls._weight_bold,
                 bbox={
-                    "boxstyle": "round,pad=0.24",
+                    "boxstyle": "round,pad=0.22",
                     "facecolor": cls._THEME["card"],
                     "edgecolor": cls._THEME["probability"],
-                    "linewidth": 0.8,
+                    "linewidth": 0.75,
                 },
                 zorder=8,
             )
@@ -722,7 +784,7 @@ class Visualizer:
         cls._add_footer(
             fig,
             footer_text,
-            [Line2D([0], [0], color=cls._THEME["probability"], linewidth=2.6)],
+            [Line2D([0], [0], color=cls._THEME["probability"], linewidth=2.4)],
             ["降水"],
         )
         return cls._render_figure(fig)
@@ -786,7 +848,7 @@ class Visualizer:
             title="逐小时温度",
             metrics=metrics,
         )
-        ax = fig.add_axes([0.09, 0.16, 0.845, 0.56])
+        ax = fig.add_axes(cls.AXES_MAIN)
         cls._style_axis(ax)
         cls._decorate_time_axis(ax, times, show_ticks=True, show_dates=True, now_at_start=True)
         ax.set_ylim(y_bottom, y_top)
@@ -794,12 +856,12 @@ class Visualizer:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
         ax.text(
-            -0.048,
+            -0.035,
             1.02,
             "°C",
             transform=ax.transAxes,
             color=cls._THEME["subtle"],
-            fontsize=8.5,
+            fontsize=8,
             ha="left",
         )
 
@@ -810,14 +872,14 @@ class Visualizer:
                 smooth_y,
                 y_bottom,
                 color=cls._THEME["temperature"],
-                alpha=0.09,
+                alpha=0.10,
                 zorder=2,
             )
             ax.plot(
                 smooth_x,
                 smooth_y,
                 color=cls._THEME["temperature"],
-                linewidth=2.8,
+                linewidth=2.5,
                 solid_capstyle="round",
                 zorder=5,
             )
@@ -825,10 +887,10 @@ class Visualizer:
         ax.scatter(
             x[valid_actual],
             actual[valid_actual],
-            s=16,
+            s=18,
             color=cls._THEME["surface"],
             edgecolor=cls._THEME["temperature"],
-            linewidth=1.1,
+            linewidth=1.15,
             zorder=6,
         )
 
@@ -838,7 +900,7 @@ class Visualizer:
                     smooth_x,
                     smooth_y,
                     color=cls._THEME["feels_like"],
-                    linewidth=2,
+                    linewidth=1.9,
                     linestyle=(0, (5, 4)),
                     dash_capstyle="round",
                     zorder=4,
@@ -847,7 +909,7 @@ class Visualizer:
             ax.scatter(
                 x[valid_feels],
                 feels_like[valid_feels],
-                s=13,
+                s=14,
                 color=cls._THEME["surface"],
                 edgecolor=cls._THEME["feels_like"],
                 linewidth=1,
@@ -861,13 +923,13 @@ class Visualizer:
             ax.annotate(
                 cls._format_temperature(actual[index]),
                 (x[index], actual[index]),
-                xytext=(0, 5),
+                xytext=(0, 4),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
                 color=cls._THEME["temperature"],
-                fontsize=7.2,
-                fontweight=600,
+                fontsize=6.8,
+                fontweight=cls._weight_bold,
                 zorder=8,
             )
         if has_feels_like:
@@ -875,13 +937,13 @@ class Visualizer:
                 ax.annotate(
                     cls._format_temperature(feels_like[index]),
                     (x[index], feels_like[index]),
-                    xytext=(0, -5),
+                    xytext=(0, -4),
                     textcoords="offset points",
                     ha="center",
                     va="top",
                     color=cls._THEME["feels_like"],
-                    fontsize=7.2,
-                    fontweight=600,
+                    fontsize=6.8,
+                    fontweight=cls._weight_bold,
                     zorder=8,
                 )
 
@@ -907,7 +969,7 @@ class Visualizer:
             )
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.8),
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.5),
         ]
         labels = ["气温"]
         if has_feels_like:
@@ -916,7 +978,7 @@ class Visualizer:
                     [0],
                     [0],
                     color=cls._THEME["feels_like"],
-                    linewidth=2,
+                    linewidth=1.9,
                     linestyle=(0, (5, 4)),
                 )
             )
@@ -997,7 +1059,7 @@ class Visualizer:
             transform=ax.transAxes,
             color=color,
             fontsize=8.5,
-            fontweight=600,
+            fontweight=cls._weight_bold,
         )
         # Skip tiny amount bars — labeling every 0.1 stacks into unreadable noise.
         annotate_mask = label_mask & valid
@@ -1013,7 +1075,7 @@ class Visualizer:
                 va="bottom",
                 color=color,
                 fontsize=6.8,
-                fontweight=600,
+                fontweight=cls._weight_bold,
                 rotation=label_rotation,
                 zorder=7,
             )
@@ -1098,18 +1160,14 @@ class Visualizer:
             metrics=metrics,
         )
 
-        # Two layers max on the square canvas: probability + one precip panel.
-        # Three stacked strips compressed each to ~20px on a phone.
+        # 横向卡最多两层：概率 + 一层降水，避免手机上三行条带挤成线。
         precip_panels = int(has_amount or has_intensity)
         if not has_visual_signal or not precip_panels:
-            probability_rect = [0.09, 0.16, 0.845, 0.56]
+            probability_rect = cls.AXES_MAIN
             panel_rects = []
         else:
-            # Leave a dedicated band for the probability panel's own time
-            # labels; relying on the lower panel made the upper bars ambiguous
-            # on phone-sized previews.
-            probability_rect = [0.09, 0.43, 0.845, 0.29]
-            panel_rects = [[0.09, 0.155, 0.845, 0.185]]
+            probability_rect = cls.AXES_RAIN_POP
+            panel_rects = [cls.AXES_RAIN_PRECIP]
 
         probability_ax = fig.add_axes(probability_rect)
         cls._style_axis(probability_ax)
@@ -1125,12 +1183,12 @@ class Visualizer:
         probability_ax.yaxis.set_major_formatter(PercentFormatter(100, decimals=0))
         probability_ax.tick_params(axis="y", colors=cls._THEME["muted"])
         probability_ax.text(
-            -0.047,
+            -0.035,
             1.02,
             "概率",
             transform=probability_ax.transAxes,
             color=cls._THEME["subtle"],
-            fontsize=8.5,
+            fontsize=8,
             ha="left",
         )
 
@@ -1178,7 +1236,7 @@ class Visualizer:
                     f"{times[crossing].strftime('%H:%M')} 转雨",
                     color=cls._THEME["pop_high"],
                     fontsize=9,
-                    fontweight=600,
+                    fontweight=cls._weight_bold,
                     ha="left",
                     zorder=6,
                 )
@@ -1202,7 +1260,7 @@ class Visualizer:
                     va="bottom",
                     color=cls._THEME["text"],
                     fontsize=7.1,
-                    fontweight=600,
+                    fontweight=cls._weight_bold,
                     zorder=6,
                 )
         elif has_visual_signal:
@@ -1214,7 +1272,7 @@ class Visualizer:
                 ha="center",
                 color=cls._THEME["muted"],
                 fontsize=12,
-                fontweight=600,
+                fontweight=cls._weight_bold,
             )
 
         missing_probability = ~valid_probability
@@ -1250,7 +1308,7 @@ class Visualizer:
                 ha="center",
                 color=cls._THEME["text"],
                 fontsize=14,
-                fontweight=600,
+                fontweight=cls._weight_bold,
                 zorder=7,
             )
             probability_ax.text(
@@ -1315,7 +1373,7 @@ class Visualizer:
                         va="bottom",
                         color=cls._THEME["intensity"],
                         fontsize=6.8,
-                        fontweight=600,
+                        fontweight=cls._weight_bold,
                         rotation=90,
                         zorder=7,
                     )
@@ -1380,7 +1438,7 @@ class Visualizer:
             ],
         )
 
-        ax = fig.add_axes([0.09, 0.17, 0.875, 0.55])
+        ax = fig.add_axes(cls.AXES_MAIN)
         cls._style_axis(ax)
         ax.set_xlim(-0.55, len(days) - 0.45)
 
@@ -1392,16 +1450,25 @@ class Visualizer:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
 
-        # Range bars — one rounded bar per day, low to high. The line pair
-        # with 30 value chips buried the answer; bars + extremes read at a glance.
+        # 日温条：低温蓝 → 高温橙，一眼读出冷暖跨度。
         for index in range(len(days)):
+            mid = (lows[index] + highs[index]) / 2.0
             ax.plot(
                 [x[index], x[index]],
-                [lows[index], highs[index]],
+                [lows[index], mid],
                 solid_capstyle="round",
-                linewidth=9,
+                linewidth=8.5,
+                color=cls._THEME["temperature_low"],
+                alpha=0.92,
+                zorder=4,
+            )
+            ax.plot(
+                [x[index], x[index]],
+                [mid, highs[index]],
+                solid_capstyle="round",
+                linewidth=8.5,
                 color=cls._THEME["temperature"],
-                alpha=0.88,
+                alpha=0.92,
                 zorder=4,
             )
 
@@ -1413,25 +1480,25 @@ class Visualizer:
             ax.annotate(
                 cls._format_temperature(highs[index]),
                 (x[index], highs[index]),
-                xytext=(0, 6),
+                xytext=(0, 5),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
                 color=cls._THEME["text"] if index == hottest else cls._THEME["temperature"],
-                fontsize=8.2,
-                fontweight=700 if index == hottest else 600,
+                fontsize=7.6,
+                fontweight=cls._weight_bold,
                 zorder=8,
             )
             ax.annotate(
                 cls._format_temperature(lows[index]),
                 (x[index], lows[index]),
-                xytext=(0, -6),
+                xytext=(0, -5),
                 textcoords="offset points",
                 ha="center",
                 va="top",
-                color=cls._THEME["text"] if index == coolest else cls._THEME["muted"],
-                fontsize=8.2,
-                fontweight=700 if index == coolest else 600,
+                color=cls._THEME["text"] if index == coolest else cls._THEME["temperature_low"],
+                fontsize=7.6,
+                fontweight=cls._weight_bold,
                 zorder=8,
             )
 
@@ -1470,16 +1537,17 @@ class Visualizer:
                 for i in tick_idx
             ],
             color=cls._THEME["muted"],
-            fontsize=9,
+            fontsize=8.2,
         )
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=6, solid_capstyle="round"),
+            Line2D([0], [0], color=cls._THEME["temperature_low"], linewidth=5.5, solid_capstyle="round"),
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=5.5, solid_capstyle="round"),
         ]
-        labels = ["当天低温→高温"]
+        labels = ["低温", "高温"]
         if rainy_x:
             handles.append(
-                Line2D([0], [0], color=cls._THEME["pop_high"], marker="o", linestyle="none", markersize=6)
+                Line2D([0], [0], color=cls._THEME["pop_high"], marker="o", linestyle="none", markersize=5.5)
             )
             labels.append("有雨")
         cls._add_footer(fig, "", handles, labels)
