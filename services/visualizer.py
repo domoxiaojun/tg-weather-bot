@@ -28,37 +28,35 @@ class Visualizer:
     _style_ready = False
     HOURLY_POINT_LIMIT = 24
     _WEEKDAYS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
-    # Telegram 气泡按宽度缩放：横向短卡比正方形更省纵向空间，手机预览也更像信息卡。
-    FIGSIZE = (9.6, 5.15)
+    # 横向信息卡：宽短、留白足，贴近 Apple Weather / 系统天气卡片比例。
+    FIGSIZE = (10.0, 5.0)
     DPI = 160
-    # 图区统一锚点（figure fraction），header/footer 压扁后给曲线更多高度。
-    AXES_MAIN = [0.068, 0.14, 0.875, 0.60]
-    AXES_RAIN_POP = [0.068, 0.40, 0.875, 0.34]
-    AXES_RAIN_PRECIP = [0.068, 0.125, 0.875, 0.21]
+    AXES_MAIN = [0.06, 0.13, 0.89, 0.62]
+    AXES_RAIN_POP = [0.06, 0.39, 0.89, 0.36]
+    AXES_RAIN_PRECIP = [0.06, 0.12, 0.89, 0.20]
     _THEME = {
-        "canvas": "#07111D",
-        "card": "#0E1A2B",
-        "surface": "#132235",
-        "surface_alt": "#182A41",
-        "border": "#2A3F5A",
-        "grid": "#314E6E",
-        "text": "#F3F6FA",
-        "muted": "#9AABC0",
-        "subtle": "#6A7E96",
-        "temperature": "#FFB454",
-        "temperature_low": "#5BA8F5",  # 日温条低温端
-        # 体感与概率蓝曾经 ΔE 6.7（正常视力都难分辨），验证后改粉
-        "feels_like": "#F472B6",
-        "water": "#52D3F5",
-        "track": "#FB923C",
-        "probability": "#38BDF8",
-        # 概率柱按可能性分三档亮度（同色相顺序渐变，色弱安全）
-        "pop_low": "#274F73",
-        "pop_mid": "#2F8FC7",
+        # 扁平深色：少嵌套、少描边，避免「仪表盘」感
+        "canvas": "#0A0F18",
+        "card": "#0A0F18",
+        "surface": "#0A0F18",
+        "surface_alt": "#121A28",
+        "border": "#1E2A3C",
+        "grid": "#243247",
+        "text": "#F5F7FA",
+        "muted": "#8B9BB0",
+        "subtle": "#5C6B80",
+        "temperature": "#FF9F0A",      # iOS 风格暖橙
+        "temperature_low": "#64D2FF",  # 高低温区间冷色
+        "feels_like": "#BF5AF2",       # 体感用紫，弱于主气温线
+        "water": "#64D2FF",
+        "track": "#FF9F0A",
+        "probability": "#0A84FF",
+        "pop_low": "#1A3A5C",
+        "pop_mid": "#0A6BCF",
         "pop_high": "#5AC8FF",
-        "amount": "#4FC3FF",
-        "intensity": "#A5D8FF",
-        "missing": "#73859A",
+        "amount": "#5E5CE6",           # 雨量用靛紫，和概率蓝分开
+        "intensity": "#A78BFA",
+        "missing": "#5C6B80",
     }
 
     @staticmethod
@@ -192,16 +190,18 @@ class Visualizer:
             facecolor=cls._THEME["canvas"],
         )
         FigureCanvasAgg(fig)
+        # 极轻圆角底，几乎无描边 —— 去掉厚卡片嵌套感
         card = FancyBboxPatch(
-            (0.012, 0.028),
-            0.976,
-            0.944,
-            boxstyle="round,pad=0,rounding_size=0.018",
+            (0.008, 0.02),
+            0.984,
+            0.96,
+            boxstyle="round,pad=0,rounding_size=0.012",
             transform=fig.transFigure,
             facecolor=cls._THEME["card"],
             edgecolor=cls._THEME["border"],
-            linewidth=0.9,
+            linewidth=0.4,
             zorder=-10,
+            alpha=1.0,
         )
         fig.add_artist(card)
         return fig
@@ -233,10 +233,29 @@ class Visualizer:
 
     @staticmethod
     def _rain_label_mask(probability: np.ndarray, precipitation: np.ndarray) -> np.ndarray:
-        """Hours whose exact rain values are useful enough to label directly."""
-        probability_signal = np.isfinite(probability) & (probability >= 30)
-        precipitation_signal = np.isfinite(precipitation) & (precipitation > 0)
+        """Hours whose exact rain values are useful enough to label directly.
+
+        阈值抬到 40% / 0.5mm，避免 24 根柱全贴数字变成「数据海报」。
+        """
+        probability_signal = np.isfinite(probability) & (probability >= 40)
+        precipitation_signal = np.isfinite(precipitation) & (precipitation >= 0.5)
         return probability_signal | precipitation_signal
+
+    @staticmethod
+    def _sparse_label_indices(values: np.ndarray, step: int = 3) -> List[int]:
+        """端点 + 极值 + 固定步长，用于折线稀疏标注。"""
+        if not len(values):
+            return []
+        finite = np.flatnonzero(np.isfinite(values))
+        if not len(finite):
+            return []
+        indices = {int(finite[0]), int(finite[-1])}
+        indices.add(int(np.nanargmin(values)))
+        indices.add(int(np.nanargmax(values)))
+        for index in range(0, len(values), step):
+            if np.isfinite(values[index]):
+                indices.add(index)
+        return sorted(indices)
 
     @classmethod
     def _format_precip_label(cls, value: float, style: str) -> str:
@@ -265,64 +284,64 @@ class Visualizer:
         metrics: List[tuple[str, str]],
     ) -> None:
         fig.text(
-            0.055,
-            0.905,
+            0.05,
+            0.915,
             kicker,
-            color=cls._THEME["muted"],
-            fontsize=8.5,
-            fontweight=cls._weight_bold,
+            color=cls._THEME["subtle"],
+            fontsize=8,
+            fontweight=cls._weight_regular,
         )
         fig.text(
-            0.055,
-            0.848,
+            0.05,
+            0.855,
             title,
             color=cls._THEME["text"],
-            fontsize=18,
+            fontsize=19,
             fontweight=cls._weight_bold,
         )
         update_text = data.update_time.strftime("%m/%d %H:%M")
         fig.text(
-            0.055,
-            0.800,
+            0.05,
+            0.805,
             f"{cls._display_location(data.location_name)}  ·  更新 {update_text}",
             color=cls._THEME["muted"],
-            fontsize=9,
+            fontsize=8.5,
         )
 
-        # 横向卡右侧可放 2 个关键指标；第三个仍会挤标题，保持前两个。
         visible_metrics = metrics[:2]
         count = len(visible_metrics)
         if not count:
             return
-        spacing = 0.145
-        positions = [0.945 - spacing * (count - 1 - index) for index in range(count)]
+        spacing = 0.155
+        positions = [0.95 - spacing * (count - 1 - index) for index in range(count)]
         for index, ((label, value), x_pos) in enumerate(zip(visible_metrics, positions)):
             if index:
-                separator_x = x_pos - spacing * 0.52
+                separator_x = x_pos - spacing * 0.5
                 fig.add_artist(
                     Line2D(
                         [separator_x, separator_x],
-                        [0.805, 0.905],
+                        [0.815, 0.91],
                         transform=fig.transFigure,
                         color=cls._THEME["border"],
-                        linewidth=0.9,
+                        linewidth=0.7,
+                        alpha=0.9,
                     )
                 )
             fig.text(
                 x_pos,
-                0.888,
+                0.90,
                 label,
                 ha="right",
-                color=cls._THEME["muted"],
-                fontsize=8,
+                color=cls._THEME["subtle"],
+                fontsize=7.5,
             )
             fig.text(
                 x_pos,
-                0.832,
+                0.835,
                 value,
                 ha="right",
                 color=cls._THEME["text"],
-                fontsize=14,
+                fontsize=16,
                 fontweight=cls._weight_bold,
             )
 
@@ -331,15 +350,17 @@ class Visualizer:
         ax.set_facecolor(cls._THEME["surface"])
         for spine in ax.spines.values():
             spine.set_visible(False)
-        ax.tick_params(axis="both", length=0, labelsize=8.5, pad=5)
+        ax.tick_params(axis="both", length=0, labelsize=8, pad=4, colors=cls._THEME["muted"])
         if grid:
             ax.grid(
                 axis="y",
                 color=cls._THEME["grid"],
-                alpha=0.28,
-                linewidth=0.7,
+                alpha=0.45,
+                linewidth=0.55,
+                linestyle=(0, (2, 4)),
                 zorder=1,
             )
+            ax.set_axisbelow(True)
 
     @classmethod
     def _decorate_time_axis(
@@ -366,7 +387,7 @@ class Visualizer:
                     first - 0.5,
                     last + 0.5,
                     color=cls._THEME["surface_alt"],
-                    alpha=0.55,
+                    alpha=0.35,
                     linewidth=0,
                     zorder=0,
                 )
@@ -374,21 +395,21 @@ class Visualizer:
                 ax.axvline(
                     first - 0.5,
                     color=cls._THEME["border"],
-                    linewidth=1,
-                    alpha=0.8,
+                    linewidth=0.7,
+                    alpha=0.7,
                     zorder=2,
                 )
             if show_dates:
                 ax.text(
                     (first + last) / 2,
-                    1.028,
-                    f"{day.month:02d}/{day.day:02d}  {cls._WEEKDAYS[day.weekday()]}",
+                    1.02,
+                    f"{day.month:02d}/{day.day:02d} {cls._WEEKDAYS[day.weekday()]}",
                     transform=ax.get_xaxis_transform(),
                     ha="center",
                     va="bottom",
                     color=cls._THEME["subtle"],
-                    fontsize=8,
-                    fontweight=cls._weight_bold,
+                    fontsize=7.5,
+                    fontweight=cls._weight_regular,
                     clip_on=False,
                 )
 
@@ -450,11 +471,11 @@ class Visualizer:
     @classmethod
     def _add_footer(cls, fig, text: str, handles: List, labels: List[str]) -> None:
         fig.text(
-            0.055,
-            0.055,
+            0.05,
+            0.048,
             text,
             color=cls._THEME["subtle"],
-            fontsize=8,
+            fontsize=7.5,
             va="center",
         )
         if handles:
@@ -462,13 +483,14 @@ class Visualizer:
                 handles,
                 labels,
                 loc="lower right",
-                bbox_to_anchor=(0.945, 0.038),
+                bbox_to_anchor=(0.95, 0.032),
                 borderaxespad=0,
                 frameon=False,
                 ncol=len(handles),
-                handlelength=2.0,
-                columnspacing=1.15,
-                fontsize=8,
+                handlelength=1.6,
+                columnspacing=1.0,
+                handletextpad=0.5,
+                fontsize=7.5,
             )
             for label in legend.get_texts():
                 label.set_color(cls._THEME["muted"])
@@ -667,16 +689,16 @@ class Visualizer:
     @classmethod
     def _add_header_text(cls, fig, *, kicker: str, title: str, subtitle: str, metrics) -> None:
         """Header for charts that are not tied to a WeatherData location."""
-        fig.text(0.055, 0.905, kicker, color=cls._THEME["muted"], fontsize=8.5, fontweight=cls._weight_bold)
-        fig.text(0.055, 0.848, title, color=cls._THEME["text"], fontsize=18, fontweight=cls._weight_bold)
+        fig.text(0.05, 0.915, kicker, color=cls._THEME["subtle"], fontsize=8, fontweight=cls._weight_regular)
+        fig.text(0.05, 0.855, title, color=cls._THEME["text"], fontsize=19, fontweight=cls._weight_bold)
         if subtitle:
-            fig.text(0.055, 0.800, subtitle, color=cls._THEME["muted"], fontsize=9)
+            fig.text(0.05, 0.805, subtitle, color=cls._THEME["muted"], fontsize=8.5)
         visible = list(metrics)[-2:]
-        positions = [0.945 - 0.145 * (len(visible) - 1 - index) for index in range(len(visible))]
+        positions = [0.95 - 0.155 * (len(visible) - 1 - index) for index in range(len(visible))]
         for (label, value), x_pos in zip(visible, positions):
-            fig.text(x_pos, 0.888, label, ha="right", color=cls._THEME["muted"], fontsize=8)
-            fig.text(x_pos, 0.832, value, ha="right", color=cls._THEME["text"],
-                     fontsize=14, fontweight=cls._weight_bold)
+            fig.text(x_pos, 0.90, label, ha="right", color=cls._THEME["subtle"], fontsize=7.5)
+            fig.text(x_pos, 0.835, value, ha="right", color=cls._THEME["text"],
+                     fontsize=16, fontweight=cls._weight_bold)
 
     @classmethod
     def _render_minutely_rain_chart(cls, data: WeatherData) -> Optional[bytes]:
@@ -821,9 +843,8 @@ class Visualizer:
             combined = np.concatenate((combined, feels_like[np.isfinite(feels_like)]))
         data_min = float(np.min(combined))
         data_max = float(np.max(combined))
-        # Every hourly point now carries direct labels. Keep enough vertical
-        # breathing room for the labels at the upper/lower extremes.
-        padding = max(2.5, (data_max - data_min) * 0.22)
+        # 稀疏标注需要的头顶留白即可，不必为 24 个数字堆高。
+        padding = max(1.8, (data_max - data_min) * 0.18)
         y_bottom = np.floor(data_min - padding)
         y_top = np.ceil(data_max + padding)
         if y_top - y_bottom < 5:
@@ -832,13 +853,9 @@ class Visualizer:
             y_top = midpoint + 2.5
 
         metrics = [
-            ("最高气温", cls._format_temperature(float(np.nanmax(actual)))),
-            ("最低气温", cls._format_temperature(float(np.nanmin(actual)))),
+            ("最高", cls._format_temperature(float(np.nanmax(actual)))),
+            ("最低", cls._format_temperature(float(np.nanmin(actual)))),
         ]
-        if has_feels_like:
-            metrics.append(
-                ("最高体感", cls._format_temperature(float(np.nanmax(feels_like))))
-            )
 
         fig = cls._create_card_figure()
         cls._add_header(
@@ -852,103 +869,11 @@ class Visualizer:
         cls._style_axis(ax)
         cls._decorate_time_axis(ax, times, show_ticks=True, show_dates=True, now_at_start=True)
         ax.set_ylim(y_bottom, y_top)
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
-        ax.text(
-            -0.035,
-            1.02,
-            "°C",
-            transform=ax.transAxes,
-            color=cls._THEME["subtle"],
-            fontsize=8,
-            ha="left",
-        )
 
-        actual_segments = cls._smooth_segments(x, actual)
-        for smooth_x, smooth_y in actual_segments:
-            ax.fill_between(
-                smooth_x,
-                smooth_y,
-                y_bottom,
-                color=cls._THEME["temperature"],
-                alpha=0.10,
-                zorder=2,
-            )
-            ax.plot(
-                smooth_x,
-                smooth_y,
-                color=cls._THEME["temperature"],
-                linewidth=2.5,
-                solid_capstyle="round",
-                zorder=5,
-            )
-        valid_actual = np.isfinite(actual)
-        ax.scatter(
-            x[valid_actual],
-            actual[valid_actual],
-            s=18,
-            color=cls._THEME["surface"],
-            edgecolor=cls._THEME["temperature"],
-            linewidth=1.15,
-            zorder=6,
-        )
-
-        if has_feels_like:
-            for smooth_x, smooth_y in cls._smooth_segments(x, feels_like):
-                ax.plot(
-                    smooth_x,
-                    smooth_y,
-                    color=cls._THEME["feels_like"],
-                    linewidth=1.9,
-                    linestyle=(0, (5, 4)),
-                    dash_capstyle="round",
-                    zorder=4,
-                )
-            valid_feels = np.isfinite(feels_like)
-            ax.scatter(
-                x[valid_feels],
-                feels_like[valid_feels],
-                s=14,
-                color=cls._THEME["surface"],
-                edgecolor=cls._THEME["feels_like"],
-                linewidth=1,
-                zorder=5,
-            )
-
-        # Direct labels beat repeated legend/axis lookup on a static Telegram
-        # image. At 24 columns, compact text (without chips) remains readable;
-        # placing the two series on opposite sides prevents same-hour overlap.
-        for index in np.flatnonzero(valid_actual):
-            ax.annotate(
-                cls._format_temperature(actual[index]),
-                (x[index], actual[index]),
-                xytext=(0, 4),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                color=cls._THEME["temperature"],
-                fontsize=6.8,
-                fontweight=cls._weight_bold,
-                zorder=8,
-            )
-        if has_feels_like:
-            for index in np.flatnonzero(np.isfinite(feels_like)):
-                ax.annotate(
-                    cls._format_temperature(feels_like[index]),
-                    (x[index], feels_like[index]),
-                    xytext=(0, -4),
-                    textcoords="offset points",
-                    ha="center",
-                    va="top",
-                    color=cls._THEME["feels_like"],
-                    fontsize=6.8,
-                    fontweight=cls._weight_bold,
-                    zorder=8,
-                )
-
-        # Rain context: faint probability bars along the bottom, because the
-        # person checking temperature is usually also deciding about rain.
+        # 降雨概率垫在底层，极淡，不和主曲线抢戏。
         pops = np.array(
             [float(h.pop) if h.pop is not None else np.nan for h in data.hourly[:len(times)]],
             dtype=float,
@@ -956,20 +881,76 @@ class Visualizer:
         has_pop_context = bool(np.any(np.isfinite(pops) & (pops >= 30)))
         if has_pop_context:
             span = y_top - y_bottom
-            bar_heights = np.where(np.isfinite(pops), pops, 0) / 100.0 * span * 0.22
+            bar_heights = np.where(np.isfinite(pops), pops, 0) / 100.0 * span * 0.16
             ax.bar(
                 x,
                 bar_heights,
                 bottom=y_bottom,
-                width=0.62,
+                width=0.7,
                 color=cls._THEME["probability"],
-                alpha=0.28,
+                alpha=0.18,
                 edgecolor="none",
-                zorder=1.5,
+                zorder=1.2,
+            )
+
+        # 体感：细虚线、无点、无数字 —— 只表达相对位置。
+        if has_feels_like:
+            for smooth_x, smooth_y in cls._smooth_segments(x, feels_like):
+                ax.plot(
+                    smooth_x,
+                    smooth_y,
+                    color=cls._THEME["feels_like"],
+                    linewidth=1.5,
+                    linestyle=(0, (4, 3)),
+                    dash_capstyle="round",
+                    alpha=0.85,
+                    zorder=3,
+                )
+
+        # 主气温：纯折线，不做大面积填充（深底上的橙色填充易发脏）。
+        actual_segments = cls._smooth_segments(x, actual)
+        for smooth_x, smooth_y in actual_segments:
+            ax.plot(
+                smooth_x,
+                smooth_y,
+                color=cls._THEME["temperature"],
+                linewidth=2.9,
+                solid_capstyle="round",
+                zorder=5,
+            )
+
+        # 只标稀疏关键点；极值加实心点强调。
+        label_indices = cls._sparse_label_indices(actual, step=3)
+        peak_indices = {
+            int(np.nanargmax(actual)),
+            int(np.nanargmin(actual)),
+        }
+        for index in label_indices:
+            is_peak = index in peak_indices
+            ax.scatter(
+                [x[index]],
+                [actual[index]],
+                s=36 if is_peak else 22,
+                color=cls._THEME["temperature"] if is_peak else cls._THEME["canvas"],
+                edgecolor=cls._THEME["temperature"],
+                linewidth=1.4,
+                zorder=6,
+            )
+            ax.annotate(
+                cls._format_temperature(actual[index]),
+                (x[index], actual[index]),
+                xytext=(0, 8 if is_peak else 6),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                color=cls._THEME["text"] if is_peak else cls._THEME["temperature"],
+                fontsize=9 if is_peak else 7.5,
+                fontweight=cls._weight_bold,
+                zorder=8,
             )
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.5),
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.8),
         ]
         labels = ["气温"]
         if has_feels_like:
@@ -978,13 +959,13 @@ class Visualizer:
                     [0],
                     [0],
                     color=cls._THEME["feels_like"],
-                    linewidth=1.9,
-                    linestyle=(0, (5, 4)),
+                    linewidth=1.5,
+                    linestyle=(0, (4, 3)),
                 )
             )
             labels.append("体感")
         if has_pop_context:
-            handles.append(Patch(facecolor=cls._THEME["probability"], alpha=0.28))
+            handles.append(Patch(facecolor=cls._THEME["probability"], alpha=0.25))
             labels.append("降雨概率")
 
         footer = "体感折线在数据缺口处断开" if has_feels_like and np.any(~np.isfinite(feels_like)) else ""
@@ -1205,10 +1186,11 @@ class Visualizer:
             probability_ax.bar(
                 x[valid_probability],
                 probability[valid_probability],
-                width=0.62,
+                width=0.68,
                 color=bar_colors,
                 edgecolor="none",
                 zorder=3,
+                alpha=0.95,
             )
             # Mark the dry→wet turn: first hour crossing 50% after a drier one.
             crossing = None
@@ -1250,7 +1232,13 @@ class Visualizer:
                     alpha=0.8,
                     zorder=4,
                 )
-            for index in np.flatnonzero(label_mask & valid_probability):
+            # 只标 ≥50% 或全日峰值，避免 24 根柱全贴百分比。
+            pop_label = np.zeros(len(probability), dtype=bool)
+            if np.any(valid_probability):
+                peak_pop = int(np.nanargmax(probability))
+                pop_label[peak_pop] = True
+                pop_label |= valid_probability & (probability >= 50)
+            for index in np.flatnonzero(pop_label):
                 probability_ax.annotate(
                     f"{int(round(probability[index]))}%",
                     (x[index], probability[index]),
@@ -1259,7 +1247,7 @@ class Visualizer:
                     ha="center",
                     va="bottom",
                     color=cls._THEME["text"],
-                    fontsize=7.1,
+                    fontsize=7.2,
                     fontweight=cls._weight_bold,
                     zorder=6,
                 )
@@ -1444,72 +1432,80 @@ class Visualizer:
 
         data_min = float(np.min(lows))
         data_max = float(np.max(highs))
-        padding = max(2.5, (data_max - data_min) * 0.22)
-        ax.set_ylim(np.floor(data_min - padding), np.ceil(data_max + padding))
-        ax.yaxis.set_major_locator(MaxNLocator(nbins=5, integer=True))
+        padding = max(2.0, (data_max - data_min) * 0.2)
+        y_lo = np.floor(data_min - padding)
+        y_hi = np.ceil(data_max + padding)
+        ax.set_ylim(y_lo, y_hi)
+        ax.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
 
-        # 日温条：低温蓝 → 高温橙，一眼读出冷暖跨度。
-        for index in range(len(days)):
-            mid = (lows[index] + highs[index]) / 2.0
-            ax.plot(
-                [x[index], x[index]],
-                [lows[index], mid],
-                solid_capstyle="round",
-                linewidth=8.5,
-                color=cls._THEME["temperature_low"],
-                alpha=0.92,
-                zorder=4,
-            )
-            ax.plot(
-                [x[index], x[index]],
-                [mid, highs[index]],
-                solid_capstyle="round",
-                linewidth=8.5,
-                color=cls._THEME["temperature"],
-                alpha=0.92,
-                zorder=4,
-            )
+        # Apple Weather 式高低温带：区间填充 + 上下两条平滑曲线。
+        for indices in cls._finite_runs(highs):
+            xs = x[indices]
+            hi = highs[indices]
+            lo = lows[indices]
+            if len(indices) >= 3:
+                smooth_x = np.linspace(xs[0], xs[-1], max(40, len(indices) * 12))
+                try:
+                    hi_s = PchipInterpolator(xs, hi)(smooth_x)
+                    lo_s = PchipInterpolator(xs, lo)(smooth_x)
+                    ax.fill_between(
+                        smooth_x, lo_s, hi_s,
+                        color=cls._THEME["temperature_low"],
+                        alpha=0.10,
+                        zorder=2,
+                        linewidth=0,
+                    )
+                    ax.plot(smooth_x, hi_s, color=cls._THEME["temperature"],
+                            linewidth=2.5, solid_capstyle="round", zorder=4)
+                    ax.plot(smooth_x, lo_s, color=cls._THEME["temperature_low"],
+                            linewidth=2.5, solid_capstyle="round", zorder=4)
+                    continue
+                except (TypeError, ValueError):
+                    pass
+            ax.fill_between(xs, lo, hi, color=cls._THEME["temperature_low"], alpha=0.10, zorder=2, linewidth=0)
+            ax.plot(xs, hi, color=cls._THEME["temperature"], linewidth=2.5, zorder=4)
+            ax.plot(xs, lo, color=cls._THEME["temperature_low"], linewidth=2.5, zorder=4)
 
-        # Each range bar is a compact daily answer: high on top, low below.
-        # Use direct labels so users do not have to estimate from the Y axis.
+        ax.scatter(x, highs, s=22, color=cls._THEME["canvas"],
+                   edgecolor=cls._THEME["temperature"], linewidth=1.2, zorder=5)
+        ax.scatter(x, lows, s=22, color=cls._THEME["canvas"],
+                   edgecolor=cls._THEME["temperature_low"], linewidth=1.2, zorder=5)
+
         hottest = int(np.argmax(highs))
         coolest = int(np.argmin(lows))
         for index in range(len(days)):
             ax.annotate(
                 cls._format_temperature(highs[index]),
                 (x[index], highs[index]),
-                xytext=(0, 5),
+                xytext=(0, 6),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
                 color=cls._THEME["text"] if index == hottest else cls._THEME["temperature"],
-                fontsize=7.6,
+                fontsize=8 if index == hottest else 7.2,
                 fontweight=cls._weight_bold,
                 zorder=8,
             )
             ax.annotate(
                 cls._format_temperature(lows[index]),
                 (x[index], lows[index]),
-                xytext=(0, -5),
+                xytext=(0, -6),
                 textcoords="offset points",
                 ha="center",
                 va="top",
                 color=cls._THEME["text"] if index == coolest else cls._THEME["temperature_low"],
-                fontsize=7.6,
+                fontsize=8 if index == coolest else 7.2,
                 fontweight=cls._weight_bold,
                 zorder=8,
             )
 
-        # Rain days get a blue dot under the bar — "which days rain" is the
-        # question a 15-day view exists to answer, and it was invisible before.
         info_by_date = {
             forecast.date.date(): forecast
             for forecast in data.daily
             if forecast.date is not None
         }
-        y_bottom_line = float(np.floor(data_min - padding))
         rainy_x = []
         for index, day in enumerate(days):
             forecast = info_by_date.get(day.date())
@@ -1519,12 +1515,17 @@ class Visualizer:
             if any(marker in texts for marker in ("雨", "雪")) or (forecast.precip or 0) > 0:
                 rainy_x.append(index)
         if rainy_x:
+            # 雨日：在低温点下方用小点标，不侵入曲线带
+            rain_y = [lows[i] - (y_hi - y_lo) * 0.06 for i in rainy_x]
             ax.scatter(
                 rainy_x,
-                [y_bottom_line + (float(np.ceil(data_max + padding)) - y_bottom_line) * 0.022] * len(rainy_x),
-                s=34,
-                color=cls._THEME["pop_high"],
+                rain_y,
+                s=22,
+                marker="o",
+                color=cls._THEME["probability"],
+                alpha=0.9,
                 zorder=6,
+                clip_on=False,
             )
 
         tick_idx = list(range(0, len(days), 2 if len(days) > 8 else 1))
@@ -1537,17 +1538,18 @@ class Visualizer:
                 for i in tick_idx
             ],
             color=cls._THEME["muted"],
-            fontsize=8.2,
+            fontsize=7.8,
         )
 
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature_low"], linewidth=5.5, solid_capstyle="round"),
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=5.5, solid_capstyle="round"),
+            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=2.4),
+            Line2D([0], [0], color=cls._THEME["temperature_low"], linewidth=2.4),
         ]
-        labels = ["低温", "高温"]
+        labels = ["高温", "低温"]
         if rainy_x:
             handles.append(
-                Line2D([0], [0], color=cls._THEME["pop_high"], marker="o", linestyle="none", markersize=5.5)
+                Line2D([0], [0], color=cls._THEME["probability"], marker="o",
+                       linestyle="none", markersize=5)
             )
             labels.append("有雨")
         cls._add_footer(fig, "", handles, labels)

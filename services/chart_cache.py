@@ -147,7 +147,7 @@ def chart_cache_key(weather_data: WeatherData, chart_type: str) -> str:
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()[:16]
-    return f"chart:v10:{weather_data.coords}:{normalized}:{fingerprint}"
+    return f"chart:v11:{weather_data.coords}:{normalized}:{fingerprint}"
 
 
 async def remember_chart_file_id(weather_data: WeatherData, chart_type: str, message) -> None:

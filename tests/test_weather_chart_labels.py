@@ -113,8 +113,8 @@ class AutoChartSelectionTests(unittest.TestCase):
 
 class ChartLabelLogicTests(unittest.TestCase):
     def test_rain_label_mask_marks_only_meaningful_hours(self):
-        probability = np.array([0.0, 29.0, 30.0, np.nan, 10.0])
-        precipitation = np.array([0.0, 0.0, 0.0, 0.4, np.nan])
+        probability = np.array([0.0, 29.0, 40.0, np.nan, 10.0])
+        precipitation = np.array([0.0, 0.0, 0.0, 0.5, np.nan])
         mask = Visualizer._rain_label_mask(probability, precipitation)
         self.assertEqual(mask.tolist(), [False, False, True, True, False])
 
@@ -122,12 +122,14 @@ class ChartLabelLogicTests(unittest.TestCase):
         self.assertEqual(Visualizer._format_precip_label(0.8, "amount"), "0.8")
         self.assertEqual(Visualizer._format_precip_label(1.2, "intensity"), "1.2")
 
-    def test_hourly_temperature_labels_every_available_value(self):
+    def test_hourly_temperature_labels_are_sparse(self):
         data = make_weather()
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_temp_chart(data)
         temperature_labels = [call.args[1] for call in annotate.call_args_list if "°" in call.args[1]]
-        self.assertEqual(len(temperature_labels), 24 + 23)
+        # 端点 + 极值 + 每 3 小时，远少于 24 点全标；体感不贴数字。
+        self.assertGreaterEqual(len(temperature_labels), 4)
+        self.assertLessEqual(len(temperature_labels), 12)
 
     def test_daily_temperature_labels_both_ends_of_every_bar(self):
         data = make_weather()
@@ -147,7 +149,9 @@ class ChartLabelLogicTests(unittest.TestCase):
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_rain_chart(data)
         labels = [call.args[1] for call in annotate.call_args_list]
-        self.assertEqual(sum(label.endswith("%") for label in labels), 3)
+        # 概率只标 ≥50%（及峰值）；30%/20% 不贴字。
+        self.assertEqual(sum(label.endswith("%") for label in labels), 1)
+        self.assertIn("60%", labels)
         # Amount labels omit unit; sub-0.5 mm bars are not annotated (clutter).
         self.assertFalse(any(" mm" in label for label in labels))
         self.assertIn("0.5", labels)
@@ -189,7 +193,7 @@ class ChartRenderingTests(unittest.TestCase):
                 self.assertEqual(struct.unpack(">II", png[16:24]), expected)
 
     def test_cache_namespace_is_bumped_for_new_rendering(self):
-        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v10:"))
+        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v11:"))
 
 
 class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):
