@@ -1,3 +1,24 @@
+# 卡片配图策略 + 降水图雨量标注（2026-07-30）
+
+- [x] 1. 默认卡片不再自动配图：`select_auto_chart_type` 对 default/hourly/indices
+      一律返回 None，只有 daily / rain 主题视图才带图（用户已经点过按钮了）
+- [x] 2. 降水图按「一场雨」标注累计雨量：`_precip_spells()` 把逐小时降水切成
+      连续段，最多标 3 场，标签是深底白字的 pill 贴在该段底部中心
+- [x] 3. header 指标口径统一：「最大雨量（单小时峰值）」→「预计雨量（全时段累计）」，
+      否则图内 12.8mm 和标题 3.4mm 会让人以为其中一个错了
+- [x] 4. 测试改写：自动选图规则、每场雨标累计、最多 3 场、概率峰仍只标一次
+- [x] 5. 验证 + 提交
+
+待定（需要你决定）：
+- [ ] 逐小时体感曲线：和风逐小时不返回 feelsLike，只有实况 now 有；彩云的
+      apparent_temperature 可以补（fusion 已实现），但需要 CAIYUN_API_KEY +
+      ENABLE_CAIYUN_API=true。项目明令禁止本地估算体感（模型层有 validator
+      强制丢弃），所以只能走彩云
+- [ ] 圆润字体：`resources/fonts/` 仍是空目录，代码侧（自动发现 + Dockerfile
+      安装）早已就绪，缺的是字体文件本身
+
+---
+
 # 三图审查整改（2026-07-29）
 
 审查依据 dataviz 技能。配色本身跑 validator 全过（含 CVD），问题在编码诚实性

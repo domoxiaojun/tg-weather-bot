@@ -54,28 +54,23 @@ def _looks_like_coords(text: str) -> bool:
 
 
 def select_auto_chart_type(data, view_type: str) -> str | None:
-    """Choose the chart that best answers the current weather view."""
+    """Choose the chart that best answers the current weather view.
+
+    The default card carries no chart on purpose: a picture makes the message
+    heavy and slow for everyone, while only some people want it. 温度图 /
+    降水图 / 逐日图 are one tap away on the keyboard. A chart is auto-attached
+    only when the user has already asked for that specific subject by
+    switching the view.
+    """
     if not settings.enable_weather_plots:
         return None
-    if view_type == "indices":
+    if view_type in ("default", "hourly", "indices"):
         return None
     if view_type == "daily":
         return "daily"
     if view_type == "rain":
         return "rain"
-
-    rain_markers = ("雨", "雪")
-    if data.is_raining or any(marker in (data.now_text or "") for marker in rain_markers):
-        return "rain"
-
-    for hour in data.hourly[:Visualizer.HOURLY_POINT_LIMIT]:
-        if any(marker in (hour.text or "") for marker in rain_markers):
-            return "rain"
-        if hour.pop is not None and hour.pop >= 50:
-            return "rain"
-        if hour.precip is not None and hour.precip > 0:
-            return "rain"
-    return "temp"
+    return None
 
 
 class WeatherHandlers:

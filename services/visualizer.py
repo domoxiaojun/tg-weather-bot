@@ -90,6 +90,27 @@ class Visualizer:
         return "无降水"
 
     @staticmethod
+    def _precip_spells(series: np.ndarray, limit: int = 3) -> List[List[int]]:
+        """把逐小时降水切成一场一场的雨（连续 >0 的索引段）。
+
+        返回按雨量总和排序的前 ``limit`` 段，段内索引保持时间顺序。24 小时里
+        可能有三四场零散的雨，全标会糊成一片；标最大的几场就够回答
+        「今天会下多少」。
+        """
+        spells: List[List[int]] = []
+        current: List[int] = []
+        for index, value in enumerate(series):
+            if np.isfinite(value) and value > 0:
+                current.append(index)
+            elif current:
+                spells.append(current)
+                current = []
+        if current:
+            spells.append(current)
+        spells.sort(key=lambda spell: float(np.nansum(series[spell[0]:spell[-1] + 1])), reverse=True)
+        return sorted(spells[:limit], key=lambda spell: spell[0])
+
+    @staticmethod
     def _strip_tz(times: List) -> List:
         """剥离时区信息"""
         return [t.replace(tzinfo=None) if hasattr(t, 'replace') else t for t in times]
@@ -1199,7 +1220,10 @@ class Visualizer:
         if max_probability is not None:
             metrics.append(("峰值概率", f"{int(round(max_probability))}%"))
         if max_amount is not None:
-            metrics.append(("最大雨量", f"{cls._format_number(max_amount)} mm"))
+            # 用全时段累计而不是单小时峰值：图内每场雨标的也是累计，两个口径
+            # 混在一张图上（3.4 对 12.8）只会让人以为其中一个错了。
+            total_amount = float(np.nansum(amount))
+            metrics.append(("预计雨量", f"{cls._format_number(total_amount)} mm"))
         elif max_intensity is not None:
             metrics.append(("雨势最强", cls._rain_rate_word(max_intensity)))
         if not metrics:
@@ -1309,29 +1333,43 @@ class Visualizer:
         precip_series = amount if has_amount else intensity if has_intensity else None
         precip_style = "amount" if has_amount else "intensity"
         if precip_series is not None and np.any(np.isfinite(precip_series)):
-            rain_i = int(np.nanargmax(precip_series))
-            rain_val = float(precip_series[rain_i])
-            same_bar = has_probability_data and rain_i == int(np.nanargmax(probability))
-            # 雨量峰值就在概率峰值那根柱上时不标：数值已经在标题的「最大雨量」
-            # 指标里，再叠一行只会和 “80%” 挤成三层字。只有雨最大的时刻和概率
-            # 最高的时刻分开时，这个标注才带来新信息 —— 指出是哪一小时。
-            if rain_val > 0 and not same_bar:
+            # 「会下多少」和「下不下」是两个问题，柱高只回答后者。把每一场雨
+            # 的雨量标在它自己的时段上，比只在标题给一个全天峰值有用得多。
+            for spell in cls._precip_spells(precip_series):
+                head, tail = spell[0], spell[-1]
+                values = precip_series[head:tail + 1]
+                values = values[np.isfinite(values)]
+                if not len(values):
+                    continue
                 if precip_style == "amount":
-                    rain_text = "雨量最大"
+                    # 一段连续降水标累计：分小时的 0.4mm、1.2mm… 单独看没有意义，
+                    # 「这场雨一共 3.4mm」才是人要的答案。
+                    label = f"{cls._format_number(float(np.sum(values)))}mm"
                 else:
-                    rain_text = f"雨势最强 {cls._rain_rate_word(rain_val)}"
-                bar_top = probability[rain_i] if np.isfinite(probability[rain_i]) else 0.0
-                ax.annotate(
-                    rain_text,
-                    (x[rain_i], bar_top),
-                    xytext=(0, 10),
-                    textcoords="offset points",
+                    label = cls._rain_rate_word(float(np.max(values)))
+                # 标在这场雨的时间跨度中心，做成一个深底白字的小标签：
+                # 一根柱只有 26pt 宽，「12.8mm」写柱子里会溢到隔壁；写成横跨
+                # 整段的纯文字又会在柱间缝隙处被卡片底色吃掉半个字。加了底片
+                # 就都不怕，而且一眼看得出这个数属于这一段时间，不是柱高。
+                centre = (head + tail) / 2.0
+                span_pops = probability[head:tail + 1]
+                span_top = float(np.nanmax(span_pops)) if np.any(np.isfinite(span_pops)) else 0.0
+                # 贴着柱列底部走，把柱顶让给概率标注。
+                ax.text(
+                    centre,
+                    min(6.0, max(2.0, span_top * 0.12)),
+                    label,
                     ha="center",
                     va="bottom",
-                    color=cls._THEME["subtle"],
+                    color=cls._THEME["card"],
                     fontsize=cls.FS_ANNOTATE - 1,
                     fontweight=cls._weight_bold,
                     zorder=8,
+                    bbox={
+                        "facecolor": cls._THEME["amount"],
+                        "edgecolor": "none",
+                        "boxstyle": "round,pad=0.32",
+                    },
                 )
 
         if not has_visual_signal:

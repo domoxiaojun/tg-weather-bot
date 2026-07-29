@@ -74,38 +74,33 @@ class AutoChartSelectionTests(unittest.TestCase):
     def tearDown(self):
         settings.enable_weather_plots = self.original_enabled
 
-    def test_clear_weather_routes_each_view_to_its_matching_chart(self):
+    def test_default_card_carries_no_chart(self):
+        """默认卡片不自动配图。
+
+        图让消息变重，而只有一部分人想看；温度图/降水图/逐日图都在键盘上，
+        一键就能出。只有用户已经切到某个主题视图时，才自动带上那张图。
+        """
         data = make_weather()
-        self.assertEqual(select_auto_chart_type(data, "default"), "temp")
-        self.assertEqual(select_auto_chart_type(data, "hourly"), "temp")
+        self.assertIsNone(select_auto_chart_type(data, "default"))
+        self.assertIsNone(select_auto_chart_type(data, "hourly"))
+        self.assertIsNone(select_auto_chart_type(data, "indices"))
         self.assertEqual(select_auto_chart_type(data, "daily"), "daily")
         self.assertEqual(select_auto_chart_type(data, "rain"), "rain")
-        self.assertIsNone(select_auto_chart_type(data, "indices"))
 
-    def test_current_or_future_meaningful_precipitation_routes_to_rain(self):
+    def test_rain_no_longer_forces_a_chart_onto_the_default_card(self):
+        """下雨也不再往默认卡片上塞图 —— 卡片自己就写着降水信息。"""
         current = make_weather().model_copy(update={"is_raining": True})
-        self.assertEqual(select_auto_chart_type(current, "default"), "rain")
+        self.assertIsNone(select_auto_chart_type(current, "default"))
 
         snow = make_weather().model_copy(update={"now_text": "小雪"})
-        self.assertEqual(select_auto_chart_type(snow, "default"), "rain")
-
-        probability = make_weather().model_copy(deep=True)
-        probability.hourly[6].pop = 50
-        self.assertEqual(select_auto_chart_type(probability, "hourly"), "rain")
+        self.assertIsNone(select_auto_chart_type(snow, "default"))
 
         amount = make_weather().model_copy(deep=True)
         amount.hourly[7].precip = 0.1
-        self.assertEqual(select_auto_chart_type(amount, "default"), "rain")
+        self.assertIsNone(select_auto_chart_type(amount, "default"))
 
-        forecast_text = make_weather().model_copy(deep=True)
-        forecast_text.hourly[8].text = "阵雨"
-        self.assertEqual(select_auto_chart_type(forecast_text, "default"), "rain")
-
-    def test_subthreshold_probability_stays_temperature_and_disabled_wins(self):
-        data = make_weather().model_copy(deep=True)
-        data.hourly[4].pop = 49
-        self.assertEqual(select_auto_chart_type(data, "default"), "temp")
-
+    def test_disabled_plots_win_over_every_view(self):
+        data = make_weather()
         settings.enable_weather_plots = False
         for view in ("default", "hourly", "daily", "rain", "indices"):
             self.assertIsNone(select_auto_chart_type(data, view))
@@ -141,40 +136,52 @@ class ChartLabelLogicTests(unittest.TestCase):
         self.assertGreaterEqual(len(temperature_labels), 2)
         self.assertLessEqual(len(temperature_labels), 4)
 
-    def test_rain_chart_labels_only_peaks(self):
+    def test_rain_chart_labels_probability_peak_once(self):
         data = make_weather().model_copy(deep=True)
         data.hourly[2].pop = 30
         data.hourly[3].pop = 20
-        data.hourly[3].precip = 0.5
         data.hourly[4].pop = 60
-        data.hourly[4].precip = 0.8
 
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_rain_chart(data)
         labels = [call.args[1] for call in annotate.call_args_list]
-        # 概率只标峰值一处。
         self.assertEqual(sum(label.endswith("%") for label in labels), 1)
         self.assertIn("60%", labels)
-        self.assertFalse(any(" mm" in label for label in labels))
-        # 雨最大的那一小时正好也是概率最高的那根柱：数值已经在标题的
-        # 「最大雨量」指标里，再叠一行只会和「60%」挤成三层字。
-        self.assertFalse(any("雨量" in label for label in labels))
-        self.assertFalse(any("0.5" in label for label in labels))
 
-    def test_rain_chart_marks_the_wettest_hour_when_it_differs_from_peak_pop(self):
-        """雨峰与概率峰不同柱时，标注才带来新信息——指出是哪一小时。"""
+    def test_rain_chart_labels_each_spell_with_its_total(self):
+        """每一场雨标自己的累计雨量，而不是全天只给一个峰值。"""
         data = make_weather().model_copy(deep=True)
-        data.hourly[2].pop = 80
-        data.hourly[2].precip = 0.1
-        data.hourly[6].pop = 30
-        data.hourly[6].precip = 4.2
+        for hour in data.hourly:
+            hour.precip = 0.0
+            hour.precip_kind = "amount"
+        # 第一场：3 小时共 4.0mm；隔一小时后第二场：2 小时共 0.9mm。
+        for index, value in ((3, 1.0), (4, 2.4), (5, 0.6)):
+            data.hourly[index].precip = value
+        for index, value in ((8, 0.6), (9, 0.3)):
+            data.hourly[index].precip = value
 
-        with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
+        with patch.object(Axes, "text", autospec=True, return_value=None) as text:
             Visualizer.draw_hourly_rain_chart(data)
-        labels = [call.args[1] for call in annotate.call_args_list]
-        self.assertIn("雨量最大", labels)
-        # 数值仍然只出现在标题指标里，图内不重复。
-        self.assertFalse(any("4.2" in label for label in labels))
+        labels = [call.args[3] for call in text.call_args_list if len(call.args) > 3]
+        self.assertIn("4mm", labels)
+        self.assertIn("0.9mm", labels)
+        # 单小时的分量不单独出现（0.6 出现在两场里，都不该被当成一场的总量）。
+        self.assertNotIn("2.4mm", labels)
+        self.assertNotIn("0.6mm", labels)
+
+    def test_rain_chart_caps_the_number_of_spell_labels(self):
+        """零散小雨很多时只标最大的几场，不让标签糊满整张图。"""
+        data = make_weather().model_copy(deep=True)
+        for hour in data.hourly:
+            hour.precip = 0.0
+            hour.precip_kind = "amount"
+        for index in range(0, 20, 2):  # 10 场互不相连的雨
+            data.hourly[index].precip = 0.5 + index / 10
+
+        with patch.object(Axes, "text", autospec=True, return_value=None) as text:
+            Visualizer.draw_hourly_rain_chart(data)
+        labels = [call.args[3] for call in text.call_args_list if len(call.args) > 3]
+        self.assertLessEqual(sum(label.endswith("mm") for label in labels), 3)
 
     def test_hourly_temp_chart_draws_no_probability_bars(self):
         """温度图不画降雨概率。
@@ -285,25 +292,26 @@ class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(selected)
 
-    async def test_chart_is_prepared_for_weather_views_but_not_indices(self):
+    async def test_chart_is_prepared_only_for_subject_views(self):
         data = make_weather()
         handlers = WeatherHandlers(deps=None)
         prepared = PreparedChart(
-            chart_type="temp",
-            caption="逐小时温度",
+            chart_type="daily",
+            caption="逐日温度",
             file_id="cached-file-id",
         )
 
         with patch(
             "core.handlers.weather.prepare_chart", new=AsyncMock(return_value=prepared)
         ) as prepare:
-            selected = await handlers.prepare_auto_chart(data, "default")
-            self.assertEqual(selected, prepared)
-            prepare.assert_awaited_once_with(data, "temp")
+            # 默认卡片与生活指数都不配图，连渲染都不该发起。
+            self.assertIsNone(await handlers.prepare_auto_chart(data, "default"))
+            self.assertIsNone(await handlers.prepare_auto_chart(data, "indices"))
+            prepare.assert_not_awaited()
 
-            selected = await handlers.prepare_auto_chart(data, "indices")
-            self.assertIsNone(selected)
-            prepare.assert_awaited_once()
+            selected = await handlers.prepare_auto_chart(data, "daily")
+            self.assertEqual(selected, prepared)
+            prepare.assert_awaited_once_with(data, "daily")
 
 
 if __name__ == "__main__":
