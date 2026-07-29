@@ -6,27 +6,27 @@ AI 日报 prompt 收紧 + 「未来几天」「建议」折叠。
 
 ## 一、天气卡片（utils/rich_formatter.py）
 
-- [ ] 1. 新增 `_core_stats_rows()`：按「冷热 → 概貌 → 体感 → 带伞 → 防晒 → 时间 → 趋势」
+- [x] 1. 新增 `_core_stats_rows()`：按「冷热 → 概貌 → 体感 → 带伞 → 防晒 → 时间 → 趋势」
       排序的核心表（气温/日夜/湿度/风况/降水/紫外线/日出日落/比昨天）
-- [ ] 2. 新增 `_extra_stats_details()`：月相、月升月落、云量、能见度、气压、当前降水、
+- [x] 2. 新增 `_extra_stats_details()`：月相、月升月落、云量、能见度、气压、当前降水、
       日均温、昼夜降水、日夜风 收进「🔭 更多气象参数」折叠块
-- [ ] 3. UV 数字加分级文案（11 → `11 极强`），裸数字对用户无意义
-- [ ] 4. `build_realtime_blocks` 改用新结构；`_current_stats_rows` 保留给预警推送复用
-- [ ] 5. 折叠块顺序：更多气象参数 → 生活指数 → 空气质量（都收起，视觉对齐）
+- [x] 3. UV 数字加分级文案（11 → `11 极强`），裸数字对用户无意义
+- [x] 4. `build_realtime_blocks` 改用新结构；`_current_stats_rows` 保留给预警推送复用
+- [x] 5. 折叠块顺序：更多气象参数 → 生活指数 → 空气质量（都收起，视觉对齐）
 
 ## 二、AI 日报
 
-- [ ] 6. `services/llm.py` prompt：每块句数硬上限、总长 ≤600 字符、建议 2-3 条、
+- [x] 6. `services/llm.py` prompt：每块句数硬上限、总长 ≤600 字符、建议 2-3 条、
       平稳天气省略「未来几天」
-- [ ] 7. `build_report_blocks(collapse_tail=True)`：「未来几天」「建议」及之后内容
+- [x] 7. `build_report_blocks(collapse_tail=True)`：「未来几天」「建议」及之后内容
       收进折叠块，正文只留 预警/现在/接下来
-- [ ] 8. `core/handlers/report.py` 调用处传 `collapse_tail=True`（guide 帮助文本不受影响）
+- [x] 8. `core/handlers/report.py` 调用处传 `collapse_tail=True`（guide 帮助文本不受影响）
 
 ## 三、验证
 
-- [ ] 9. 更新 `tests/test_weather_card_layout.py` 断言 + 新增排序/折叠回归测试
-- [ ] 10. unittest 全量 + compileall + ruff(F,E9) + git diff --check
-- [ ] 11. git 提交
+- [x] 9. 更新 `tests/test_weather_card_layout.py` 断言 + 新增排序/折叠回归测试
+- [x] 10. unittest 全量 + compileall + ruff(F,E9) + git diff --check
+- [x] 11. git 提交
 
 ---
 
