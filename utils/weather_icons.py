@@ -224,6 +224,16 @@ UI_ICON_CODES: dict[str, str] = {
     # 102 少云 — a neutral "atmosphere" glyph for the secondary-metrics fold,
     # visually distinct from 104 (云量/气压 rows) and 502 (空气质量 fold).
     "detail": "102",
+    # Warning-family codes (1001-1050): the pack does carry dedicated glyphs for
+    # wind / typhoon / heat / cold / pollution / waves, so UI chrome that means
+    # exactly those things should use them instead of a system emoji.
+    "wind": "1006",
+    "typhoon": "1001",
+    "rain_alert": "1003",
+    "heat": "1009",
+    "chill": "1034",
+    "pollution": "1029",
+    "tide": "1045",
     "unknown": "999",
     # Moon-phase defaults (override with moon_phase_code() when text is known).
     "moon": "804",

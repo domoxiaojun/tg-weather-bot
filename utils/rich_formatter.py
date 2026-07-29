@@ -114,7 +114,9 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
             )
         else:
             expanded.append(paragraph(italic(alert.source or "暂无详细说明")))
-        blocks.append(details([ui_icon_rich("storm"), " ", bold(title)], expanded))
+        blocks.append(
+            details([weather_icon_rich(alert_icon_code(alert)), " ", bold(title)], expanded)
+        )
     return blocks
 
 
@@ -285,8 +287,7 @@ def _current_stats_rows(data: WeatherData) -> List[list]:
         data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
     )
     if wind:
-        # Pack has no dedicated wind icon; dust/扬沙 is the closest motion cue.
-        rows.append([ui_label_rich("dust", "风况"), wind])
+        rows.append([ui_label_rich("wind", "风况"), wind])
     if data.now_humidity is not None:
         rows.append([ui_label_rich("fog", "湿度"), f"{data.now_humidity}%"])
     if data.now_precip is not None:
@@ -376,8 +377,7 @@ def _core_stats_rows(data: WeatherData) -> List[list]:
         data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
     )
     if wind:
-        # Pack has no dedicated wind icon; dust/扬沙 is the closest motion cue.
-        rows.append([ui_label_rich("dust", "风况"), wind])
+        rows.append([ui_label_rich("wind", "风况"), wind])
 
     # 今日累计降水 + 未来 6h 降水概率合成一行——两者回答的是同一个问题。
     precip_bits: List[str] = []
@@ -445,7 +445,7 @@ def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
         )
         if day_wind or night_wind:
             rows.append([
-                ui_label_rich("dust", "昼/夜风"),
+                ui_label_rich("wind", "昼/夜风"),
                 f"{day_wind or 'N/A'} / {night_wind or 'N/A'}",
             ])
         if day.temp_avg is not None:
@@ -578,6 +578,15 @@ def _report_line_richtext(line: str) -> list:
     return segments or [""]
 
 
+def alert_icon_code(alert) -> str:
+    """Pick the warning-family icon (1001-1045) that matches one alert."""
+    hay = f"{getattr(alert, 'title', '') or ''} {getattr(alert, 'type', '') or ''}"
+    for keyword, code in _ALERT_ICON_KEYWORDS:
+        if keyword in hay:
+            return code
+    return "1003"
+
+
 def _warning_icon_code(weather: Optional[WeatherData]) -> str:
     if weather is None or not weather.alerts:
         return "1003"
@@ -670,11 +679,10 @@ def build_report_blocks(
     blocks: List[dict] = []
     if title:
         if weather is not None and weather.now_icon:
-            title_text = title
-            for prefix in ("🤖 ", "🤖"):
-                if title_text.startswith(prefix):
-                    title_text = title_text[len(prefix) :]
-                    break
+            # The caller's title may open with any system emoji (🤖 for the AI
+            # report, ☀️ for the morning brief). Strip it — the QWeather icon
+            # replaces it, and keeping both renders two glyphs side by side.
+            title_text = _strip_leading_section_emoji(title) or title
             blocks.append(
                 heading([weather_icon_rich(weather.now_icon), f" {title_text}"], size=4)
             )
@@ -709,7 +717,13 @@ def build_report_blocks(
             blocks.append(block)
 
     if tail:
-        summary = ["📅 ", " · ".join(tail_titles) or "更多内容", "（点击展开）"]
+        # 104 matches the icon the 未来几天 section heading itself uses.
+        summary = [
+            weather_icon_rich("104"),
+            " ",
+            " · ".join(tail_titles) or "更多内容",
+            "（点击展开）",
+        ]
         blocks.append(details(summary, tail))
     if trailing_footer is not None:
         blocks.append(trailing_footer)
@@ -862,7 +876,10 @@ def _hourly_extras_blocks(hours: List) -> List[dict]:
         ])
     return [
         details(
-            "🔬 更多逐小时指标（" + "/".join(label for label, _getter in active) + "）",
+            [
+                ui_icon_rich("detail"),
+                " 更多逐小时指标（" + "/".join(label for label, _getter in active) + "）",
+            ],
             [
                 table(
                     rows,
@@ -882,7 +899,7 @@ def build_tide_blocks(forecast) -> List[dict]:
     if station.distance_km is not None:
         subtitle_bits.append(f"约 {station.distance_km:.0f}km")
     blocks: List[dict] = [
-        heading(f"🌊 {station.name} 潮汐", size=2),
+        heading([ui_icon_rich("tide"), f" {station.name} 潮汐"], size=2),
         paragraph(italic(f"{forecast.date.strftime('%m-%d')} · {' · '.join(subtitle_bits)}")),
     ]
 
@@ -953,7 +970,9 @@ def build_daily_blocks(
             line.append(f" · {wind}")
         detail_items.append(paragraph(line))
     if detail_items:
-        blocks.append(details("🔎 逐日文字描述", [bullet_list(detail_items)]))
+        blocks.append(
+            details([ui_icon_rich("detail"), " 逐日文字描述"], [bullet_list(detail_items)])
+        )
 
     blocks.append(build_footer(data))
     return blocks
@@ -1041,7 +1060,7 @@ def build_weather_blocks(
 def build_rain_alert_blocks(data: WeatherData) -> List[dict]:
     """Push notification for the rain watcher."""
     return [
-        heading("🚨 降雨提醒", size=2),
+        heading([ui_icon_rich("rain_alert"), " 降雨提醒"], size=2),
         paragraph([bold(data.location_name), f" · {data.update_time.strftime('%m-%d %H:%M')}"]),
         *build_alert_blocks(data),
         *build_rain_blocks(data)[1:],
@@ -1054,7 +1073,7 @@ def build_alert_push_blocks(data: WeatherData, alert) -> List[dict]:
     title = alert.title if not level or level in alert.title else f"{alert.title}（{level}）"
 
     blocks: List[dict] = [
-        heading(f"⚠️ {title}", size=2),
+        heading([weather_icon_rich(alert_icon_code(alert)), f" {title}"], size=2),
         paragraph([bold(data.location_name), f" · {alert.source or '官方预警'}"]),
     ]
     timing = []
@@ -1077,10 +1096,19 @@ def build_alert_push_blocks(data: WeatherData, alert) -> List[dict]:
     return blocks
 
 
-def build_event_push_blocks(data: WeatherData, title: str, detail: str) -> List[dict]:
-    """Threshold event (air quality / temperature / wind) push."""
+def build_event_push_blocks(
+    data: WeatherData, title: str, detail: str, *, icon_key: Optional[str] = None
+) -> List[dict]:
+    """Threshold event (air quality / temperature / wind) push.
+
+    ``icon_key`` is a :data:`utils.weather_icons.UI_ICON_CODES` key so the
+    heading carries a QWeather custom emoji instead of a system one.
+    """
     return [
-        heading(title, size=2),
+        heading(
+            [ui_icon_rich(icon_key), f" {title}"] if icon_key else title,
+            size=2,
+        ),
         paragraph([bold(data.location_name), f" · {data.update_time.strftime('%m-%d %H:%M')}"]),
         paragraph(detail),
         build_footer(data),
@@ -1101,7 +1129,10 @@ def build_active_typhoon_blocks(storms: list, location_name: str = "") -> List[d
             ])
         items.append(line)
 
-    blocks: List[dict] = [heading("🌀 当前活跃台风", size=2), bullet_list(items)]
+    blocks: List[dict] = [
+        heading([ui_icon_rich("typhoon"), " 当前活跃台风"], size=2),
+        bullet_list(items),
+    ]
     if location_name:
         blocks.append(paragraph(f"对 {location_name} 暂无明显影响。台风逼近时，已订阅城市会自动收到提醒。"))
     else:
@@ -1117,17 +1148,31 @@ def build_typhoon_push_blocks(threat, location_name: str) -> List[dict]:
     storm = threat.storm
     now_point = storm.now
 
-    blocks: List[dict] = [heading(f"🌀 {format_threat_summary(threat)}", size=2)]
+    blocks: List[dict] = [
+        heading([ui_icon_rich("typhoon"), f" {format_threat_summary(threat)}"], size=2)
+    ]
     blocks.append(paragraph([bold(location_name), f" · 距中心约 {threat.distance_km:.0f}km"]))
     if threat.inside_circle:
-        blocks.append(paragraph(marked(f"⚠️ 已进入{threat.wind_label}，请做好防风准备")))
+        blocks.append(
+            paragraph([
+                ui_icon_rich("wind"),
+                marked(f" 已进入{threat.wind_label}，请做好防风准备"),
+            ])
+        )
 
     if now_point is not None:
-        rows = [["🌀 强度", storm_type_label(now_point.type)]]
+        rows = [[ui_label_rich("typhoon", "强度"), storm_type_label(now_point.type)]]
         if now_point.wind_speed is not None:
-            rows.append(["💨 中心风速", f"{format_weather_number(now_point.wind_speed)} km/h"])
+            rows.append([
+                ui_label_rich("wind", "中心风速"),
+                f"{format_weather_number(now_point.wind_speed)} km/h",
+            ])
         if now_point.pressure is not None:
-            rows.append(["📉 中心气压", f"{format_weather_number(now_point.pressure)} hPa"])
+            # Same icon as the 气压 row on the /tq card.
+            rows.append([
+                ui_label_rich("cloud", "中心气压"),
+                f"{format_weather_number(now_point.pressure)} hPa",
+            ])
         if now_point.move_dir or now_point.move_speed is not None:
             move = " ".join(
                 part

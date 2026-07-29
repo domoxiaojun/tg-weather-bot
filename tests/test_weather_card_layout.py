@@ -1,5 +1,8 @@
+import json
 import os
+import re
 import unittest
+from pathlib import Path
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -21,14 +24,19 @@ from domain.models import (
 )
 from services.chart_cache import PreparedChart, remember_chart_file_id
 from services.telegram_rich import rich
-from utils.formatter import format_weather_response
+from utils.formatter import INDICES_EMOJI, format_weather_response
+from core.scheduler import _derived_events
 from utils.rich_formatter import (
+    build_alert_push_blocks,
+    build_event_push_blocks,
     build_indices_blocks,
+    build_rain_alert_blocks,
     build_realtime_blocks,
     build_report_blocks,
+    build_weather_blocks,
     uv_level_text,
 )
-from utils.weather_icons import set_custom_emoji_map_for_tests
+from utils.weather_icons import UI_ICON_CODES, set_custom_emoji_map_for_tests
 
 
 INDEX_NAMES = {
@@ -323,8 +331,10 @@ class WeatherCardLayoutTests(unittest.TestCase):
     def test_core_table_labels_are_all_custom_emoji(self):
         """Row labels must come from the uploaded QWeather pack, not system emoji."""
         set_custom_emoji_map_for_tests(
-            {code: f"id-{code}" for code in ("100", "101", "102", "104", "150", "151",
-                                             "305", "306", "310", "501", "502", "503", "900")}
+            {
+                code: f"id-{code}"
+                for code in {*UI_ICON_CODES.values(), "100", "101", "150", "151", "306", "310"}
+            }
         )
         try:
             weather = make_weather()
@@ -424,6 +434,99 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertIn("🚗 洗车：不宜", text)
         self.assertIn("👕 穿衣：热", text)
         self.assertNotIn("洗车指数：", text)
+
+
+class RichSystemEmojiTests(unittest.TestCase):
+    """Chrome across every rich surface must use the uploaded QWeather pack.
+
+    A handful of concepts genuinely have no weather glyph (高潮/低潮 need two
+    distinguishable arrows; 位置/时间/路径/生活指数 have no counterpart at all),
+    so they stay on system emoji by design and are listed here explicitly.
+    """
+
+    # Chrome with no weather-icon counterpart. 生活指数 entries (🚗 洗车、
+    # 👕 穿衣、…) are content, not chrome, and the pack has no 洗车/穿衣 glyph,
+    # so INDICES_EMOJI is whitelisted wholesale.
+    ALLOWED = {
+        "🔺", "🔻", "➡️", "📍", "🕐", "🧭", "💡", "⏳", "👋", "📭", "✍️", "🤖", "ℹ️",
+        *INDICES_EMOJI.values(),
+    }
+    EMOJI_RE = re.compile(
+        r"[\U0001F300-\U0001FAFF☀-➿⬀-⯿⏰-⏺]️?"
+    )
+
+    def setUp(self):
+        # Pretend the whole QWeather pack is uploaded, so anything still
+        # rendering as a literal emoji is genuinely chrome we chose to leave.
+        semantics = json.loads(
+            Path("resources/weather_icon_semantics.json").read_text(encoding="utf-8")
+        )
+        set_custom_emoji_map_for_tests(
+            {code: f"id-{code}" for code in semantics["icons"]}
+        )
+
+    def tearDown(self):
+        set_custom_emoji_map_for_tests(None)
+
+    def system_emoji_in(self, blocks) -> set[str]:
+        """Literal emoji left in block text, ignoring custom_emoji fallbacks."""
+        found: set[str] = set()
+
+        def walk(value):
+            if isinstance(value, str):
+                found.update(self.EMOJI_RE.findall(value))
+            elif isinstance(value, list):
+                for item in value:
+                    walk(item)
+            elif isinstance(value, dict):
+                if value.get("type") == "custom_emoji":
+                    return  # alternative_text is the fallback, not chrome
+                for key in ("text", "summary", "caption", "credit"):
+                    walk(value.get(key))
+                for nested in value.get("blocks") or []:
+                    walk(nested)
+                for row in value.get("cells") or []:
+                    for cell_dict in row:
+                        walk(cell_dict.get("text"))
+                for item in value.get("items") or []:
+                    walk(item)
+
+        walk(blocks)
+        return found - self.ALLOWED
+
+    def test_every_weather_view_uses_custom_emoji_chrome(self):
+        weather = make_weather()
+        for view in ("default", "hourly", "daily", "indices", "rain"):
+            with self.subTest(view=view):
+                leftovers = self.system_emoji_in(build_weather_blocks(weather, view))
+                self.assertEqual(leftovers, set(), f"{view} 视图残留系统 emoji")
+
+    def test_push_surfaces_use_custom_emoji_chrome(self):
+        weather = make_weather()
+        surfaces = {
+            "rain_alert": build_rain_alert_blocks(weather),
+            "alert": build_alert_push_blocks(weather, weather.alerts[0]),
+            "event": build_event_push_blocks(
+                weather, "高温提示（最高 37°C）", "注意防暑", icon_key="heat"
+            ),
+        }
+        for name, blocks in surfaces.items():
+            with self.subTest(surface=name):
+                self.assertEqual(
+                    self.system_emoji_in(blocks), set(), f"{name} 推送残留系统 emoji"
+                )
+
+    def test_derived_event_titles_carry_an_icon_key(self):
+        weather = make_weather()
+        weather.air_quality.aqi = 500
+        weather.daily[0].temp_max = 40
+        events = _derived_events(weather)
+        self.assertTrue(events)
+        for key, icon_key, title, _detail in events:
+            self.assertIn(icon_key, UI_ICON_CODES, f"{key} 的图标 key 未注册")
+            self.assertEqual(
+                self.EMOJI_RE.findall(title), [], f"{key} 标题不应再内嵌系统 emoji"
+            )
 
 
 class WeatherRichDeliveryTests(unittest.IsolatedAsyncioTestCase):

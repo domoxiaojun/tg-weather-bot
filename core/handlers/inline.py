@@ -29,6 +29,7 @@ from services.telegram_rich import (
 )
 from utils.formatter import format_weather_response, get_weather_keyboard
 from utils.rich_formatter import build_weather_blocks
+from utils.weather_icons import weather_icon_rich
 
 
 def _article_variants(
@@ -163,7 +164,7 @@ class InlineHandlers:
 
         if not location_query and not query:
             help_blocks = [
-                heading("🌤️ DomoWeather 使用方法", size=3),
+                heading([weather_icon_rich("101"), " DomoWeather 使用方法"], size=3),
                 paragraph([bold("📍 位置查询"), "：开启位置权限，直接回车"]),
                 paragraph([bold("✍️ 文本查询")]),
                 bullet_list([
@@ -327,7 +328,13 @@ class InlineHandlers:
                 title=f"🤖 {data.location_name} · AI 天气日报",
                 description="点击发送，Bot 将实时生成日报",
                 blocks=[
-                    heading(f"🤖 {data.location_name} · AI 天气日报", size=4),
+                    heading(
+                        [
+                            weather_icon_rich(data.now_icon),
+                            f" {data.location_name} · AI 天气日报",
+                        ],
+                        size=4,
+                    ),
                     paragraph("⏳ 正在撰写，通常需要 10-30 秒…"),
                     paragraph("若长时间没有更新，请回到输入框重新选择一次。"),
                 ],

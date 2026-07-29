@@ -1,3 +1,31 @@
+# 系统 emoji 全面统一为和风 custom emoji
+
+用户要求：有合适语义的一律换成已上传的 QWeather 图标包（120 个 code），
+没有对应语义的保留系统 emoji。
+
+- [x] 1. `UI_ICON_CODES` 新增 wind=1006 / typhoon=1001 / rain_alert=1003 /
+      heat=1009 / chill=1034 / pollution=1029 / tide=1045 / detail=102
+- [x] 2. 风况、昼夜风：dust(503 扬沙) → wind(1006 大风预警)，语义更准
+- [x] 3. 预警新增 `alert_icon_code(alert)`：卡片折叠 + 推送标题按预警类型选
+      1001-1045（高温预警→🥵 而非固定 ⛈️）
+- [x] 4. 潮汐 🌊→1045、降雨提醒 🚨→1003、台风 🌀→1001、中心风速 💨→1006、
+      中心气压 📉→104、逐小时/逐日折叠 🔬🔎→102
+- [x] 5. scheduler 派生事件改为 (key, icon_key, title, detail) 四元组，
+      rich 与 HTML fallback 两条路径都用 custom emoji
+- [x] 6. `build_report_blocks` 标题改用 `_strip_leading_section_emoji`，
+      修早安简报 ☀️ 与天气图标并排显示的既有 bug
+- [x] 7. inline 帮助卡 🌤️→101、inline AI 日报卡 🤖→now_icon
+- [x] 8. 新增 `RichSystemEmojiTests`：扫描 5 个视图 + 3 类推送的全部块，
+      白名单外出现系统 emoji 即失败
+- [x] 9. 验证 + 提交
+
+保留系统 emoji（图标包无对应语义）：🔺🔻 高低潮（需区分方向）、➡️ 移动、
+📍 位置、🕐 时间、🧭 路径、💡 生活指数、👋 欢迎、📭 空态、⏳ 等待、
+生活指数条目（🚗 洗车 / 👕 穿衣 …）。
+按钮文字一律保留——Telegram InlineKeyboardButton 不支持 custom emoji。
+
+---
+
 # /tq 卡片瘦身 + AI 日报压缩
 
 用户反馈：`/tq` 卡片太长（实况表 5 行 + 今日表 12 行全平铺），AI 日报也太长。

@@ -33,6 +33,7 @@ from utils.rich_formatter import (
     build_typhoon_push_blocks,
 )
 from utils.schedule_times import is_within_quiet_hours, parse_brief_time, parse_quiet_hours
+from utils.weather_icons import ui_icon_html
 
 __all__ = [
     "DEFAULT_DAILY_BRIEF_TIME",
@@ -677,7 +678,8 @@ def _derived_events(weather) -> list:
     if air is not None and air.aqi is not None and air.aqi >= settings.aqi_alert_threshold:
         events.append((
             f"aqi:{day_stamp}",
-            f"🌫️ 空气质量转差（AQI {air.aqi}{'·' + air.category if air.category else ''}）",
+            "pollution",
+            f"空气质量转差（AQI {air.aqi}{'·' + air.category if air.category else ''}）",
             f"主要污染物 {air.primary}" if air.primary else "建议减少户外活动、关窗并佩戴口罩",
         ))
 
@@ -686,13 +688,15 @@ def _derived_events(weather) -> list:
         if today.temp_max is not None and today.temp_max >= settings.high_temp_alert_threshold:
             events.append((
                 f"heat:{day_stamp}",
-                f"🥵 高温提示（最高 {today.temp_max:.0f}°C）",
+                "heat",
+                f"高温提示（最高 {today.temp_max:.0f}°C）",
                 "注意防暑降温、及时补水，避免正午户外活动",
             ))
         if today.temp_min is not None and today.temp_min <= settings.low_temp_alert_threshold:
             events.append((
                 f"cold:{day_stamp}",
-                f"🥶 低温提示（最低 {today.temp_min:.0f}°C）",
+                "chill",
+                f"低温提示（最低 {today.temp_min:.0f}°C）",
                 "注意保暖防寒，留意道路结冰",
             ))
 
@@ -707,7 +711,8 @@ def _derived_events(weather) -> list:
         if peak_scale >= settings.wind_alert_scale_threshold:
             events.append((
                 f"wind:{day_stamp}",
-                f"💨 大风提示（{peak_hour.time.strftime('%H:%M')} 起约 {peak_scale} 级）",
+                "wind",
+                f"大风提示（{peak_hour.time.strftime('%H:%M')} 起约 {peak_scale} 级）",
                 "注意高空坠物与出行安全",
             ))
     return events
@@ -781,12 +786,13 @@ async def check_weather_alerts(
                     build_alert_push_blocks(weather, alert),
                     None,
                 ))
-            for key, title, detail in _derived_events(weather):
+            for key, icon_key, title, detail in _derived_events(weather):
                 pending.append((
                     key,
                     "",
-                    build_event_push_blocks(weather, title, detail),
-                    f"<b>{escape(title)}</b>\n{escape(detail)}\n\n{escape(weather.location_name)}",
+                    build_event_push_blocks(weather, title, detail, icon_key=icon_key),
+                    f"{ui_icon_html(icon_key)} <b>{escape(title)}</b>\n{escape(detail)}"
+                    f"\n\n{escape(weather.location_name)}",
                 ))
 
             # Tropical cyclones: wind-circle membership decides severity, so a
@@ -799,7 +805,8 @@ async def check_weather_alerts(
                             threat.key,
                             threat.level,
                             build_typhoon_push_blocks(threat, weather.location_name),
-                            f"🌀 <b>{escape(format_threat_summary(threat))}</b>\n"
+                            f"{ui_icon_html('typhoon')} "
+                            f"<b>{escape(format_threat_summary(threat))}</b>\n"
                             f"{escape(weather.location_name)} · 距中心约 {threat.distance_km:.0f}km",
                         ))
 
