@@ -320,6 +320,43 @@ class WeatherCardLayoutTests(unittest.TestCase):
         finally:
             set_custom_emoji_map_for_tests(None)
 
+    def test_core_table_labels_are_all_custom_emoji(self):
+        """Row labels must come from the uploaded QWeather pack, not system emoji."""
+        set_custom_emoji_map_for_tests(
+            {code: f"id-{code}" for code in ("100", "101", "102", "104", "150", "151",
+                                             "305", "306", "310", "501", "502", "503", "900")}
+        )
+        try:
+            weather = make_weather()
+            weather.daily[0].uv_index = "11"
+            weather.daily[0].sunrise = "05:52"
+            weather.daily[0].sunset = "19:50"
+            blocks = build_realtime_blocks(weather)
+            core_table = next(block for block in blocks if block.get("type") == "table")
+            for row in core_table["cells"]:
+                label = row[0].get("text")
+                self.assertIsInstance(label, list, f"标签必须是 RichText 段: {label}")
+                self.assertEqual(
+                    label[0].get("type"),
+                    "custom_emoji",
+                    f"标签首段必须是 custom emoji: {label}",
+                )
+                for segment in label:
+                    if isinstance(segment, dict):
+                        continue
+                    self.assertRegex(
+                        segment, r"^[ 　\w一-鿿/·]+$", f"标签混入系统 emoji: {segment}"
+                    )
+
+            extra = next(
+                block
+                for block in blocks
+                if block.get("type") == "details" and "更多气象参数" in _flatten_block_text(block)
+            )
+            self.assertEqual(extra["summary"][0].get("type"), "custom_emoji")
+        finally:
+            set_custom_emoji_map_for_tests(None)
+
     def test_report_tail_sections_collapse_and_footer_stays_outside(self):
         html = (
             "☀️ <b>现在</b>\n"

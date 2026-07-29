@@ -221,6 +221,9 @@ UI_ICON_CODES: dict[str, str] = {
     "air": "502",
     "hot": "900",
     "cold": "901",
+    # 102 少云 — a neutral "atmosphere" glyph for the secondary-metrics fold,
+    # visually distinct from 104 (云量/气压 rows) and 502 (空气质量 fold).
+    "detail": "102",
     "unknown": "999",
     # Moon-phase defaults (override with moon_phase_code() when text is known).
     "moon": "804",

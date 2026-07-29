@@ -393,10 +393,11 @@ def _core_stats_rows(data: WeatherData) -> List[list]:
         rows.append([ui_label_rich("sun", "紫外线"), uv_level_text(day.uv_index)])
 
     if day is not None and (day.sunrise or day.sunset):
-        # Icon pack has no sunrise glyph and the sun code is already on the UV
-        # row — a literal emoji keeps the two rows visually distinct.
+        # 日出 = 100 晴（昼）, 日落 = 150 晴（夜）— the icon pair reads as the
+        # label itself, and both come from the uploaded QWeather pack.
+        # Kept flat: the API takes a flat segment array, not nested lists.
         rows.append([
-            "🌅 日出/日落",
+            [weather_icon_rich("100"), weather_icon_rich("150"), " 日出/日落"],
             f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}",
         ])
 
@@ -478,9 +479,14 @@ def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
 
     if not rows:
         return []
-    # 📊 rather than a weather glyph: 生活指数 uses 💡 and 空气质量 uses the
-    # haze icon, so the three folds stay tellable apart at a glance.
-    summary = ["📊 更多气象参数", f" · {len(rows)}项", "（点击展开详情）"]
+    # 102 少云 rather than a system emoji: every label on this card comes from
+    # the uploaded QWeather custom-emoji pack.
+    summary = [
+        ui_icon_rich("detail"),
+        " 更多气象参数",
+        f" · {len(rows)}项",
+        "（点击展开详情）",
+    ]
     return [details(summary, [table(rows, aligns=["left", "left"], bordered=True)])]
 
 
