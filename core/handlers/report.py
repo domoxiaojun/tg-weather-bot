@@ -161,7 +161,7 @@ class ReportHandlers:
         # The draft expires on its own; deliver the finished report as rich
         # BLOCKS (never rich html= — that collapses newlines into one blob).
         blocks = build_report_blocks(
-            report_text, title=plain_title, weather=weather_data
+            report_text, title=plain_title, weather=weather_data, collapse_tail=True
         )
         if await rich.send_rich(context.bot, chat.id, blocks=blocks) is not None:
             return True
@@ -214,7 +214,10 @@ class ReportHandlers:
                 chat_id=placeholder.chat_id,
                 message_id=placeholder.message_id,
                 blocks=build_report_blocks(
-                    report_text, title=plain_title, weather=weather_data
+                    report_text,
+                    title=plain_title,
+                    weather=weather_data,
+                    collapse_tail=True,
                 ),
             ):
                 return
@@ -291,6 +294,7 @@ class ReportHandlers:
                     report_text,
                     title=f"🤖 {weather_data.location_name} 天气日报",
                     weather=weather_data,
+                    collapse_tail=True,
                 ),
             ):
                 return

@@ -394,7 +394,10 @@ async def dispatch_daily_briefs(
                     # Rich BLOCKS, never rich html= (HTML semantics collapse
                     # newlines and squash the brief into one blob).
                     brief_blocks = build_report_blocks(
-                        report_text, title=plain_header, weather=weather
+                        report_text,
+                        title=plain_header,
+                        weather=weather,
+                        collapse_tail=True,
                     )
                     if await rich.send_rich(
                         context.bot,

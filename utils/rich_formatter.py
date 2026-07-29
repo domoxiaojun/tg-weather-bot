@@ -274,7 +274,12 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
     return [details(summary, inner)]
 
 
-def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[list]:
+def _current_stats_rows(data: WeatherData) -> List[list]:
+    """Full realtime observation table — used by the warning push, not /tq.
+
+    The /tq card uses :func:`_core_stats_rows` plus a collapsed extras block;
+    a push has no buttons to expand, so it keeps everything inline.
+    """
     rows: List[list] = []
     wind = _plain_wind(
         data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
@@ -293,7 +298,7 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
         rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(data.now_vis)}km"])
     if data.now_pressure is not None:
         rows.append([ui_label_rich("cloud", "气压"), f"{format_weather_number(data.now_pressure)}hPa"])
-    if include_air and data.air_quality:
+    if data.air_quality:
         aqi = data.air_quality
         air_bits = []
         if aqi.aqi is not None:
@@ -305,6 +310,178 @@ def _current_stats_rows(data: WeatherData, *, include_air: bool = True) -> List[
         if air_bits:
             rows.append([ui_label_rich("air", "空气"), " · ".join(air_bits)])
     return rows
+
+
+# 和风 UV index 分级（0-2 弱 … 11+ 极强）。一个裸数字说明不了任何事情，
+# 而分级正是「今天要不要防晒」的答案。
+_UV_LEVELS = ((2, "弱"), (5, "中等"), (7, "强"), (10, "很强"))
+
+
+def uv_level_text(value) -> str:
+    """``11`` -> ``11 极强``；无法解析成数字时原样返回。"""
+    try:
+        index = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    for limit, label in _UV_LEVELS:
+        if index <= limit:
+            break
+    else:
+        label = "极强"
+    number = format_weather_number(index, 0)
+    return f"{number} {label}"
+
+
+def _core_stats_rows(data: WeatherData) -> List[list]:
+    """今日核心指标，按用户实际关心的顺序排列。
+
+    顺序是刻意的：冷热（气温）→ 全天概貌（日间/夜间）→ 体感（湿度、风）→
+    要不要带伞（降水）→ 防晒（紫外线）→ 天光时间 → 与昨天的趋势。
+    次要参数一律进 :func:`_extra_stats_details`，主表不超过 8 行。
+    """
+    day = data.get_current_daily_forecast()
+    rows: List[list] = []
+
+    temp_key = "sun"
+    if day is not None:
+        temp_key = "hot" if (day.temp_max is not None and day.temp_max >= 30) else (
+            "cold" if (day.temp_min is not None and day.temp_min <= 5) else "sun"
+        )
+        rows.append([
+            ui_label_rich(temp_key, "气温"),
+            f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°C",
+        ])
+        # 日间/夜间合成一行：风况在下面单独有行，这里只留现象文字。
+        # 昼夜同一现象时不写「多云 → 多云」这种废话。
+        if day.text_day == day.text_night:
+            rows.append([
+                ui_label_rich("day", "全天"),
+                [weather_icon_rich(day.icon_day), f" {day.text_day}"],
+            ])
+        else:
+            rows.append([
+                ui_label_rich("day", "日间/夜间"),
+                [
+                    weather_icon_rich(day.icon_day),
+                    f" {day.text_day} → ",
+                    weather_icon_rich(day.icon_night),
+                    f" {day.text_night}",
+                ],
+            ])
+
+    if data.now_humidity is not None:
+        rows.append([ui_label_rich("fog", "湿度"), f"{data.now_humidity}%"])
+
+    wind = _plain_wind(
+        data.now_wind_dir, data.now_wind_direction_degrees, data.now_wind_scale, data.now_wind_speed
+    )
+    if wind:
+        # Pack has no dedicated wind icon; dust/扬沙 is the closest motion cue.
+        rows.append([ui_label_rich("dust", "风况"), wind])
+
+    # 今日累计降水 + 未来 6h 降水概率合成一行——两者回答的是同一个问题。
+    precip_bits: List[str] = []
+    if day is not None and day.precip is not None:
+        precip_bits.append(f"今日 {format_precip_value(day.precip, day.precip_kind)}")
+    pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
+    if pops:
+        precip_bits.append(f"6h 降概 {int(max(pops))}%")
+    if precip_bits:
+        rows.append([ui_label_rich("rain", "降水"), " · ".join(precip_bits)])
+
+    if day is not None and day.uv_index:
+        rows.append([ui_label_rich("sun", "紫外线"), uv_level_text(day.uv_index)])
+
+    if day is not None and (day.sunrise or day.sunset):
+        # Icon pack has no sunrise glyph and the sun code is already on the UV
+        # row — a literal emoji keeps the two rows visually distinct.
+        rows.append([
+            "🌅 日出/日落",
+            f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}",
+        ])
+
+    # Day-over-day context: the trend is what people actually want to know.
+    if data.yesterday is not None and day is not None:
+        deltas = []
+        if data.yesterday.temp_max is not None and day.temp_max is not None:
+            delta = day.temp_max - data.yesterday.temp_max
+            deltas.append(f"最高 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
+        if data.yesterday.temp_min is not None and day.temp_min is not None:
+            delta = day.temp_min - data.yesterday.temp_min
+            deltas.append(f"最低 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
+        if deltas:
+            rows.append([ui_label_rich("cloud", "比昨天"), " · ".join(deltas)])
+
+    return rows
+
+
+def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
+    """次要参数（天文 + 细节观测）收进一个折叠块，主卡默认只显示核心表。"""
+    day = data.get_current_daily_forecast()
+    rows: List[list] = []
+
+    if data.now_precip is not None:
+        rows.append([
+            ui_label_rich("rain", "当前降水"),
+            format_precip_value(data.now_precip, data.now_precip_kind),
+        ])
+    if data.now_cloud is not None:
+        rows.append([ui_label_rich("cloud", "云量"), f"{data.now_cloud}%"])
+    if data.now_vis is not None:
+        rows.append([ui_label_rich("fog", "能见度"), f"{format_weather_number(data.now_vis)}km"])
+    if data.now_pressure is not None:
+        rows.append([ui_label_rich("cloud", "气压"), f"{format_weather_number(data.now_pressure)}hPa"])
+
+    if day is not None:
+        day_wind = _plain_wind(
+            day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
+        )
+        night_wind = _plain_wind(
+            day.wind_dir_night,
+            day.wind_direction_night_degrees,
+            day.wind_scale_night,
+            day.wind_speed_night,
+        )
+        if day_wind or night_wind:
+            rows.append([
+                ui_label_rich("dust", "昼/夜风"),
+                f"{day_wind or 'N/A'} / {night_wind or 'N/A'}",
+            ])
+        if day.temp_avg is not None:
+            rows.append([ui_label_rich("sun", "日均温"), f"{format_weather_number(day.temp_avg)}°C"])
+        if day.precip_day is not None or day.precip_night is not None:
+            rows.append([
+                ui_label_rich("rain", "昼/夜降水"),
+                f"{format_precip_value(day.precip_day, day.precip_kind)} / "
+                f"{format_precip_value(day.precip_night, day.precip_kind)}",
+            ])
+        if day.moon_phase:
+            rows.append([
+                [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月相"],
+                day.moon_phase,
+            ])
+        if day.moon_rise or day.moon_set:
+            rows.append([
+                [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月升/月落"],
+                f"{day.moon_rise or 'N/A'} / {day.moon_set or 'N/A'}",
+            ])
+
+    if include_air and data.air_quality:
+        aqi = data.air_quality
+        air_bits = []
+        if aqi.aqi is not None:
+            air_bits.append(str(aqi.aqi))
+        if aqi.category:
+            air_bits.append(aqi.category)
+        if air_bits:
+            rows.append([ui_label_rich("air", "空气"), " · ".join(air_bits)])
+
+    if not rows:
+        return []
+    # 📊 rather than a weather glyph: 生活指数 uses 💡 and 空气质量 uses the
+    # haze icon, so the three folds stay tellable apart at a glance.
+    summary = ["📊 更多气象参数", f" · {len(rows)}项", "（点击展开详情）"]
+    return [details(summary, [table(rows, aligns=["left", "left"], bordered=True)])]
 
 
 def _index_pair_blocks(
@@ -337,97 +514,6 @@ def _index_pair_blocks(
         blocks.append(heading("💡 生活指数", size=4))
     blocks.append(table_block)
     return blocks
-
-
-def _today_detail_blocks(data: WeatherData) -> List[dict]:
-    """Render today's forecast as one always-visible, two-column rich table."""
-    day = data.get_current_daily_forecast()
-    if day is None:
-        return []
-
-    temp_key = "hot" if (day.temp_max is not None and day.temp_max >= 30) else (
-        "cold" if (day.temp_min is not None and day.temp_min <= 5) else "sun"
-    )
-    rows: List[list] = [[
-        ui_label_rich(temp_key, "气温"),
-        f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°C",
-    ]]
-
-    if day.moon_phase:
-        moon_value = day.moon_phase
-        if day.sunrise or day.sunset:
-            moon_value += f"（日出 {day.sunrise or 'N/A'} / 日落 {day.sunset or 'N/A'}）"
-        rows.append([
-            [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月相"],
-            moon_value,
-        ])
-    elif day.sunrise or day.sunset:
-        rows.append([
-            ui_label_rich("sun", "日出/日落"),
-            f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}",
-        ])
-
-    day_wind = _plain_wind(
-        day.wind_dir_day, day.wind_direction_day_degrees, day.wind_scale_day, day.wind_speed_day
-    )
-    night_wind = _plain_wind(
-        day.wind_dir_night,
-        day.wind_direction_night_degrees,
-        day.wind_scale_night,
-        day.wind_speed_night,
-    )
-    day_desc = day.text_day + (f"（{day_wind}）" if day_wind else "")
-    night_desc = day.text_night + (f"（{night_wind}）" if night_wind else "")
-    # Label + phenomenon both use QWeather custom emoji (day/night chrome + icon_day/night).
-    rows.append([ui_label_rich("day", "日间"), rich_icon_text(day.icon_day, day_desc)])
-    rows.append([ui_label_rich("night", "夜间"), rich_icon_text(day.icon_night, night_desc)])
-
-    if day.precip is not None:
-        # Daily total — distinct from 当前降水 on the realtime stats table.
-        rows.append([ui_label_rich("rain", "降水"), format_precip_value(day.precip, day.precip_kind)])
-    # Humidity / visibility already shown on the realtime stats table — skip here.
-    if data.now_cloud is not None:
-        rows.append([ui_label_rich("cloud", "云量"), f"{data.now_cloud}%"])
-    if day.uv_index:
-        rows.append([ui_label_rich("sun", "UV"), str(day.uv_index)])
-
-    pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
-    if pops:
-        rows.append([ui_label_rich("rain", "未来6h降概"), f"{int(max(pops))}%"])
-
-    if day.temp_avg is not None:
-        rows.append([ui_label_rich(temp_key, "日均温"), f"{format_weather_number(day.temp_avg)}°C"])
-    if day.moon_rise or day.moon_set:
-        rows.append([
-            [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月升/月落"],
-            f"{day.moon_rise or 'N/A'} / {day.moon_set or 'N/A'}",
-        ])
-    if day.precip_day is not None or day.precip_night is not None:
-        rows.append([
-            ui_label_rich("rain", "昼/夜降水"),
-            f"{format_precip_value(day.precip_day, day.precip_kind)} / "
-            f"{format_precip_value(day.precip_night, day.precip_kind)}",
-        ])
-
-    # Day-over-day context: the trend is what people actually want to know.
-    if data.yesterday is not None:
-        deltas = []
-        if data.yesterday.temp_max is not None and day.temp_max is not None:
-            delta = day.temp_max - data.yesterday.temp_max
-            deltas.append(f"最高 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
-        if data.yesterday.temp_min is not None and day.temp_min is not None:
-            delta = day.temp_min - data.yesterday.temp_min
-            deltas.append(f"最低 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
-        if deltas:
-            rows.append([ui_label_rich("cloud", "比昨天"), " · ".join(deltas)])
-
-    if day.date.date() == data.local_update_date:
-        return [table(rows, aligns=["left", "left"], bordered=True)]
-    title = [
-        ui_icon_rich("cloud"),
-        f" 最近预报 ({day.date.strftime('%m-%d')} {_weekday_cn(day.date)})",
-    ]
-    return [paragraph([bold(title)]), table(rows, aligns=["left", "left"], bordered=True)]
 
 
 _REPORT_TAG_RE = re.compile(r"<(/?)([bi])>")
@@ -543,11 +629,23 @@ def _report_line_with_weather_icons(line: str, weather: Optional[WeatherData]) -
     return [icon, " ", *body]
 
 
+# Sections that answer "what do I do today" stay open; planning-horizon
+# sections are folded so the report opens short (user feedback 2026-07-29).
+_REPORT_COLLAPSED_SECTIONS = ("未来几天", "建议")
+
+
+def _report_section_title(line: str) -> Optional[str]:
+    plain = unescape(_REPORT_TAG_RE.sub("", line)).strip()
+    match = _REPORT_SECTION_RE.match(line) or _REPORT_SECTION_RE.match(plain)
+    return match.group("title") if match else None
+
+
 def build_report_blocks(
     report_html: str,
     *,
     title: Optional[str] = None,
     weather: Optional[WeatherData] = None,
+    collapse_tail: bool = False,
 ) -> List[dict]:
     """AI report / daily brief as rich blocks.
 
@@ -557,6 +655,11 @@ def build_report_blocks(
 
     When ``weather`` is set, section headings (现在/预警/…) are re-prefixed
     with QWeather custom emoji; the model only outputs Unicode + HTML.
+
+    ``collapse_tail`` folds 未来几天/建议 (and everything after them) into a
+    collapsed ``details`` block — the report card then opens with just
+    预警/现在/接下来. Off by default so the static help text in
+    :mod:`core.handlers.guide` renders unchanged.
     """
     blocks: List[dict] = []
     if title:
@@ -571,18 +674,39 @@ def build_report_blocks(
             )
         else:
             blocks.append(heading(title, size=4))
+
+    tail: List[dict] = []
+    tail_titles: List[str] = []
+    trailing_footer: Optional[dict] = None
     for raw_line in report_html.split("\n"):
         line = raw_line.strip()
         if not line:
             continue
         plain = _REPORT_TAG_RE.sub("", line)
         if plain.startswith(("🤖 Generated by", "Generated by")):
-            blocks.append(footer(unescape(plain)))
+            # Attribution belongs at the very bottom, outside the fold.
+            trailing_footer = footer(unescape(plain))
             continue
         if weather is not None:
-            blocks.append(paragraph(_report_line_with_weather_icons(line, weather)))
+            block = paragraph(_report_line_with_weather_icons(line, weather))
         else:
-            blocks.append(paragraph(_report_line_richtext(line)))
+            block = paragraph(_report_line_richtext(line))
+
+        section = _report_section_title(line) if collapse_tail else None
+        if section in _REPORT_COLLAPSED_SECTIONS and section not in tail_titles:
+            tail_titles.append(section)
+        # Once the first collapsed section starts, everything after it folds
+        # too — a later 建议 block must not jump back above the fold.
+        if tail_titles:
+            tail.append(block)
+        else:
+            blocks.append(block)
+
+    if tail:
+        summary = ["📅 ", " · ".join(tail_titles) or "更多内容", "（点击展开）"]
+        blocks.append(details(summary, tail))
+    if trailing_footer is not None:
+        blocks.append(trailing_footer)
     return blocks
 
 
@@ -607,15 +731,27 @@ def build_realtime_blocks(data: WeatherData) -> List[dict]:
 
     blocks.extend(build_alert_blocks(data))
 
-    # Realtime observations and today's forecast use separate two-column
-    # tables: values such as current rain and full-day rain must not overwrite
-    # or duplicate one another under an ambiguous label.
-    air_blocks = build_air_quality_blocks(data)
-    stats_rows = _current_stats_rows(data, include_air=not air_blocks)
-    if stats_rows:
-        blocks.append(table(stats_rows, aligns=["left", "left"], bordered=True))
-    blocks.extend(_today_detail_blocks(data))
     current_day = data.get_current_daily_forecast()
+    if current_day is not None and current_day.date.date() != data.local_update_date:
+        # Today's slot already rolled over — say which day the table describes
+        # instead of silently presenting tomorrow's numbers as "now".
+        blocks.append(
+            paragraph([
+                bold([
+                    ui_icon_rich("cloud"),
+                    f" 最近预报 ({current_day.date.strftime('%m-%d')} "
+                    f"{_weekday_cn(current_day.date)})",
+                ])
+            ])
+        )
+
+    # One core table, then three collapsed blocks. Everything a person checks
+    # daily stays visible; the rest is one tap away.
+    core_rows = _core_stats_rows(data)
+    if core_rows:
+        blocks.append(table(core_rows, aligns=["left", "left"], bordered=True))
+    air_blocks = build_air_quality_blocks(data)
+    blocks.extend(_extra_stats_details(data, include_air=not air_blocks))
     index_date = current_day.date.date() if current_day is not None else data.local_update_date
     blocks.extend(
         _index_pair_blocks(

@@ -14,6 +14,7 @@ from core.handlers.messages import edit_weather_view, send_weather_view
 from domain.models import (
     AirQuality,
     DailyForecast,
+    HistoricalDaySummary,
     LifeIndex,
     WarningAlert,
     WeatherData,
@@ -21,7 +22,12 @@ from domain.models import (
 from services.chart_cache import PreparedChart, remember_chart_file_id
 from services.telegram_rich import rich
 from utils.formatter import format_weather_response
-from utils.rich_formatter import build_indices_blocks, build_realtime_blocks, build_report_blocks
+from utils.rich_formatter import (
+    build_indices_blocks,
+    build_realtime_blocks,
+    build_report_blocks,
+    uv_level_text,
+)
 from utils.weather_icons import set_custom_emoji_map_for_tests
 
 
@@ -151,6 +157,11 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertNotIn("今日详情", all_text)
         self.assertEqual(all_text.count("潮安, 广东省"), 1)
 
+        extra_index = next(
+            index
+            for index, block in enumerate(blocks)
+            if block.get("type") == "details" and "更多气象参数" in _flatten_block_text(block)
+        )
         index_details = next(
             index
             for index, block in enumerate(blocks)
@@ -161,21 +172,36 @@ class WeatherCardLayoutTests(unittest.TestCase):
             for index, block in enumerate(blocks)
             if block.get("type") == "details" and "空气质量" in _flatten_block_text(block)
         )
+        self.assertLess(extra_index, index_details)
         self.assertLess(index_details, air_index)
         # Collapsed by default (same pattern as air quality).
         self.assertFalse(blocks[index_details].get("is_open"))
+        self.assertFalse(blocks[extra_index].get("is_open"))
 
-        tables_before_indices = [
-            block for block in blocks[:index_details] if block.get("type") == "table"
+        # Exactly one visible table before the folds — the core stats table.
+        tables_before_folds = [
+            block for block in blocks[:extra_index] if block.get("type") == "table"
         ]
-        self.assertGreaterEqual(len(tables_before_indices), 2)
-        current_rows = table_text(tables_before_indices[0])
-        detail_rows = table_text(tables_before_indices[1])
-        # Realtime uses 当前降水; detail keeps daily 降水; no second 湿度/能见度.
-        self.assertTrue(any("当前降水" in row[0] for row in current_rows))
-        self.assertTrue(any(row[0].endswith("云量") or "云量" in row[0] for row in detail_rows))
-        self.assertFalse(any("湿度" in row[0] for row in detail_rows))
-        self.assertFalse(any("能见度" in row[0] for row in detail_rows))
+        self.assertEqual(len(tables_before_folds), 1)
+        core_labels = [row[0] for row in table_text(tables_before_folds[0])]
+        self.assertLessEqual(len(core_labels), 8)
+        # Ordering is the point: 冷热 → 概貌 → 体感 → 带伞. Compare the words
+        # only; the leading icon is a custom emoji whose fallback may change.
+        words = [label.split(" ", 1)[-1] for label in core_labels]
+        self.assertEqual(words, ["气温", "日间/夜间", "湿度", "风况", "降水"])
+        # Secondary readings must not stay on the core table.
+        for label in ("云量", "能见度", "气压", "当前降水", "月相", "日均温"):
+            self.assertFalse(
+                any(label in text for text in core_labels), f"{label} 不应留在主表"
+            )
+        extra_labels = [
+            row[0]
+            for nested in blocks[extra_index].get("blocks") or []
+            if nested.get("type") == "table"
+            for row in table_text(nested)
+        ]
+        for label in ("当前降水", "云量", "能见度", "气压"):
+            self.assertTrue(any(label in text for text in extra_labels), label)
 
         # Life indices: collapsed details wrapping a two-column table.
         index_table = next(
@@ -188,6 +214,27 @@ class WeatherCardLayoutTests(unittest.TestCase):
         self.assertEqual(index_rows[0][0], "🚗 洗车：不宜")
         self.assertEqual(index_rows[0][1], "👕 穿衣：热")
         self.assertNotIn("指数：", index_rows[0][0])
+
+    def test_uv_value_carries_a_level_word(self):
+        weather = make_weather()
+        weather.daily[0].uv_index = 11
+        weather.daily[0].sunrise = "05:52"
+        weather.daily[0].sunset = "19:50"
+        weather.yesterday = HistoricalDaySummary(
+            date=datetime(2026, 7, 26), temp_max=28, temp_min=23
+        )
+        blocks = build_realtime_blocks(weather)
+        core_table = next(block for block in blocks if block.get("type") == "table")
+        labels = [row[0].split(" ", 1)[-1] for row in table_text(core_table)]
+        rows = {row[0].split(" ", 1)[-1]: row[1] for row in table_text(core_table)}
+        self.assertEqual(rows["紫外线"], "11 极强")
+        self.assertEqual(rows["日出/日落"], "05:52 / 19:50")
+        # Trend closes the table; UV/sunlight sit between rain and the trend.
+        self.assertEqual(labels[-1], "比昨天")
+        self.assertLess(labels.index("降水"), labels.index("紫外线"))
+        self.assertLess(labels.index("紫外线"), labels.index("日出/日落"))
+        self.assertEqual(uv_level_text(3), "3 中等")
+        self.assertEqual(uv_level_text(0), "0 弱")
 
     def test_odd_index_count_last_line_has_one_entry(self):
         blocks = build_realtime_blocks(make_weather(index_count=15))
@@ -272,6 +319,45 @@ class WeatherCardLayoutTests(unittest.TestCase):
             self.assertEqual(first_emoji(next_line)["custom_emoji_id"], "id-305")
         finally:
             set_custom_emoji_map_for_tests(None)
+
+    def test_report_tail_sections_collapse_and_footer_stays_outside(self):
+        html = (
+            "☀️ <b>现在</b>\n"
+            "36°C 多云。\n"
+            "⏱️ <b>接下来</b>\n"
+            "80 分钟后有小雨。\n"
+            "📅 <b>未来几天</b>\n"
+            "周三转雨。\n"
+            "👕 <b>建议</b>\n"
+            "薄长袖 · 带伞\n"
+            "🤖 Generated by test-model\n"
+        )
+        blocks = build_report_blocks(html, collapse_tail=True)
+        fold = next(block for block in blocks if block.get("type") == "details")
+        fold_text = _flatten_block_text(fold)
+        self.assertIn("未来几天", fold_text)
+        self.assertIn("建议", fold_text)
+        self.assertIn("薄长袖", fold_text)
+        self.assertFalse(fold.get("is_open"))
+
+        above = "\n".join(
+            _flatten_block_text(block)
+            for block in blocks
+            if block.get("type") not in ("details", "footer")
+        )
+        self.assertIn("现在", above)
+        self.assertIn("接下来", above)
+        self.assertNotIn("周三转雨", above)
+        self.assertNotIn("薄长袖", above)
+
+        # Attribution belongs at the very bottom, never inside the fold.
+        self.assertEqual(blocks[-1].get("type"), "footer")
+        self.assertNotIn("Generated by", fold_text)
+
+    def test_report_without_collapse_tail_keeps_every_line_visible(self):
+        html = "📅 <b>未来几天</b>\n周三转雨。\n"
+        blocks = build_report_blocks(html)
+        self.assertFalse(any(block.get("type") == "details" for block in blocks))
 
     def test_air_quality_table_has_three_columns_no_description(self):
         weather = make_weather()
