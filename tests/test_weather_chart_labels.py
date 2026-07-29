@@ -152,13 +152,69 @@ class ChartLabelLogicTests(unittest.TestCase):
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_hourly_rain_chart(data)
         labels = [call.args[1] for call in annotate.call_args_list]
-        # 概率、雨量各自只标峰值。
+        # 概率只标峰值一处。
         self.assertEqual(sum(label.endswith("%") for label in labels), 1)
         self.assertIn("60%", labels)
         self.assertFalse(any(" mm" in label for label in labels))
-        # 单轴设计：雨量不再占第二坐标轴，改为柱顶一处带说明的峰值标注。
-        self.assertTrue(any("0.8" in label and "雨量" in label for label in labels))
+        # 雨最大的那一小时正好也是概率最高的那根柱：数值已经在标题的
+        # 「最大雨量」指标里，再叠一行只会和「60%」挤成三层字。
+        self.assertFalse(any("雨量" in label for label in labels))
         self.assertFalse(any("0.5" in label for label in labels))
+
+    def test_rain_chart_marks_the_wettest_hour_when_it_differs_from_peak_pop(self):
+        """雨峰与概率峰不同柱时，标注才带来新信息——指出是哪一小时。"""
+        data = make_weather().model_copy(deep=True)
+        data.hourly[2].pop = 80
+        data.hourly[2].precip = 0.1
+        data.hourly[6].pop = 30
+        data.hourly[6].precip = 4.2
+
+        with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
+            Visualizer.draw_hourly_rain_chart(data)
+        labels = [call.args[1] for call in annotate.call_args_list]
+        self.assertIn("雨量最大", labels)
+        # 数值仍然只出现在标题指标里，图内不重复。
+        self.assertFalse(any("4.2" in label for label in labels))
+
+    def test_hourly_temp_chart_draws_no_probability_bars(self):
+        """温度图不画降雨概率。
+
+        把 0-100% 塞进温度轴 12% 的高度，就是一个没有刻度的第二 Y 轴：
+        压扁之后 80% 和 40% 几乎一样高，读者无从判断。概率有专门的降水图。
+        """
+        data = make_weather().model_copy(deep=True)
+        for hour in data.hourly:
+            hour.pop = 90
+        with patch.object(Axes, "bar", autospec=True) as bar:
+            Visualizer.draw_hourly_temp_chart(data)
+        bar.assert_not_called()
+
+    def test_daily_chart_has_no_meaningless_colour_split(self):
+        """逐日区间条必须是连续渐变，不能在几何中点硬切两段实色。
+
+        中点 (low+high)/2 没有任何气象含义，画成两段会被读成
+        「下半段是低温、上半段是高温」——那是假的。
+        """
+        data = make_weather().model_copy(deep=True)
+        collections = []
+        original = Axes.add_collection
+
+        def capture(self, collection, *args, **kwargs):
+            collections.append(collection)
+            return original(self, collection, *args, **kwargs)
+
+        with patch.object(Axes, "add_collection", autospec=True, side_effect=capture):
+            with patch.object(Axes, "plot", autospec=True) as plot:
+                Visualizer.draw_daily_temp_chart(data)
+
+        # 区间条不再用两条 plot() 拼；渐变走 LineCollection。
+        self.assertFalse(
+            any(len(call.args) >= 3 for call in plot.call_args_list),
+            "逐日区间条不应再用实色线段拼接",
+        )
+        self.assertTrue(collections, "应当至少有一条渐变 LineCollection")
+        colours = collections[0].get_colors()
+        self.assertGreater(len(colours), 8, "渐变必须是多段，不是两段实色")
 
     def test_rain_chart_has_no_second_y_axis(self):
         """降水图必须是单轴：双 Y 轴的刻度对齐是任意的，会凭空造出相关性。
@@ -210,7 +266,7 @@ class ChartRenderingTests(unittest.TestCase):
                 self.assertEqual(struct.unpack(">II", png[16:24]), expected)
 
     def test_cache_namespace_is_bumped_for_new_rendering(self):
-        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v14:"))
+        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v15:"))
 
 
 class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):

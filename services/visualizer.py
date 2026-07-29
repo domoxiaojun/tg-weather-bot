@@ -7,9 +7,11 @@ import matplotlib
 from loguru import logger
 from matplotlib import font_manager
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.collections import LineCollection
+from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.figure import Figure
 from matplotlib.lines import Line2D
-from matplotlib.patches import FancyBboxPatch, Patch
+from matplotlib.patches import FancyBboxPatch
 from matplotlib.ticker import FuncFormatter, MaxNLocator, PercentFormatter
 import numpy as np
 from scipy.interpolate import PchipInterpolator
@@ -34,8 +36,9 @@ class Visualizer:
     FIGSIZE = (10.8, 7.2)
     DPI = 150
     AXES_MAIN = [0.07, 0.13, 0.86, 0.64]
-    # 降水改为单图区 + 双 Y（概率柱 + 雨量线），不再上下两截。
-    AXES_RAIN = [0.07, 0.13, 0.80, 0.64]
+    # 降水图曾经在右侧留了一条雨量轴，现在是单轴设计（只有概率柱），
+    # 那 6% 宽度没有用处了 —— 与其它卡片图保持同一绘图区。
+    AXES_RAIN = [0.07, 0.13, 0.86, 0.64]
     FS_KICKER = 10
     FS_TITLE = 22
     FS_META = 11
@@ -958,25 +961,9 @@ class Visualizer:
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
 
-        # 降雨概率垫底：只回答「哪会儿可能下」，不抢气温主线。
-        pops = np.array(
-            [float(h.pop) if h.pop is not None else np.nan for h in data.hourly[:len(times)]],
-            dtype=float,
-        )
-        has_pop_context = bool(np.any(np.isfinite(pops) & (pops >= 30)))
-        if has_pop_context:
-            span = y_top - y_bottom
-            bar_heights = np.where(np.isfinite(pops), pops, 0) / 100.0 * span * 0.12
-            ax.bar(
-                x,
-                bar_heights,
-                bottom=y_bottom,
-                width=cls.BAR_WIDTH,
-                color=cls._THEME["probability"],
-                alpha=0.18,
-                edgecolor="none",
-                zorder=1.2,
-            )
+        # 这里不画降雨概率：把 0-100% 塞进温度轴 12% 的高度是一个没有刻度的
+        # 第二 Y 轴，压扁之后 80% 和 40% 几乎一样高，读者无从判断。降水有
+        # 专门的一张图，那里概率占满整个纵轴。
 
         # 体感：弱虚线，不贴数字。
         if has_feels_like:
@@ -1055,9 +1042,6 @@ class Visualizer:
                 )
             )
             labels.append("体感")
-        if has_pop_context:
-            handles.append(Patch(facecolor=cls._THEME["probability"], alpha=0.28))
-            labels.append("降雨概率")
 
         cls._add_footer(fig, "", handles, labels)
         return cls._render_figure(fig)
@@ -1230,7 +1214,8 @@ class Visualizer:
             metrics=metrics,
         )
 
-        # 单图区：左轴概率柱 + 右轴雨量线（Weathergraph 式），避免上下两截重复时间轴。
+        # 单轴：只有概率柱。雨量不占第二个 Y 轴（两个尺度的对齐点是任意的，
+        # 会让人读出并不存在的相关性），峰值雨量放在标题指标里。
         ax = fig.add_axes(cls.AXES_RAIN)
         cls._style_axis(ax)
         cls._decorate_time_axis(
@@ -1326,18 +1311,20 @@ class Visualizer:
         if precip_series is not None and np.any(np.isfinite(precip_series)):
             rain_i = int(np.nanargmax(precip_series))
             rain_val = float(precip_series[rain_i])
-            if rain_val > 0:
+            same_bar = has_probability_data and rain_i == int(np.nanargmax(probability))
+            # 雨量峰值就在概率峰值那根柱上时不标：数值已经在标题的「最大雨量」
+            # 指标里，再叠一行只会和 “80%” 挤成三层字。只有雨最大的时刻和概率
+            # 最高的时刻分开时，这个标注才带来新信息 —— 指出是哪一小时。
+            if rain_val > 0 and not same_bar:
                 if precip_style == "amount":
-                    rain_text = f"雨量最大 {cls._format_number(rain_val)}mm"
+                    rain_text = "雨量最大"
                 else:
                     rain_text = f"雨势最强 {cls._rain_rate_word(rain_val)}"
                 bar_top = probability[rain_i] if np.isfinite(probability[rain_i]) else 0.0
-                # 与概率峰值同柱时抬高避让，避免和 “80%” 叠字。
-                same_bar = has_probability_data and rain_i == int(np.nanargmax(probability))
                 ax.annotate(
                     rain_text,
                     (x[rain_i], bar_top),
-                    xytext=(0, 30 if same_bar else 10),
+                    xytext=(0, 10),
                     textcoords="offset points",
                     ha="center",
                     va="bottom",
@@ -1366,11 +1353,10 @@ class Visualizer:
                 color=cls._THEME["muted"], fontsize=cls.FS_META, zorder=7,
             )
 
-        handles = []
-        labels = []
-        if has_probability_data:
-            handles.append(Patch(facecolor=cls._THEME["probability"]))
-            labels.append("降雨概率")
+        # 只有一个系列，标题「逐小时降水」+ 纵轴的「概率」已经说清是什么，
+        # 再加一个图例框纯属噪声（dataviz：单系列不配图例）。
+        handles: list = []
+        labels: list = []
 
         footer = "柱越高，下雨概率越大"
         if np.any(missing_probability):
@@ -1418,35 +1404,56 @@ class Visualizer:
 
         data_min = float(np.min(lows))
         data_max = float(np.max(highs))
-        padding = max(2.2, (data_max - data_min) * 0.22)
-        y_lo = np.floor(data_min - padding)
-        y_hi = np.ceil(data_max + padding)
+        # 上下不对称：顶部要容纳最热日的数字标注，底部只需容纳雨点行，
+        # 两侧都留 0.22 会把图形挤到画面下半部。
+        span = max(1.0, data_max - data_min)
+        y_lo = np.floor(data_min - max(2.4, span * 0.22))
+        y_hi = np.ceil(data_max + max(1.8, span * 0.13))
         ax.set_ylim(y_lo, y_hi)
         ax.yaxis.set_major_locator(MaxNLocator(nbins=4, integer=True))
         ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:g}°"))
         ax.tick_params(axis="y", colors=cls._THEME["muted"])
 
         # Apple 式竖向 range bar：手机上比双线填充更一眼可读。
+        # 颜色从低温端（蓝）连续过渡到高温端（橙）——刻意不做硬分界：
+        # 分界点只能取几何中点，而几何中点没有任何气象含义，画成两段实色
+        # 会被读成「下半段是低温、上半段是高温」，那是假的。
         bar_lw = 14 if len(days) <= 10 else 11 if len(days) <= 15 else 8
+        gradient = LinearSegmentedColormap.from_list(
+            "temp_range",
+            [cls._THEME["temperature_low"], "#8c7ba6", cls._THEME["temperature"]],
+        )
+        steps = 48
         for index in range(len(days)):
-            mid = (lows[index] + highs[index]) / 2.0
-            ax.plot(
-                [x[index], x[index]],
-                [lows[index], mid],
-                solid_capstyle="round",
-                linewidth=bar_lw,
-                color=cls._THEME["temperature_low"],
-                alpha=0.95,
-                zorder=4,
+            low, high = lows[index], highs[index]
+            if high <= low:
+                # 全天恒温：一条线画不出来，用一个端点圆点代替。
+                ax.scatter([x[index]], [low], s=bar_lw ** 2, color=gradient(0.5),
+                           edgecolors="none", zorder=5)
+                continue
+            edges = np.linspace(low, high, steps + 2)
+            # 相邻段重叠一格：butt cap 之间会留抗锯齿细缝，projecting 又会
+            # 伸出 lw/2 把端点圆头整个盖住（那样柱子看起来还是方头的）。
+            segments = [
+                [(x[index], edges[k]), (x[index], edges[k + 2])] for k in range(steps)
+            ]
+            ax.add_collection(
+                LineCollection(
+                    segments,
+                    colors=gradient(np.linspace(0.0, 1.0, steps)),
+                    linewidths=bar_lw,
+                    capstyle="butt",
+                    zorder=4,
+                )
             )
-            ax.plot(
+            # 圆头 = 两个端点圆点，直径正好等于条宽（scatter 的 s 是 points²）。
+            ax.scatter(
                 [x[index], x[index]],
-                [mid, highs[index]],
-                solid_capstyle="round",
-                linewidth=bar_lw,
-                color=cls._THEME["temperature"],
-                alpha=0.95,
-                zorder=4,
+                [low, high],
+                s=bar_lw ** 2,
+                c=[gradient(0.0), gradient(1.0)],
+                edgecolors="none",
+                zorder=5,
             )
 
         hottest = int(np.argmax(highs))
@@ -1498,18 +1505,20 @@ class Visualizer:
             if any(marker in texts for marker in ("雨", "雪")) or (forecast.precip or 0) > 0:
                 rainy_x.append(index)
         if rainy_x:
+            # 倒三角而不是圆点：低温端点已经是蓝圆点，同形同色会混淆。
             ax.scatter(
                 rainy_x,
-                [y_lo + (y_hi - y_lo) * 0.035] * len(rainy_x),
-                s=40,
-                marker="o",
-                color=cls._THEME["probability"],
+                # 贴着轴底走：再高一点就会撞上最冷日的「24°」标注。
+                [y_lo + (y_hi - y_lo) * 0.022] * len(rainy_x),
+                s=46,
+                marker="v",
+                color=cls._THEME["water"],
                 alpha=0.95,
                 zorder=6,
             )
 
-        # 日期刻度：约 5 个，手机可读
-        tick_step = max(1, (len(days) + 4) // 5)
+        # 一周（含 7/8 天）横向放得下全部日期；隔天标会让人对不上是哪根柱。
+        tick_step = 1 if len(days) <= 8 else max(1, (len(days) + 4) // 6)
         tick_idx = list(range(0, len(days), tick_step))
         if tick_idx[-1] != len(days) - 1:
             tick_idx.append(len(days) - 1)
@@ -1523,16 +1532,19 @@ class Visualizer:
             fontsize=cls.FS_AXIS - 1,
         )
 
+        # 端点才是数据（当日最低 / 当日最高），中间的渐变只表示区间本身。
         handles = [
-            Line2D([0], [0], color=cls._THEME["temperature"], linewidth=6, solid_capstyle="round"),
-            Line2D([0], [0], color=cls._THEME["temperature_low"], linewidth=6, solid_capstyle="round"),
+            Line2D([0], [0], color=cls._THEME["temperature_low"],
+                   marker="o", linestyle="none", markersize=7),
+            Line2D([0], [0], color=cls._THEME["temperature"],
+                   marker="o", linestyle="none", markersize=7),
         ]
-        labels = ["高温", "低温"]
+        labels = ["最低", "最高"]
         if rainy_x:
             handles.append(
                 Line2D(
-                    [0], [0], color=cls._THEME["probability"],
-                    marker="o", linestyle="none", markersize=6,
+                    [0], [0], color=cls._THEME["water"],
+                    marker="v", linestyle="none", markersize=6,
                 )
             )
             labels.append("有雨")
