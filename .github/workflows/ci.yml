@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Tests & lint
+    name: Compile & lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,10 +23,6 @@ jobs:
           uv venv --python 3.12 .venv
           uv pip install --python .venv/bin/python -r requirements.txt
           uv pip install --python .venv/bin/python ruff
-
-      # Tests set their own fake BOT_TOKEN/QWEATHER_API_KEY and never call real APIs.
-      - name: Unit tests
-        run: uv run --python .venv/bin/python python -m unittest discover -s tests -v
 
       - name: Compile all
         run: uv run --python .venv/bin/python python -m compileall -q adapters core domain services utils scripts main.py

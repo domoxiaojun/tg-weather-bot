@@ -27,15 +27,15 @@ from services.chart_cache import (
     get_cached_chart_file_id,
     get_chart_caption,
     normalize_chart_type,
+    prepare_chart,
     remember_chart_file_id,
     render_chart_bytes_async,
-    run_chart_render,
 )
+from services.telegram_rich import FEATURE_SEND, rich
 from services.visualizer import Visualizer
 from core.handlers.guide import GUIDE_DEFAULT_PAGE
 from utils.formatter import (
     callback_location_token,
-    format_weather_response,
     get_weather_keyboard,
     styled_button,
 )
@@ -53,27 +53,52 @@ def _looks_like_coords(text: str) -> bool:
     return True
 
 
-def should_attach_rain_chart(data, view_type: str) -> bool:
-    """Rain chart rides along whenever it is actually rainy.
-
-    is_raining is measurement-based (now_precip / minutely); a "小雨" sky with
-    a dry next hour must still ship the chart, so the text is checked too.
-    """
+def select_auto_chart_type(data, view_type: str) -> str | None:
+    """Choose the chart that best answers the current weather view."""
     if not settings.enable_weather_plots:
-        return False
+        return None
+    if view_type == "indices":
+        return None
+    if view_type == "daily":
+        return "daily"
     if view_type == "rain":
-        return True
-    return bool(
-        data.is_raining or any(marker in (data.now_text or "") for marker in ("雨", "雪"))
-    )
+        return "rain"
+
+    rain_markers = ("雨", "雪")
+    if data.is_raining or any(marker in (data.now_text or "") for marker in rain_markers):
+        return "rain"
+
+    for hour in data.hourly[:Visualizer.HOURLY_POINT_LIMIT]:
+        if any(marker in (hour.text or "") for marker in rain_markers):
+            return "rain"
+        if hour.pop is not None and hour.pop >= 50:
+            return "rain"
+        if hour.precip is not None and hour.precip > 0:
+            return "rain"
+    return "temp"
 
 
 class WeatherHandlers:
     def __init__(self, deps: BotDependencies):
         self.deps = deps
 
+    async def prepare_auto_chart(self, data, view_type: str):
+        """Prepare the chart embedded in the same rich weather message."""
+        if not rich.supports(FEATURE_SEND):
+            return None
+        chart_type = select_auto_chart_type(data, view_type)
+        if chart_type is None:
+            return None
+        try:
+            return await prepare_chart(data, chart_type)
+        except Exception as error:
+            logger.warning(f"Auto chart preparation failed, continuing with text weather: {error}")
+            return None
+
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """/start - 三行欢迎 + 快速开始按钮卡，不再是命令墙。"""
+        from services.telegram_rich import FEATURE_SEND, bold, code, heading, paragraph, rich
+
         chat = update.effective_chat
         last = (context.chat_data or {}).get("last_location") or {}
 
@@ -99,36 +124,73 @@ class WeatherHandlers:
         if chat is not None and chat.type == ChatType.PRIVATE:
             # Message 1: how to query. (A reply keyboard cannot share a message
             # with inline buttons, hence the two-message split.)
-            await send_text(
-                update,
-                context,
-                "👋 你好，我是 <b>DomoWeather</b>。\n\n"
-                "查天气：<b>直接发城市名</b>就行，比如 <code>北京</code> 或 <code>北京明天</code>；\n"
-                "也可以点下面的按钮发送位置📍",
-                parse_mode=ParseMode.HTML,
-                reply_markup=ReplyKeyboardMarkup(
-                    [[KeyboardButton("📍 发送我的位置", request_location=True)]],
-                    resize_keyboard=True,
-                    one_time_keyboard=True,
-                    input_field_placeholder="直接发城市名，如：北京 明天",
-                ),
+            location_keyboard = ReplyKeyboardMarkup(
+                [[KeyboardButton("📍 发送我的位置", request_location=True)]],
+                resize_keyboard=True,
+                one_time_keyboard=True,
+                input_field_placeholder="直接发城市名，如：北京 明天",
             )
-            await send_text(
-                update,
-                context,
-                "下雨提前叫我、每天早上一份 AI 简报——点这里开启：",
-                reply_markup=quick_keyboard,
-            )
+            intro_sent = None
+            if rich.supports(FEATURE_SEND):
+                intro_sent = await rich.send_rich(
+                    context.bot,
+                    chat.id,
+                    blocks=[
+                        heading(["👋 你好，我是 ", bold("DomoWeather")], size=3),
+                        paragraph(["查天气：直接发城市名，例如 ", code("北京"), " 或 ", code("北京明天")]),
+                        paragraph("也可以点下面的按钮发送位置 📍"),
+                    ],
+                    reply_markup=location_keyboard,
+                )
+            if intro_sent is None:
+                await send_text(
+                    update,
+                    context,
+                    "👋 你好，我是 <b>DomoWeather</b>。\n\n"
+                    "查天气：<b>直接发城市名</b>就行，比如 <code>北京</code> 或 <code>北京明天</code>；\n"
+                    "也可以点下面的按钮发送位置📍",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=location_keyboard,
+                )
+
+            quick_sent = None
+            if rich.supports(FEATURE_SEND):
+                quick_sent = await rich.send_rich(
+                    context.bot,
+                    chat.id,
+                    blocks=[paragraph("下雨提前叫我、每天早上一份 AI 简报——点这里开启：")],
+                    reply_markup=quick_keyboard,
+                )
+            if quick_sent is None:
+                await send_text(
+                    update,
+                    context,
+                    "下雨提前叫我、每天早上一份 AI 简报——点这里开启：",
+                    reply_markup=quick_keyboard,
+                )
             return
 
-        await send_text(
-            update,
-            context,
-            "👋 大家好，我是 <b>DomoWeather</b>。\n"
-            "查天气：<code>/tq 城市名</code>；订阅降雨提醒/早安简报点下面的按钮（群共享）。",
-            parse_mode=ParseMode.HTML,
-            reply_markup=quick_keyboard,
-        )
+        group_sent = None
+        if chat is not None and rich.supports(FEATURE_SEND):
+            group_sent = await rich.send_rich(
+                context.bot,
+                chat.id,
+                blocks=[
+                    heading(["👋 大家好，我是 ", bold("DomoWeather")], size=4),
+                    paragraph(["查天气：", code("/tq 城市名")]),
+                    paragraph("订阅降雨提醒/早安简报请点下面按钮（群共享）。"),
+                ],
+                reply_markup=quick_keyboard,
+            )
+        if group_sent is None:
+            await send_text(
+                update,
+                context,
+                "👋 大家好，我是 <b>DomoWeather</b>。\n"
+                "查天气：<code>/tq 城市名</code>；订阅降雨提醒/早安简报点下面的按钮（群共享）。",
+                parse_mode=ParseMode.HTML,
+                reply_markup=quick_keyboard,
+            )
 
     async def handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """私聊里打错的命令给出一条活路，而不是已读不回。"""
@@ -280,7 +342,7 @@ class WeatherHandlers:
         """/typhoon [城市] - 当前活跃台风，并判断对该地点的影响"""
         from services.telegram_rich import FEATURE_SEND, rich
         from services.typhoon import assess_storms, format_threat_summary
-        from utils.rich_formatter import build_typhoon_push_blocks
+        from utils.rich_formatter import build_active_typhoon_blocks, build_typhoon_push_blocks
 
         if not settings.enable_typhoon_alerts:
             await send_text(update, context, "⚠️ 台风功能已关闭（ENABLE_TYPHOON_ALERTS=false）。")
@@ -361,6 +423,14 @@ class WeatherHandlers:
             )
         else:
             lines.append("\n发送 /typhoon 城市 可判断对该地点的影响。")
+        if rich.supports(FEATURE_SEND):
+            sent = await rich.send_rich(
+                context.bot,
+                update.effective_chat.id,
+                blocks=build_active_typhoon_blocks(storms, location_name),
+            )
+            if sent is not None:
+                return
         await send_text(update, context, "\n".join(lines), parse_mode=ParseMode.HTML)
 
     async def tide(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -577,60 +647,22 @@ class WeatherHandlers:
                 "name": data.location_name,
             }
 
-        text = format_weather_response(data, view_type=view_type, days=limit, start_day=start_day)
         keyboard = get_weather_keyboard(location_query, coords=data.coords, view_type=view_type)
 
-        chart_bytes = None
-        chart_file_id = None
-        if should_attach_rain_chart(data, view_type):
-            # file_id first: re-rendering + re-uploading an identical chart cost
-            # 0.5-2s per rainy query, exactly at the usage peak.
-            chart_file_id = await get_cached_chart_file_id(data, "rain")
-            if not chart_file_id:
-                chart_bytes = await run_chart_render(Visualizer.draw_hourly_rain_chart, data)
-
-        chart_photo = chart_file_id or (
-            InputFile(io.BytesIO(chart_bytes), filename="rain.png") if chart_bytes else None
-        )
         try:
-            # Telegram caption limit is 1024 chars; fall back to photo + text.
-            if chart_photo and len(text) <= 1000:
-                sent = await send_photo(
-                    update,
-                    context,
-                    photo=chart_photo,
-                    caption=text,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=keyboard,
-                )
-                if sent is not None and not chart_file_id:
-                    await remember_chart_file_id(data, "rain", sent)
-            elif chart_photo:
-                sent = await send_photo(
-                    update,
-                    context,
-                    photo=chart_photo,
-                )
-                if sent is not None and not chart_file_id:
-                    await remember_chart_file_id(data, "rain", sent)
-                await send_text(
-                    update,
-                    context,
-                    text,
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                    reply_markup=keyboard,
-                )
-            else:
-                # Rich blocks when the server supports them; MarkdownV2 otherwise.
-                await send_weather_view(
-                    context,
-                    update.effective_chat.id,
-                    data,
-                    view_type=view_type,
-                    days=limit,
-                    start_day=start_day,
-                    reply_markup=keyboard,
-                )
+            chart = await self.prepare_auto_chart(data, view_type)
+
+            # Rich blocks when the server supports them; MarkdownV2 otherwise.
+            await send_weather_view(
+                context,
+                update.effective_chat.id,
+                data,
+                view_type=view_type,
+                days=limit,
+                start_day=start_day,
+                reply_markup=keyboard,
+                chart=chart,
+            )
         except Exception as e:
             logger.error(f"Reply failed: {e}")
             try:

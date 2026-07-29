@@ -112,10 +112,26 @@ class CallbackHandlers:
             return
 
         if action == "help" and len(data_parts) >= 2:
-            from core.handlers.guide import build_guide
+            from core.handlers.guide import build_guide, build_guide_blocks
+            from services.telegram_rich import FEATURE_EDIT, rich
 
             await self._safe_answer(query)
             text, keyboard = build_guide(data_parts[1])
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            if (
+                message is not None
+                and getattr(chat, "type", None) == "private"
+                and rich.supports(FEATURE_EDIT)
+                and await rich.edit_rich(
+                    context.bot,
+                    chat_id=chat.id,
+                    message_id=message.message_id,
+                    blocks=build_guide_blocks(data_parts[1]),
+                    reply_markup=keyboard,
+                )
+            ):
+                return
             try:
                 await query.edit_message_text(
                     text, parse_mode=ParseMode.HTML, reply_markup=keyboard
@@ -267,6 +283,7 @@ class CallbackHandlers:
     async def _refresh_subscription_list(self, query, context, kind: str):
         """Re-render the card in place so the message always matches stored state."""
         from core.handlers.subscriptions import (
+            build_empty_subscription_blocks,
             build_subscription_blocks,
             render_empty_card,
             render_subscription_list,
@@ -277,6 +294,21 @@ class CallbackHandlers:
         if text is None:
             # Empty state still offers a way forward (➕ last city / flip card).
             text, keyboard = render_empty_card(context.chat_data, kind)
+            message = getattr(query, "message", None)
+            chat = getattr(message, "chat", None)
+            if (
+                message is not None
+                and getattr(chat, "type", None) == "private"
+                and rich.supports(FEATURE_EDIT)
+                and await rich.edit_rich(
+                    context.bot,
+                    chat_id=chat.id,
+                    message_id=message.message_id,
+                    blocks=build_empty_subscription_blocks(kind),
+                    reply_markup=keyboard,
+                )
+            ):
+                return
             try:
                 await query.edit_message_text(text, reply_markup=keyboard)
             except Exception as e:
@@ -448,6 +480,14 @@ class CallbackHandlers:
             keyboard = get_weather_keyboard(
                 location, show_charts=True, coords=weather_data.coords, view_type=view
             )
+            chat_id = query.message.chat_id if query.message is not None else None
+            chart = None
+            if (
+                query.inline_message_id is None
+                and chat_id is not None
+                and self.weather_handlers is not None
+            ):
+                chart = await self.weather_handlers.prepare_auto_chart(weather_data, view)
             if photo_message and query.message is not None:
                 from core.handlers.messages import send_weather_view
 
@@ -459,6 +499,7 @@ class CallbackHandlers:
                     days=limit or None,
                     start_day=start_day,
                     reply_markup=keyboard,
+                    chart=chart,
                 )
                 return
             if await edit_weather_view(
@@ -471,6 +512,7 @@ class CallbackHandlers:
                 days=limit or None,
                 start_day=start_day,
                 reply_markup=keyboard,
+                chart=chart,
             ):
                 return
 
@@ -511,6 +553,15 @@ class CallbackHandlers:
                 location, show_charts=True, coords=weather_data.coords, view_type=view
             )
 
+            chart = None
+            chart_chat_id = query.message.chat_id if query.message is not None else None
+            if (
+                query.inline_message_id is None
+                and chart_chat_id is not None
+                and self.weather_handlers is not None
+            ):
+                chart = await self.weather_handlers.prepare_auto_chart(weather_data, view)
+
             is_caption = bool(query.message and query.message.caption)
             if not is_caption and await edit_weather_view(
                 context,
@@ -522,6 +573,7 @@ class CallbackHandlers:
                 days=limit or None,
                 start_day=start_day,
                 reply_markup=keyboard,
+                chart=chart,
             ):
                 await self._safe_answer(query, "✅ 数据已更新")
                 return

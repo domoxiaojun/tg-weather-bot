@@ -1,15 +1,19 @@
 """/help — a button-paged usage guide.
 
-Three pages flipped in place via ``help|{page}`` callbacks. Plain HTML on
-purpose: guide pages must be editable in groups too, where rich edits are
-deliberately disabled (see telegram_rich capability notes).
+Three pages flipped in place via ``help|{page}`` callbacks. Private chats use
+rich blocks; group replies remain ephemeral HTML because ``sendRichMessage``
+does not support the Bot API 10.2 ``receiver_user_id`` privacy parameter.
 """
 
+import re
+
 from telegram import InlineKeyboardMarkup, Update
-from telegram.constants import ParseMode
+from telegram.constants import ChatType, ParseMode
 from telegram.ext import ContextTypes
 
 from core.handlers.messages import send_personal_text
+from services.telegram_rich import FEATURE_SEND, heading, rich
+from utils.rich_formatter import build_report_blocks
 from utils.formatter import styled_button
 
 GUIDE_DEFAULT_PAGE = "query"
@@ -76,9 +80,31 @@ def build_guide(page: str):
     return text, InlineKeyboardMarkup(rows)
 
 
+def build_guide_blocks(page: str) -> list:
+    """Rich-block counterpart of one guide page."""
+    if page not in _PAGES:
+        page = GUIDE_DEFAULT_PAGE
+    title, html = _PAGES[page]
+    _first_line, _separator, body = html.partition("\n")
+    # build_report_blocks understands bold/italic; code tags are presentation
+    # sugar here and must not leak literally into RichText.
+    body = re.sub(r"</?code>", "", body)
+    return [heading(title, size=3), *build_report_blocks(body)]
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/help - 使用指南"""
     text, keyboard = build_guide(GUIDE_DEFAULT_PAGE)
+    chat = update.effective_chat
+    if chat is not None and chat.type == ChatType.PRIVATE and rich.supports(FEATURE_SEND):
+        sent = await rich.send_rich(
+            context.bot,
+            chat.id,
+            blocks=build_guide_blocks(GUIDE_DEFAULT_PAGE),
+            reply_markup=keyboard,
+        )
+        if sent is not None:
+            return
     await send_personal_text(
         update, context, text, parse_mode=ParseMode.HTML, reply_markup=keyboard
     )

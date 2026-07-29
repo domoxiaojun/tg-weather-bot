@@ -15,5 +15,5 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-# Project convention (plan.md): logic errors and syntax errors only.
+# Project convention: check logic errors and syntax errors only.
 select = ["F", "E9"]

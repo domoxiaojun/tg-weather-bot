@@ -23,7 +23,7 @@ import warnings
 from typing import Any, Optional, Union
 
 from loguru import logger
-from telegram import Message, SentGuestMessage
+from telegram import InputFile, Message, SentGuestMessage
 from telegram.error import BadRequest, EndPointNotFound, Forbidden
 from telegram.warnings import PTBUserWarning
 
@@ -399,6 +399,7 @@ class RichMessenger:
         disable_notification: Optional[bool] = None,
         message_thread_id: Optional[int] = None,
         reply_parameters: Optional[dict] = None,
+        attachments: Optional[dict[str, InputFile]] = None,
     ) -> Optional[Message]:
         """Send a rich message; returns None when the caller should fall back."""
         if not self.supports(FEATURE_SEND):
@@ -415,6 +416,11 @@ class RichMessenger:
             payload["message_thread_id"] = message_thread_id
         if reply_parameters is not None:
             payload["reply_parameters"] = reply_parameters
+        if attachments:
+            # A rich photo block can reference attach://<name>. Keeping the
+            # InputFile as a top-level raw API argument lets PTB emit the
+            # matching multipart part without adding an unsupported JSON key.
+            payload.update(attachments)
         result = await self._call(bot, "sendRichMessage", payload, FEATURE_SEND, return_type=Message)
         return result if isinstance(result, Message) else None
 
@@ -428,6 +434,7 @@ class RichMessenger:
         blocks: Optional[list] = None,
         html: Optional[str] = None,
         reply_markup=None,
+        attachments: Optional[dict[str, InputFile]] = None,
     ) -> bool:
         """Replace a message's content with rich content. False → fall back."""
         if not self.supports(FEATURE_EDIT):
@@ -440,6 +447,8 @@ class RichMessenger:
             payload["message_id"] = message_id
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
+        if attachments:
+            payload.update(attachments)
         result = await self._call(bot, "editMessageText", payload, FEATURE_EDIT)
         return result is not None
 

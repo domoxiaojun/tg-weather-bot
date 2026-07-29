@@ -221,6 +221,21 @@ def render_empty_card(chat_data: dict, kind: str):
     return text, InlineKeyboardMarkup(rows)
 
 
+def build_empty_subscription_blocks(kind: str, prefix: Optional[str] = None) -> list:
+    """Rich empty state for private subscription cards."""
+    what = "早安简报" if kind == "daily" else "降雨提醒"
+    button = "📅 早安简报" if kind == "daily" else "🔔 降雨提醒"
+    blocks = []
+    if prefix:
+        blocks.append(paragraph(prefix))
+    blocks.extend([
+        heading(f"📭 暂无{what}订阅", size=4),
+        paragraph(f"先查一次天气（直接发城市名，如「北京」），然后点天气卡片上的「{button}」。"),
+        footer_block("可用下方按钮切换订阅类型或查看订阅方法"),
+    ])
+    return blocks
+
+
 async def send_subscription_card(update, context, kind: str, *, prefix: Optional[str] = None):
     """Send the subscription card: rich blocks in private chats, HTML fallback.
 
@@ -228,12 +243,21 @@ async def send_subscription_card(update, context, kind: str, *, prefix: Optional
     spam everyone. ``prefix`` is plain text (confirmation line above the card).
     """
     text, keyboard = render_subscription_list(context.chat_data, kind)
+    chat = update.effective_chat
     if text is None:
         empty_text, empty_keyboard = render_empty_card(context.chat_data, kind)
+        if chat is not None and chat.type == ChatType.PRIVATE and rich.supports(FEATURE_SEND):
+            sent = await rich.send_rich(
+                context.bot,
+                chat.id,
+                blocks=build_empty_subscription_blocks(kind, prefix=prefix),
+                reply_markup=empty_keyboard,
+            )
+            if sent is not None:
+                return sent
         combined = f"{prefix}\n\n{empty_text}" if prefix else empty_text
         return await send_personal_text(update, context, combined, reply_markup=empty_keyboard)
 
-    chat = update.effective_chat
     if chat is not None and chat.type == ChatType.PRIVATE and rich.supports(FEATURE_SEND):
         blocks = build_subscription_blocks(context.chat_data, kind, prefix=prefix)
         sent = await rich.send_rich(context.bot, chat.id, blocks=blocks, reply_markup=keyboard)
