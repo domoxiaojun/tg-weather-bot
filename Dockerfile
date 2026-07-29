@@ -33,5 +33,17 @@ RUN pip install --no-cache-dir -U pip && \
 # Copy Application Code
 COPY . .
 
+# 项目自带圆体中文（思源柔黑，放在 resources/fonts/）装进系统字体目录并刷新缓存。
+# 目录为空（尚未提交字体文件）时静默跳过，镜像回退到 Noto CJK，不影响构建。
+RUN if ls resources/fonts/*.otf resources/fonts/*.ttf resources/fonts/*.ttc >/dev/null 2>&1; then \
+        mkdir -p /usr/share/fonts/opentype/bundled && \
+        cp resources/fonts/*.otf resources/fonts/*.ttf resources/fonts/*.ttc \
+            /usr/share/fonts/opentype/bundled/ 2>/dev/null; \
+        fc-cache -f && \
+        python -c "import matplotlib.font_manager as fm; fm._load_fontmanager(try_read_cache=False); print('bundled font cache rebuilt')"; \
+    else \
+        echo "no bundled fonts, falling back to Noto CJK"; \
+    fi
+
 # Run the Bot
 CMD ["python", "main.py"]

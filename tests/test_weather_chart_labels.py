@@ -131,12 +131,15 @@ class ChartLabelLogicTests(unittest.TestCase):
         self.assertGreaterEqual(len(temperature_labels), 2)
         self.assertLessEqual(len(temperature_labels), 4)
 
-    def test_daily_temperature_labels_both_ends(self):
+    def test_daily_temperature_labels_stay_sparse(self):
         data = make_weather()
         with patch.object(Axes, "annotate", autospec=True, return_value=None) as annotate:
             Visualizer.draw_daily_temp_chart(data)
         temperature_labels = [call.args[1] for call in annotate.call_args_list if "°" in call.args[1]]
-        self.assertEqual(len(temperature_labels), 15 * 2)
+        # 稀疏标注：最热日高温 + 最冷日低温 + 今天高低，而不是 15 天 ×2 个数字。
+        # 手机上数字满屏会变成「数据海报」，扫一眼读不出重点。
+        self.assertGreaterEqual(len(temperature_labels), 2)
+        self.assertLessEqual(len(temperature_labels), 4)
 
     def test_rain_chart_labels_only_peaks(self):
         data = make_weather().model_copy(deep=True)
@@ -153,8 +156,21 @@ class ChartLabelLogicTests(unittest.TestCase):
         self.assertEqual(sum(label.endswith("%") for label in labels), 1)
         self.assertIn("60%", labels)
         self.assertFalse(any(" mm" in label for label in labels))
-        self.assertIn("0.8", labels)
-        self.assertNotIn("0.5", labels)
+        # 单轴设计：雨量不再占第二坐标轴，改为柱顶一处带说明的峰值标注。
+        self.assertTrue(any("0.8" in label and "雨量" in label for label in labels))
+        self.assertFalse(any("0.5" in label for label in labels))
+
+    def test_rain_chart_has_no_second_y_axis(self):
+        """降水图必须是单轴：双 Y 轴的刻度对齐是任意的，会凭空造出相关性。
+
+        雨量改由柱顶一处峰值标注 + 标题指标承载，不再占第二坐标轴。
+        """
+        data = make_weather().model_copy(deep=True)
+        data.hourly[4].pop = 60
+        data.hourly[4].precip = 0.8
+        with patch.object(Axes, "twinx", autospec=True) as twinx:
+            Visualizer.draw_hourly_rain_chart(data)
+        twinx.assert_not_called()
 
     def test_rain_chart_uses_single_time_axis(self):
         data = make_weather()
@@ -194,7 +210,7 @@ class ChartRenderingTests(unittest.TestCase):
                 self.assertEqual(struct.unpack(">II", png[16:24]), expected)
 
     def test_cache_namespace_is_bumped_for_new_rendering(self):
-        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v13:"))
+        self.assertTrue(chart_cache_key(make_weather(), "temp").startswith("chart:v14:"))
 
 
 class AutoChartDeliveryTests(unittest.IsolatedAsyncioTestCase):

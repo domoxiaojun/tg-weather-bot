@@ -1,3 +1,4 @@
+import glob
 import io
 import os
 import threading
@@ -47,28 +48,27 @@ class Visualizer:
     LINE_MAIN = 3.2
     LINE_SECONDARY = 2.0
     BAR_WIDTH = 0.68
+    # 亮色卡片主题。配色取自 dataviz 技能的验证调色板（light 列 + chrome/ink token）。
+    # 温度=暖橙(slot2)，低温/体感/水/概率=蓝(slot1)，雨量=蓝序列，都通过 CVD/对比度校验。
     _THEME = {
-        "canvas": "#0B1220",
-        "card": "#0B1220",
-        "surface": "#0B1220",
-        "surface_alt": "#141E30",
-        "border": "#243247",
-        "grid": "#2A3A52",
-        "text": "#FFFFFF",
-        "muted": "#A0AEC0",
-        "subtle": "#6B7C93",
-        "temperature": "#FF9F0A",
-        "temperature_low": "#64D2FF",
-        "feels_like": "#BF5AF2",
-        "water": "#64D2FF",
-        "track": "#FF9F0A",
-        "probability": "#0A84FF",
-        "pop_low": "#1A3A5C",
-        "pop_mid": "#0A6BCF",
-        "pop_high": "#5AC8FF",
-        "amount": "#5E5CE6",
-        "intensity": "#A78BFA",
-        "missing": "#6B7C93",
+        "canvas": "#f9f9f7",       # page plane
+        "card": "#fcfcfb",         # chart surface (light)
+        "surface": "#fcfcfb",
+        "surface_alt": "#f2f1ee",  # 交替日分组的极浅底
+        "border": "#e1e0d9",       # hairline ring
+        "grid": "#e1e0d9",         # gridline hairline
+        "text": "#0b0b0b",         # primary ink
+        "muted": "#898781",        # axis/labels
+        "subtle": "#52514e",       # secondary ink
+        "temperature": "#eb6834",  # 暖橙 slot2 (light)
+        "temperature_low": "#2a78d6",  # 蓝 slot1 (light)
+        "feels_like": "#4a3aa7",   # violet slot7，与暖橙主线/蓝低温都清晰区分
+        "water": "#2a78d6",
+        "track": "#eb6834",
+        "probability": "#2a78d6",  # 概率单色（蓝），靠柱高表达大小
+        "amount": "#256abf",       # 雨量：蓝序列偏深步，与概率蓝区分
+        "intensity": "#4a3aa7",    # 雨势：violet slot7
+        "missing": "#898781",
     }
 
     @staticmethod
@@ -129,6 +129,48 @@ class Visualizer:
         ),
     )
 
+    # 项目自带字体目录。放入思源柔黑（GenJyuuGothic，圆角版 Noto）即自动启用；
+    # 缺失则回退到下面的系统候选，程序不受影响。
+    _BUNDLED_FONT_DIR = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "resources",
+        "fonts",
+    )
+
+    @classmethod
+    def _discover_bundled_fonts(cls) -> tuple:
+        """在 resources/fonts/ 里发现圆体中文的 Regular/Bold 对。
+
+        按文件名里的字重关键字匹配，兼容 GenJyuuGothic / 思源柔黑 常见命名
+        （*-Regular / *-Normal / *-Bold 等，ttf/otf/ttc 均可）。找不到返回空元组。
+        """
+        directory = cls._BUNDLED_FONT_DIR
+        if not os.path.isdir(directory):
+            return ()
+        files = []
+        for pattern in ("*.otf", "*.ttf", "*.ttc"):
+            files.extend(glob.glob(os.path.join(directory, pattern)))
+        if not files:
+            return ()
+
+        def _match(keywords):
+            for path in files:
+                lower = os.path.basename(path).lower()
+                if any(key in lower for key in keywords):
+                    return path
+            return None
+
+        regular = _match(("regular", "normal", "-r.", "book", "medium"))
+        bold = _match(("bold", "heavy", "-b.", "black"))
+        # 只有单文件（可变字重或未按字重命名）时，Regular/Bold 共用它。
+        if regular is None and bold is None:
+            regular = bold = sorted(files)[0]
+        elif regular is None:
+            regular = bold
+        elif bold is None:
+            bold = regular
+        return ((regular, bold),)
+
     @classmethod
     def _setup_style(cls):
         """配置全局绘图风格（只执行一次；rcParams 之后只读，线程安全）"""
@@ -136,7 +178,8 @@ class Visualizer:
             if cls._style_ready:
                 return
 
-            for regular_path, bold_path in cls._CJK_FONT_CANDIDATES:
+            candidates = cls._discover_bundled_fonts() + cls._CJK_FONT_CANDIDATES
+            for regular_path, bold_path in candidates:
                 if not os.path.exists(regular_path):
                     continue
                 try:
@@ -388,9 +431,9 @@ class Visualizer:
             ax.grid(
                 axis="y",
                 color=cls._THEME["grid"],
-                alpha=0.4,
-                linewidth=0.8,
-                linestyle=(0, (3, 5)),
+                alpha=1.0,
+                linewidth=1.0,
+                linestyle="-",
                 zorder=1,
             )
             ax.set_axisbelow(True)
@@ -1205,23 +1248,15 @@ class Visualizer:
 
         valid_probability = np.isfinite(probability)
         missing_probability = ~valid_probability
-        missing_precipitation = ~np.isfinite(precipitation)
 
         if np.any(valid_probability):
-            bar_colors = [
-                cls._THEME["pop_high"] if value >= 60
-                else cls._THEME["pop_mid"] if value >= 30
-                else cls._THEME["pop_low"]
-                for value in probability[valid_probability]
-            ]
             ax.bar(
                 x[valid_probability],
                 probability[valid_probability],
                 width=cls.BAR_WIDTH,
-                color=bar_colors,
+                color=cls._THEME["probability"],
                 edgecolor="none",
                 zorder=3,
-                alpha=0.92,
             )
             # 转雨时刻
             crossing = None
@@ -1237,7 +1272,7 @@ class Visualizer:
             if crossing is not None:
                 ax.axvline(
                     crossing - 0.5,
-                    color=cls._THEME["pop_high"],
+                    color=cls._THEME["probability"],
                     linewidth=1.4,
                     linestyle=(0, (4, 3)),
                     alpha=0.95,
@@ -1247,7 +1282,7 @@ class Visualizer:
                     crossing - 0.2,
                     98,
                     f"{times[crossing].strftime('%H')}时转雨",
-                    color=cls._THEME["pop_high"],
+                    color=cls._THEME["probability"],
                     fontsize=cls.FS_ANNOTATE,
                     fontweight=cls._weight_bold,
                     ha="left",
@@ -1284,60 +1319,33 @@ class Visualizer:
                 color=cls._THEME["missing"], zorder=5,
             )
 
-        # 右轴：雨量/雨势折线，只标峰值
+        # 单轴设计：概率柱为主体，雨量不再占第二坐标轴（双轴对齐是任意的、会误导）。
+        # 峰值雨量已进标题指标；这里只在「雨最大的那一小时」柱顶做一处文字标注。
         precip_series = amount if has_amount else intensity if has_intensity else None
         precip_style = "amount" if has_amount else "intensity"
-        precip_color = cls._THEME["amount"] if has_amount else cls._THEME["intensity"]
         if precip_series is not None and np.any(np.isfinite(precip_series)):
-            ax2 = ax.twinx()
-            for spine in ax2.spines.values():
-                spine.set_visible(False)
-            ax2.tick_params(axis="y", length=0, labelsize=cls.FS_AXIS - 1, colors=precip_color, pad=4)
-            peak = float(np.nanmax(precip_series))
-            ax2.set_ylim(0, max(0.8, peak * 1.55))
-            ax2.yaxis.set_major_locator(MaxNLocator(nbins=3, min_n_ticks=2))
-            ax2.yaxis.set_major_formatter(
-                FuncFormatter(lambda value, _: cls._format_number(value))
-            )
-            unit = "mm" if precip_style == "amount" else "mm/h"
-            ax2.text(
-                1.0, 1.02, unit,
-                transform=ax2.transAxes, color=precip_color,
-                fontsize=cls.FS_AXIS, ha="right",
-            )
-            for smooth_x, smooth_y in cls._smooth_segments(x, precip_series):
-                ax2.plot(
-                    smooth_x, smooth_y,
-                    color=precip_color, linewidth=cls.LINE_MAIN - 0.4,
-                    solid_capstyle="round", zorder=5,
+            rain_i = int(np.nanargmax(precip_series))
+            rain_val = float(precip_series[rain_i])
+            if rain_val > 0:
+                if precip_style == "amount":
+                    rain_text = f"雨量最大 {cls._format_number(rain_val)}mm"
+                else:
+                    rain_text = f"雨势最强 {cls._rain_rate_word(rain_val)}"
+                bar_top = probability[rain_i] if np.isfinite(probability[rain_i]) else 0.0
+                # 与概率峰值同柱时抬高避让，避免和 “80%” 叠字。
+                same_bar = has_probability_data and rain_i == int(np.nanargmax(probability))
+                ax.annotate(
+                    rain_text,
+                    (x[rain_i], bar_top),
+                    xytext=(0, 30 if same_bar else 10),
+                    textcoords="offset points",
+                    ha="center",
+                    va="bottom",
+                    color=cls._THEME["subtle"],
+                    fontsize=cls.FS_ANNOTATE - 1,
+                    fontweight=cls._weight_bold,
+                    zorder=8,
                 )
-            valid_p = np.isfinite(precip_series)
-            ax2.scatter(
-                x[valid_p], precip_series[valid_p],
-                s=28, color=cls._THEME["canvas"],
-                edgecolor=precip_color, linewidth=1.4, zorder=6,
-            )
-            peak_i = int(np.nanargmax(precip_series))
-            ax2.annotate(
-                cls._format_precip_label(precip_series[peak_i], precip_style),
-                (x[peak_i], precip_series[peak_i]),
-                xytext=(0, 8),
-                textcoords="offset points",
-                ha="center", va="bottom",
-                color=precip_color,
-                fontsize=cls.FS_ANNOTATE,
-                fontweight=cls._weight_bold,
-                zorder=8,
-            )
-            if has_amount and has_intensity and np.any(np.isfinite(intensity)):
-                for smooth_x, smooth_y in cls._smooth_segments(x, intensity):
-                    ax2.plot(
-                        smooth_x, smooth_y,
-                        color=cls._THEME["intensity"],
-                        linewidth=cls.LINE_SECONDARY,
-                        linestyle=(0, (5, 3)),
-                        zorder=4,
-                    )
 
         if not has_visual_signal:
             if has_unknown_positive:
@@ -1361,22 +1369,11 @@ class Visualizer:
         handles = []
         labels = []
         if has_probability_data:
-            handles.append(Patch(facecolor=cls._THEME["pop_high"]))
+            handles.append(Patch(facecolor=cls._THEME["probability"]))
             labels.append("降雨概率")
-        if has_amount:
-            handles.append(Line2D([0], [0], color=cls._THEME["amount"], linewidth=cls.LINE_MAIN))
-            labels.append("雨量")
-        if has_intensity:
-            handles.append(
-                Line2D(
-                    [0], [0], color=cls._THEME["intensity"],
-                    linewidth=cls.LINE_SECONDARY, linestyle=(0, (5, 3)),
-                )
-            )
-            labels.append("雨势")
 
-        footer = "柱越亮，下雨可能性越大"
-        if np.any(missing_probability) or np.any(missing_precipitation):
+        footer = "柱越高，下雨概率越大"
+        if np.any(missing_probability):
             footer += " · × 处无数据"
         cls._add_footer(fig, footer, handles, labels)
         return cls._render_figure(fig)
@@ -1454,29 +1451,35 @@ class Visualizer:
 
         hottest = int(np.argmax(highs))
         coolest = int(np.argmin(lows))
-        # 横向卡宽度够：每天高低温都标，极值加粗。
-        for index in range(len(days)):
+        # 稀疏标注：只标最热日的高温、最冷日的低温、今天的高低；其余交给 range bar 形状。
+        # 数字满屏会让手机上变成「数据海报」，扫一眼反而读不出重点。
+        high_label_idx = {hottest, 0}
+        low_label_idx = {coolest, 0}
+        for index in sorted(high_label_idx):
+            emphatic = index == hottest
             ax.annotate(
                 cls._format_temperature(highs[index]),
                 (x[index], highs[index]),
-                xytext=(0, 7),
+                xytext=(0, 8),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
-                color=cls._THEME["text"] if index == hottest else cls._THEME["temperature"],
-                fontsize=cls.FS_ANNOTATE_PEAK if index == hottest else cls.FS_ANNOTATE - 1,
+                color=cls._THEME["text"],
+                fontsize=cls.FS_ANNOTATE_PEAK if emphatic else cls.FS_ANNOTATE - 1,
                 fontweight=cls._weight_bold,
                 zorder=8,
             )
+        for index in sorted(low_label_idx):
+            emphatic = index == coolest
             ax.annotate(
                 cls._format_temperature(lows[index]),
                 (x[index], lows[index]),
-                xytext=(0, -7),
+                xytext=(0, -8),
                 textcoords="offset points",
                 ha="center",
                 va="top",
-                color=cls._THEME["text"] if index == coolest else cls._THEME["temperature_low"],
-                fontsize=cls.FS_ANNOTATE_PEAK if index == coolest else cls.FS_ANNOTATE - 1,
+                color=cls._THEME["text"],
+                fontsize=cls.FS_ANNOTATE_PEAK if emphatic else cls.FS_ANNOTATE - 1,
                 fontweight=cls._weight_bold,
                 zorder=8,
             )
