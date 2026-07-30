@@ -4,18 +4,22 @@
       Bold 两个字重放进 `resources/fonts/`，共 27MB；`_discover_bundled_fonts()`
       自动识别为 Resource Han Rounded CN，字重探测 400/700
 - [x] 2. 三图用圆体重渲，肉眼确认笔画末端圆润
-- [ ] 3. 27MB 字体是否提交进 git —— 需要你决定（见下）
+- [x] 3. 27MB 字体 → GB2312 子集 5.6MB，已提交（fonttools 本就是 matplotlib 依赖）
 - [x] 4. 修 inline bug：点降水图后「📝 文字天气」切不回去
       根因：inline 走 `edit_message_media` 把消息变成了 media 消息，而 Bot API
       不允许 media→text 编辑，所以 `_handle_weather_choice` 原本直接弹 alert 死路。
       改为 inline 下把图表内嵌进 rich 消息（file_id 走 photo block，不需上传），
       来回都是 rich→rich 编辑；「文字天气」则就地编辑回不带图的视图
 - [x] 5. 两条回归测试：inline 图表不得退化成 media、文字天气必须就地编回
+- [x] 6. 逐小时体感曲线 —— **不是代码问题**。实测潮安：彩云返回 72h 数据，
+      fusion 给 71 小时补上了 apparent_temperature，曲线正常。
+      根因是本地 `.env` 只有 `CAIYUN_API_TOKEN`、缺 `ENABLE_CAIYUN_API=true`，
+      而 `fusion.py:298` 要求两者同时成立（enable 默认 False）。已补本地 .env
 
-字体体积决策：
-- 提交进 git：仓库 +27MB，clone 变慢，但 Docker 构建自足、部署无额外步骤
-- 不提交（.gitignore）：仓库干净，但每次部署要单独提供字体文件，
-  否则回退到 Noto（不圆润）
+遗留可选项（未做，等你决定）：
+- [ ] `core/config.py:127` 的 `enable_caiyun_api` 默认值是否改成「有 token 即启用」。
+      现在配了 token 却静默不调用，确实反直觉；但改默认值会让任何「配了 token
+      但故意没开」的环境在升级后开始产生彩云费用，影响面大，没擅自改
 
 # 卡片配图策略 + 降水图雨量标注（2026-07-30）
 

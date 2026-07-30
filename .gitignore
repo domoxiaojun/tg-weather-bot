@@ -51,6 +51,7 @@ data/weather_emoji_assets/
 # Environment Variables (CRITICAL)
 .env
 .env.local
+.env.bak.*
 
 # Claude
 .claude/
