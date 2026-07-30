@@ -1,3 +1,22 @@
+# 圆润字体 + inline 图表往返（2026-07-30）
+
+- [x] 1. 下载资源圆体 Resource Han Rounded CN v0.990（SIL OFL），取 Regular +
+      Bold 两个字重放进 `resources/fonts/`，共 27MB；`_discover_bundled_fonts()`
+      自动识别为 Resource Han Rounded CN，字重探测 400/700
+- [x] 2. 三图用圆体重渲，肉眼确认笔画末端圆润
+- [ ] 3. 27MB 字体是否提交进 git —— 需要你决定（见下）
+- [x] 4. 修 inline bug：点降水图后「📝 文字天气」切不回去
+      根因：inline 走 `edit_message_media` 把消息变成了 media 消息，而 Bot API
+      不允许 media→text 编辑，所以 `_handle_weather_choice` 原本直接弹 alert 死路。
+      改为 inline 下把图表内嵌进 rich 消息（file_id 走 photo block，不需上传），
+      来回都是 rich→rich 编辑；「文字天气」则就地编辑回不带图的视图
+- [x] 5. 两条回归测试：inline 图表不得退化成 media、文字天气必须就地编回
+
+字体体积决策：
+- 提交进 git：仓库 +27MB，clone 变慢，但 Docker 构建自足、部署无额外步骤
+- 不提交（.gitignore）：仓库干净，但每次部署要单独提供字体文件，
+  否则回退到 Noto（不圆润）
+
 # 卡片配图策略 + 降水图雨量标注（2026-07-30）
 
 - [x] 1. 默认卡片不再自动配图：`select_auto_chart_type` 对 default/hourly/indices

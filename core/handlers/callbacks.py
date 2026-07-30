@@ -9,6 +9,7 @@ from core.handlers.common import BotDependencies
 from core.handlers.messages import edit_weather_view
 from services.chart_cache import (
     CHART_PROFILES,
+    PreparedChart,
     get_cached_chart_file_id,
     get_chart_caption,
     get_or_create_chart_file_id,
@@ -165,16 +166,6 @@ class CallbackHandlers:
     ):
         """City choice / text-weather button: tq|{coords}|{view}|{start_day}|{limit}"""
         query = update.callback_query
-        if query.inline_message_id:
-            await self._safe_answer(
-                query,
-                "⚠️ 这条消息里无法发送文字天气，请在聊天中发送 /tq 城市。",
-                show_alert=True,
-            )
-            return
-        if self.weather_handlers is None:
-            await self._notify(update, context, "❌ 功能暂不可用")
-            return
         coords = data_parts[1]
         view_type = data_parts[2] if len(data_parts) > 2 else "default"
         try:
@@ -185,6 +176,46 @@ class CallbackHandlers:
             limit = int(data_parts[4]) if len(data_parts) > 4 else 0
         except ValueError:
             limit = 0
+
+        if query.inline_message_id:
+            # Inline has no chat to send into, so edit the message in place
+            # back to a chart-free weather view. This is the return path from
+            # the 图表 buttons — without it 「📝 文字天气」 dead-ends.
+            await self._safe_answer(query, "⏳ 切换中...")
+            try:
+                weather_data = await self.deps.weather_service.get_fused_weather(
+                    coords, profile=self._VIEW_PROFILES.get(view_type, "full")
+                )
+            except Exception as e:
+                logger.error(f"Inline text-weather fetch failed: {e}")
+                weather_data = None
+            if not weather_data:
+                await self._safe_answer(query, "未获取到天气数据", show_alert=True)
+                return
+            if await edit_weather_view(
+                context,
+                weather_data,
+                inline_message_id=query.inline_message_id,
+                view_type=view_type,
+                days=limit or None,
+                start_day=start_day,
+                reply_markup=get_weather_keyboard(
+                    coords,
+                    show_charts=True,
+                    coords=weather_data.coords,
+                    view_type=view_type,
+                ),
+            ):
+                return
+            await self._safe_answer(
+                query,
+                "⚠️ 这条消息里无法切回文字天气，请在聊天中发送 /tq 城市。",
+                show_alert=True,
+            )
+            return
+        if self.weather_handlers is None:
+            await self._notify(update, context, "❌ 功能暂不可用")
+            return
         await self.weather_handlers._send_weather(
             update,
             context,
@@ -395,12 +426,28 @@ class CallbackHandlers:
 
         if file_id:
             if is_inline:
+                # Embed the chart INSIDE the rich weather message instead of
+                # turning the message into a photo. editMessageMedia would make
+                # it a media message, and Bot API cannot edit media back to
+                # text — the 「📝 文字天气」 button would dead-end (and captions
+                # cap at 1024 chars, too short for most views anyway).
+                keyboard = get_weather_keyboard(
+                    location, mode="chart", coords=weather_data.coords
+                )
+                if await edit_weather_view(
+                    context,
+                    weather_data,
+                    inline_message_id=query.inline_message_id,
+                    chart=PreparedChart(
+                        chart_type=chart_type, caption=caption, file_id=file_id
+                    ),
+                    reply_markup=keyboard,
+                ):
+                    return
                 try:
                     await query.edit_message_media(
                         media=InputMediaPhoto(media=file_id, caption=caption),
-                        reply_markup=get_weather_keyboard(
-                            location, mode="chart", coords=weather_data.coords
-                        ),
+                        reply_markup=keyboard,
                     )
                 except Exception as e:
                     logger.error(f"Inline chart edit failed: {e}")

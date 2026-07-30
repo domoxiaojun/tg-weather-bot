@@ -670,6 +670,75 @@ class WeatherRichDeliveryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class WeatherCallbackChartTests(unittest.IsolatedAsyncioTestCase):
+    async def test_inline_chart_embeds_into_rich_message_not_a_photo(self):
+        """Inline 图表必须内嵌进 rich 消息，不能把消息变成 photo。
+
+        editMessageMedia 会让消息变成 media 消息，而 Bot API 不允许把 media
+        编辑回文字 —— 那样「📝 文字天气」按钮就再也切不回去了。
+        """
+        weather = make_weather()
+        service = SimpleNamespace(get_fused_weather=AsyncMock(return_value=weather))
+        handler = CallbackHandlers(SimpleNamespace(weather_service=service))
+        query = SimpleNamespace(
+            message=None,
+            inline_message_id="inline-1",
+            answer=AsyncMock(),
+            edit_message_media=AsyncMock(),
+        )
+        update = SimpleNamespace(callback_query=query, effective_chat=None)
+
+        with patch(
+            "core.handlers.callbacks.get_cached_chart_file_id",
+            new=AsyncMock(return_value="rain-file-id"),
+        ), patch(
+            "core.handlers.callbacks.edit_weather_view", new=AsyncMock(return_value=True)
+        ) as edit:
+            await handler._handle_chart(
+                update, SimpleNamespace(bot=SimpleNamespace()), ["chart", "116.68,23.46", "rain"]
+            )
+
+        edit.assert_awaited_once()
+        kwargs = edit.await_args.kwargs
+        self.assertEqual(kwargs["inline_message_id"], "inline-1")
+        self.assertEqual(kwargs["chart"].file_id, "rain-file-id")
+        # 关键：没有退化成 media 消息。
+        query.edit_message_media.assert_not_awaited()
+
+    async def test_inline_text_weather_button_edits_back_in_place(self):
+        """图表 → 文字天气的回程：inline 下就地编辑，不再弹 alert 死路。"""
+        weather = make_weather()
+        service = SimpleNamespace(get_fused_weather=AsyncMock(return_value=weather))
+        handler = CallbackHandlers(SimpleNamespace(weather_service=service))
+        query = SimpleNamespace(
+            message=None,
+            inline_message_id="inline-1",
+            answer=AsyncMock(),
+        )
+        update = SimpleNamespace(callback_query=query, effective_chat=None)
+
+        with patch(
+            "core.handlers.callbacks.edit_weather_view", new=AsyncMock(return_value=True)
+        ) as edit:
+            await handler._handle_weather_choice(
+                update,
+                SimpleNamespace(bot=SimpleNamespace()),
+                ["tq", "116.68,23.46", "default", "0", "0"],
+            )
+
+        edit.assert_awaited_once()
+        kwargs = edit.await_args.kwargs
+        self.assertEqual(kwargs["inline_message_id"], "inline-1")
+        self.assertEqual(kwargs["view_type"], "default")
+        # 回到文字视图时不带图。
+        self.assertIsNone(kwargs.get("chart"))
+        # 不应再出现「无法发送文字天气」这类死路提示。
+        alerts = [
+            call.args[0]
+            for call in query.answer.await_args_list
+            if call.args and isinstance(call.args[0], str)
+        ]
+        self.assertFalse(any("无法" in text for text in alerts), alerts)
+
     async def test_view_switch_prepares_chart_and_edits_the_same_message(self):
         weather = make_weather()
         chart = PreparedChart(chart_type="daily", caption="逐日温度", file_id="daily-id")
