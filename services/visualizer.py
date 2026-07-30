@@ -243,10 +243,16 @@ class Visualizer:
                 "DejaVu Sans",
                 "Arial",
             ]
+            families = [font for font in preferred_fonts if font]
             matplotlib.rcdefaults()
             matplotlib.rcParams.update({
-                "font.family": "sans-serif",
-                "font.sans-serif": [font for font in preferred_fonts if font],
+                # 字体名列表（而不是 "sans-serif" + font.sans-serif）才会启用
+                # matplotlib 3.6+ 的**逐字形**回退。这对捆绑的圆体是必需的：
+                # 它是 GB2312 子集（27MB → 5.6MB），生僻地名字（如筼筜）不在
+                # 子集里，靠回退用系统 Noto/Hiragino 补上 —— 那几个字不圆润，
+                # 但不会变成豆腐块。用 sans-serif 的写法则整串直接画方框。
+                "font.family": families,
+                "font.sans-serif": families,
                 # 只用字体真实存在的字重，避免 findfont 300/400/600/700 回退警告
                 "font.weight": cls._weight_regular,
                 "axes.unicode_minus": False,
