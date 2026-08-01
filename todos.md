@@ -152,3 +152,24 @@ AI 日报 prompt 收紧 + 「未来几天」「建议」折叠。
       备选：寒蝉圆黑体 / 仓耳舒圆体
       注意：思源柔黑（GenJyuuGothic）源自**日文版**，简体会缺字并出日文字形，不用
 - [ ] 字体到位后重渲染三图确认圆润效果
+
+# 删除和风太阳辐射查询（2026-08-01，成本原因）
+
+范围判定：只删**和风**的 `/solarradiation/v1/forecast` 独立计费调用。
+彩云的 `dswrf` 是 `/weather` 响应自带字段、不产生额外调用和费用，
+因此 `radiation` / `now_radiation` 模型字段、fusion 融合、formatter 展示
+和 LLM 输入全部保留 —— 开了彩云仍有辐射数据，只开和风则该字段为空并优雅降级。
+
+- [x] 1. `adapters/qweather.py`：full profile components 去掉 `"solar"`
+- [x] 2. `adapters/qweather.py`：删 `if "solar" in components` 请求块（/solarradiation/v1/forecast）
+- [x] 3. `adapters/qweather.py`：`optional_components` 去掉 `"solar"`；类注释去掉 solar
+- [x] 4. `adapters/qweather.py`：删 `_map_solar_radiation()` 方法
+- [x] 5. `adapters/qweather.py`：删 `solar_data` 取值与 hourly radiation 回填块
+- [x] 6. `.env.example`：说明段去掉太阳辐射，只留昨日实测
+- [x] 7. `docs/qweather-api-reference-2026-07.md`：接入状态改为「不接入（按次计费，成本原因移除）」
+- [x] 8. `docs/weather-api-index.md`：已接入清单去掉和风辐射
+- [x] 9. `CLAUDE.md`：成本立场补例外 —— 「和风免费」只覆盖套餐内接口，
+      按次计费的增值产品（太阳辐射）不免费，接入前必须先看单价
+- [x] 10. 验证：unittest 68 passed + compileall + ruff(F,E9) 全过 + diff --check clean
+      + `grep -riE "solar" adapters/ core/ domain/ services/ utils/ tests/` 无残留
+- [x] 11. git 提交

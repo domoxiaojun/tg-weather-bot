@@ -275,13 +275,13 @@ v1 空气质量统一结构：
 | 监测站 | 复用实时空气质量响应的 `stations[]` 名称 | 已接入（未单独调 `/airquality/v1/stations/`） |
 | 热带气旋 | `/v7/tropical/storm-list` + `storm-track` + `storm-forecast` | 已接入（仅 basin=NP；list 提供 name，forecast 不返回 name） |
 | 海洋潮汐 | `/geo/v2/poi/lookup?type=TSTA` + `/v7/ocean/tide` | 已接入（/tide 命令；潮汐站 id 形如 P66981，非城市 id） |
-| 太阳辐射 | `/solarradiation/v1/forecast/{lat}/{lon}` | 已接入（仅用 GHI 按 fill-only 补 `HourlyForecast.radiation`，不新增界面） |
+| 太阳辐射 | `/solarradiation/v1/forecast/{lat}/{lon}` | **不接入**：按次计费且单价过高，2026-08-01 整体移除（曾用 GHI 按 fill-only 补 `radiation`） |
 | 控制台 API | 对应官方 endpoint | 未接入 |
 
-### 潮汐与辐射接入要点（对照官方文档核实）
+### 潮汐接入要点（对照官方文档核实）
 
 - 潮汐必须两步：`/geo/v2/poi/lookup?location=lon,lat&type=TSTA` 找站点（返回数组为 `poi`，已实测确认），再 `/v7/ocean/tide?location={站点id}&date=yyyyMMdd`（最多未来 10 天）。响应含 `tideTable[]{fxTime,height,type H/L}` 与 `tideHourly[]{fxTime,height}`。
-- 太阳辐射路径 `/solarradiation/v1/forecast/{lat}/{lon}`，参数 `hours`(1-60)/`interval`(15/30/60)/`localTime`；响应数组名 `forecasts`，字段 `forecastTime`、`ghi`、`dhi`、`dni`、`solarAngle{azimuth,elevation}`。本项目只取 `ghi`，按 fill-only 规则补 `radiation`，绝不覆盖彩云已提供的值。
+- 太阳辐射曾按 fill-only 补 `radiation`，已于 2026-08-01 因单价过高删除，**不要再接**。逐小时 `radiation` 现在只可能来自彩云 `dswrf`（`/weather` 响应自带，不额外计费）。
 
 ### 真机验证结论（2026-07-26，JWT 认证下实测）
 
@@ -290,7 +290,7 @@ v1 空气质量统一结构：
 | 端点 | 结论 |
 | --- | --- |
 | `/v7/grid-weather/24h` | 字段与城市天气一致且**确实没有** `pop`/`vis`/`feelsLike`；现有 `_map_hourly` 直接复用无误 |
-| `/solarradiation/v1/forecast` | 数组名 `forecasts` 正确；直接辐射实际字段名是 **`dni`**，文档写的 `ni` 有误（本项目只用 `ghi`，未受影响） |
+| `/solarradiation/v1/forecast` | 数组名 `forecasts` 正确；直接辐射实际字段名是 **`dni`**，文档写的 `ni` 有误。**该端点已于 2026-08-01 因成本移除，此行仅存档** |
 | `/v7/tropical/storm-list` | 数组名 `storm` 正确，`isActive` 为字符串；实际 id 形如 `NP_2601`（文档示例写作 `NP2018`） |
 | `/geo/v2/poi/lookup?type=TSTA` | 数组名确认为 **`poi`**（据此移除了原先兼容 `location` 的推测性分支） |
 | `/v7/historical/weather` | `weatherDaily` + `weatherHourly` 均存在，映射正确 |
