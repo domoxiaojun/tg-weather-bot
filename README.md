@@ -152,6 +152,12 @@ QWEATHER_JWT_SUB=<Project ID>
 - **Inline feedback**: set `/setinlinefeedback` to **Enabled (100%)** — the inline AI report relies on `chosen_inline_result` to replace its placeholder message; without feedback the placeholder never updates.
 - **Guest Mode**: open the BotFather MiniApp → Bot Settings → **Guest Mode** and enable it. Code startup logs whether Telegram reports `supports_guest_queries=true`.
 
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
+
+You may use, modify, and distribute the code (including for commercial self-hosting). Running a public paid instance under your own brand is fine; please do not present third-party deployments as the official DomoWeather service.
+
 ## 📚 API Notes
 
 - [天气 API 本地文档索引与双源策略](docs/weather-api-index.md)

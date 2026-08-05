@@ -2,7 +2,10 @@
 name = "tg-weather-bot"
 version = "1.0.0"
 description = "DomoWeather Telegram bot — QWeather-first dual-source weather fusion"
+readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
 # Runtime dependencies remain canonical in requirements.txt (Docker uses it directly).
 
 [dependency-groups]

@@ -1,3 +1,12 @@
+# 添加 MIT 许可证（2026-08-05）
+
+- [x] 1. 新增根目录 `LICENSE`（MIT，Copyright 2026 Domo）
+- [x] 2. README 增加 License 说明（允许自托管/商用，勿冒充官方服务）
+- [x] 3. `pyproject.toml` 标注 `license = "MIT"` 与 `license-files`
+- [x] 4. 本地检查并 git 提交
+
+---
+
 # 圆润字体 + inline 图表往返（2026-07-30）
 
 - [x] 1. 下载资源圆体 Resource Han Rounded CN v0.990（SIL OFL），取 Regular +
