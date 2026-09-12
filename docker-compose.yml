@@ -9,6 +9,9 @@ services:
       # 只覆盖 Docker 内部不同的变量
       - REDIS_URL=redis://redis:6379/0
       - TZ=Asia/Shanghai
+      # 仅供同一 Docker network 内的聊天 Agent 调用，不映射到宿主机。
+      - WEATHER_API_HOST=0.0.0.0
+      - WEATHER_API_PORT=${WEATHER_API_PORT:-8080}
     volumes:
       # 日志目录
       - ./logs:/app/logs

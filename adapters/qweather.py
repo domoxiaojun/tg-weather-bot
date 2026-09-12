@@ -27,7 +27,7 @@ from domain.models import (
 )
 
 
-WeatherProfile = Literal["full", "hourly", "daily", "rain", "indices"]
+WeatherProfile = Literal["full", "card", "hourly", "daily", "rain", "indices"]
 
 # Grid weather (numerical model, 3-5 km) is requested instead of city weather
 # when the geocoded city sits this far from the coordinates the user supplied.
@@ -961,6 +961,11 @@ class QWeatherAdapter(WeatherAdapter):
                 "minutely", "air", "air_hourly", "air_daily", "warning",
                 "daily", "hourly", "indices", "history",
             },
+            # Compact profile for the standalone PNG card: realtime data is
+            # always fetched, while only the visible daily/AQI/warning fields
+            # are added. This avoids paying for hourly, indices and history
+            # data that the raster card cannot display.
+            "card": {"air", "warning", "daily"},
             "hourly": {"air", "air_hourly", "warning", "hourly"},
             "daily": {"air_daily", "warning", "daily"},
             "rain": {"minutely", "air", "warning", "hourly"},

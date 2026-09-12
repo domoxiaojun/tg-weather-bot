@@ -79,7 +79,7 @@ async def send_personal_text(
 ):
     """Send a reply only the requesting user needs to see.
 
-    In groups this becomes a Bot API 10.2 ephemeral message so personal
+    In groups this becomes a Bot API 10.3 ephemeral message so personal
     bookkeeping (subscription lists, limits, confirmations) does not spam
     everyone. Private chats and unsupported servers fall back to a normal send.
     """
@@ -91,11 +91,22 @@ async def send_personal_text(
     if chat.type in (ChatType.GROUP, ChatType.SUPERGROUP) and user is not None:
         callback_query = getattr(update, "callback_query", None)
         callback_query_id = callback_query.id if callback_query else None
+        # Bot API 10.3 supports rich ephemeral messages. They keep the
+        # private-in-group semantics while making subscription/help cards
+        # easier to scan on mobile; plain ephemeral remains the fallback.
+        if rich.supports(FEATURE_SEND) and kwargs.get("parse_mode") == ParseMode.HTML:
+            params = {"receiver_user_id": user.id}
+            if callback_query_id:
+                params["callback_query_id"] = callback_query_id
+            sent = await rich.send_rich(
+                context.bot, chat.id, html=text,
+                reply_markup=kwargs.get("reply_markup"),
+                ephemeral_message_parameters=params,
+            )
+            if sent is not None:
+                return sent
         sent = await rich.send_ephemeral(
-            context.bot,
-            chat.id,
-            text,
-            user.id,
+            context.bot, chat.id, text, user.id,
             parse_mode=kwargs.get("parse_mode"),
             reply_markup=kwargs.get("reply_markup"),
             callback_query_id=callback_query_id,

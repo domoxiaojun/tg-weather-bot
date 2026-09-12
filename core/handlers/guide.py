@@ -1,8 +1,8 @@
 """/help — a button-paged usage guide.
 
 Three pages flipped in place via ``help|{page}`` callbacks. Private chats use
-rich blocks; group replies remain ephemeral HTML because ``sendRichMessage``
-does not support the Bot API 10.2 ``receiver_user_id`` privacy parameter.
+rich blocks; group replies currently retain ephemeral HTML. Bot API 10.3
+also supports rich ephemeral replies, which can be adopted separately.
 """
 
 import re

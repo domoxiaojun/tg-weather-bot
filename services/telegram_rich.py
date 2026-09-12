@@ -1,4 +1,4 @@
-"""Bot API 10.1/10.2 rich + ephemeral message support.
+"""Bot API 10.1–10.3 rich + ephemeral message support.
 
 python-telegram-bot 22.8 only carries typed support through Bot API 10.0, so
 these newer methods are issued through :meth:`telegram.Bot.do_api_request` —
@@ -11,7 +11,7 @@ return ``None``/``False`` instead of raising. Capabilities the server rejects
 outright are remembered, so an unsupported deployment is probed once rather
 than on every message.
 
-Wire format verified against the Bot API 10.2 specification (2026-07-14):
+Wire format verified against the Bot API 10.3 specification (2026-08-24):
 ``InputRichMessage`` carries ``blocks``/``html``/``markdown`` (not
 ``text``/``parse_mode``), table cells require ``align`` and ``valign``, and
 ``sendRichMessageDraft`` is a private-chat-only 30-second preview that must be
@@ -174,6 +174,14 @@ def bullet_list(items: list) -> dict:
     return {"type": "list", "items": [{"blocks": _as_blocks(item)} for item in items]}
 
 
+def expandable_blockquote(text: RichText, *, credit: Optional[RichText] = None) -> dict:
+    """Build a Bot API 10.3 expandable quotation block."""
+    block = {"type": "expandable_blockquote", "text": text}
+    if credit is not None:
+        block["credit"] = credit
+    return block
+
+
 
 
 
@@ -207,6 +215,7 @@ def table(
     aligns: Optional[list] = None,
     bordered: bool = False,
     striped: bool = True,
+    compact: bool = False,
     caption: Optional[RichText] = None,
 ) -> dict:
     """Build a table from raw text rows.
@@ -238,6 +247,9 @@ def table(
         block["is_bordered"] = True
     if striped:
         block["is_striped"] = True
+    if compact:
+        # Bot API 10.3: compact tables use reduced cell spacing.
+        block["is_compact"] = compact
     if caption is not None:
         block["caption"] = caption
     return block
@@ -400,6 +412,7 @@ class RichMessenger:
         message_thread_id: Optional[int] = None,
         reply_parameters: Optional[dict] = None,
         attachments: Optional[dict[str, InputFile]] = None,
+        ephemeral_message_parameters: Optional[dict] = None,
     ) -> Optional[Message]:
         """Send a rich message; returns None when the caller should fall back."""
         if not self.supports(FEATURE_SEND):
@@ -416,6 +429,8 @@ class RichMessenger:
             payload["message_thread_id"] = message_thread_id
         if reply_parameters is not None:
             payload["reply_parameters"] = reply_parameters
+        if ephemeral_message_parameters is not None:
+            payload["ephemeral_message_parameters"] = ephemeral_message_parameters
         if attachments:
             # A rich photo block can reference attach://<name>. Keeping the
             # InputFile as a top-level raw API argument lets PTB emit the
@@ -545,11 +560,12 @@ class RichMessenger:
         """
         if not self.supports(FEATURE_EPHEMERAL):
             return None
-        # sendMessage is already typed by PTB, so the 10.2-only parameters ride
+        # sendMessage is already typed by PTB, so the 10.3 parameters ride
         # along via api_kwargs — that keeps rate limiting and Defaults intact.
-        extra: dict = {"receiver_user_id": receiver_user_id}
+        # Bot API 10.3 replaces the old top-level fields with this object.
+        extra: dict = {"ephemeral_message_parameters": {"receiver_user_id": receiver_user_id}}
         if callback_query_id:
-            extra["callback_query_id"] = callback_query_id
+            extra["ephemeral_message_parameters"]["callback_query_id"] = callback_query_id
         try:
             return await bot.send_message(
                 chat_id=chat_id,

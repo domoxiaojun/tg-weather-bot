@@ -27,6 +27,7 @@ from core.handlers.report import ReportHandlers
 from core.handlers.subscriptions import SubscriptionHandlers
 from core.handlers.weather import WeatherHandlers
 from services.fusion import WeatherFusionService
+from services.external_api import ExternalWeatherApi
 from services.llm import LLMService
 from utils.cache import cache
 from utils.persistence_backup import rotate_persistence_backups
@@ -164,8 +165,14 @@ def create_app() -> Application:
         weather_service=WeatherFusionService(),
         llm_service=LLMService(),
     )
+    external_api = ExternalWeatherApi(deps.weather_service, deps.llm_service)
+
+    async def post_init(application: Application):
+        await _register_bot_commands(application)
+        await external_api.start()
 
     async def close_resources(application: Application):
+        await external_api.stop()
         await cache.cancel_inflight()
         await asyncio.gather(
             deps.weather_service.aclose(),
@@ -181,7 +188,7 @@ def create_app() -> Application:
         # Bounded concurrency: PTB defaults to strictly serial updates, so one
         # 60s AI report would freeze every other user until it finished.
         .concurrent_updates(16)
-        .post_init(_register_bot_commands)
+        .post_init(post_init)
         .post_shutdown(close_resources)
     )
 

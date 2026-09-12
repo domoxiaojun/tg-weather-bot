@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional, Any
 from abc import ABC, abstractmethod
 import hashlib
@@ -56,6 +57,20 @@ DEFAULT_WEATHER_REPORT_PROMPT = (
     "4. 不要自行估算、推导或补写 API 没有返回的体感温度或其他字段。\n"
     "5. 卡片里已有完整数据表，日报只做判断和取舍，不要复述所有数字。可以幽默，但玩笑要短且服务于天气判断。"
 )
+
+
+@dataclass(frozen=True, slots=True)
+class WeatherReportResult:
+    """Structured report outcome for non-Telegram callers.
+
+    Telegram handlers still receive a safe human-readable fallback through
+    :meth:`LLMService.generate_weather_report`, while the internal HTTP API can
+    distinguish a generated report from a timeout or provider failure.
+    """
+
+    available: bool
+    text: Optional[str] = None
+    error: Optional[str] = None
 
 class LLMProvider(ABC):
     @abstractmethod
@@ -694,14 +709,29 @@ class LLMService:
         data: WeatherData,
         on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
-        """Generate a complete AI weather report.
+        """Generate a complete AI weather report for Telegram callers."""
+        result = await self.generate_weather_report_result(data, on_progress=on_progress)
+        if result.available and result.text:
+            return result.text
+        return {
+            "report_unavailable": "⚠️ AI 天气日报功能尚未配置",
+            "report_timeout": "⏱️ AI 响应超时，请稍后重试。",
+            "report_failed": "❌ 生成日报失败，请稍后重试。",
+        }.get(result.error or "report_failed", "❌ 生成日报失败，请稍后重试。")
+
+    async def generate_weather_report_result(
+        self,
+        data: WeatherData,
+        on_progress: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> WeatherReportResult:
+        """Generate a report while preserving machine-readable failure state.
 
         on_progress receives the accumulated raw text as the stream advances
         (never called on cache hits or when streaming is disabled).
         """
         if not self.provider:
             logger.warning("No LLM Provider Configured")
-            return "⚠️ AI 天气日报功能尚未配置"
+            return WeatherReportResult(False, error="report_unavailable")
 
         from utils.cache import cache
 
@@ -718,7 +748,7 @@ class LLMService:
                 cached_line = (
                     f"🕐 数据时间：{cached['data_time']}" if cached.get("data_time") else time_line
                 )
-                return f"{cached_line}\n\n{cached['text']}"
+                return WeatherReportResult(True, text=f"{cached_line}\n\n{cached['text']}")
 
         system_prompt = self._build_system_prompt()
         user_prompt = self._format_weather_data(data)
@@ -773,7 +803,7 @@ class LLMService:
                     },
                     ttl=settings.llm_report_cache_ttl_seconds,
                 )
-            return f"{time_line}\n\n{text}"
+            return WeatherReportResult(True, text=f"{time_line}\n\n{text}")
 
         except asyncio.TimeoutError:
             elapsed = time.perf_counter() - started_at
@@ -783,14 +813,14 @@ class LLMService:
                 elapsed,
                 settings.llm_report_timeout_seconds,
             )
-            return "⏱️ AI 响应超时，请稍后重试。"
+            return WeatherReportResult(False, error="report_timeout")
         except Exception as e:
             # 详细错误只进日志：原始异常可能包含未转义的 HTML 片段或供应商
             # 内部信息，不能直接拼进 parse_mode=HTML 的用户消息。
             elapsed = time.perf_counter() - started_at
             error_msg = f"{type(e).__name__}: {str(e)}" if str(e) else type(e).__name__
             logger.error(f"LLM Generation Failed after {elapsed:.1f}s: {error_msg}")
-            return "❌ 生成日报失败，请稍后重试。"
+            return WeatherReportResult(False, error="report_failed")
 
     def _build_system_prompt(self) -> str:
         if settings.llm_weather_report_prompt:

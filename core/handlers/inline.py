@@ -158,7 +158,7 @@ class InlineHandlers:
             lon = update.inline_query.location.longitude
             lat = update.inline_query.location.latitude
             location_query = f"{lon},{lat}"
-            logger.info(f"Inline查询使用用户位置: {location_query}")
+            logger.info(f"Inline查询收到用户位置: {location_query}")
             if not query:
                 query = None
 
@@ -219,9 +219,9 @@ class InlineHandlers:
                 special_mode, special_location = extract_special_query(parts)
                 if special_mode is None:
                     parsed_location, view_type, start_day, days = parse_location_and_view(parts)
-                    if not location_query:
+                    if parsed_location:
                         location_query = parsed_location
-                elif special_location and not location_query:
+                elif special_location:
                     location_query = special_location
 
             # Dedicated typhoon / tide results (keyword path).

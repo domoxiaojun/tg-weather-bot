@@ -57,7 +57,7 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 - Reports are cached per location for `LLM_REPORT_CACHE_TTL_SECONDS` (default 4h, 0 disables); new weather alerts or rain onset invalidate the cache automatically.
 - If AI reports feel slow, lower `OPENAI_REASONING_EFFORT`, set `OPENAI_VERBOSITY=low`, and set `OPENAI_MAX_OUTPUT_TOKENS`; `LLM_REPORT_TIMEOUT_SECONDS` (default 60s) controls when the bot gives up. Gemini HTTP timeout is configured with `GEMINI_TIMEOUT_SECONDS`.
 
-## Rich Messages (Bot API 10.1/10.2)
+## Rich Messages (Bot API 10.1–10.3)
 
 Rich output is **enabled by default** (`ENABLE_RICH_MESSAGES=true`) through a thin wrapper over PTB's public `Bot.do_api_request` escape hatch — `python-telegram-bot 22.8` is typed only through Bot API 10.0, so the newer methods are called directly while every surface keeps its MarkdownV2/HTML fallback.
 
@@ -72,7 +72,7 @@ Rich output is **enabled by default** (`ENABLE_RICH_MESSAGES=true`) through a th
 - **Ephemeral messages** (`ENABLE_EPHEMERAL_MESSAGES=true`): in groups, subscription management replies are visible only to the requesting user, and those commands are registered with `is_ephemeral`.
 - Unsupported servers/proxies are detected once (`EndPointNotFound`) and the capability is disabled for the process — functionality degrades, nothing breaks.
 
-See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, PTB 22.8 transport audit, Inline/Guest implementation and deliberate ephemeral boundary.
+See [the local Bot API 10.0–10.3 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, PTB 22.8 transport audit, Inline/Guest implementation and deliberate ephemeral boundary.
 
 ## 🐳 Docker Deploy (Recommended)
 
@@ -104,6 +104,26 @@ See [the local Bot API 10.1/10.2 integration record](docs/telegram-bot-api-updat
 - **Send Location** - Auto-query + Rain Chart.
 - **Inline**: `@your_bot Beijing` - Share weather anywhere.
 - **Guest**: mention `@your_bot Beijing` in a chat where the bot is not a member; the bot replies as itself once.
+
+## 给另一个聊天 Agent 调用
+
+天气 API 默认关闭。需要让另一个机器人代查天气时，在 `.env` 开启并设置随机 Token：
+
+```dotenv
+WEATHER_API_ENABLED=true
+WEATHER_API_HOST=0.0.0.0   # 只有同一 Docker network 的服务才这样设
+WEATHER_API_PORT=8080
+WEATHER_API_TOKEN=一段足够长的随机字符串
+```
+
+接口只支持 GET，并要求 `Authorization: Bearer <WEATHER_API_TOKEN>`（也兼容 `X-Weather-API-Key`）。
+
+- `GET /v1/weather?city=潮安`：返回统一天气 JSON、Telegram Rich Blocks，以及不能渲染 Rich Blocks 时的 `fallback_text`（MarkdownV2）。
+- `GET /v1/weather/card.png?city=潮安`：返回可直接交给 `send_photo` 的 PNG 天气卡片。
+- `GET /v1/weather/report?city=潮安`：返回同一份天气数据生成的 AI 总结；未配置 LLM 时会返回 `available=false`。
+- `GET /v1/weather?city=潮安&include=report,image`：一次返回 AI 总结和 base64 PNG，适合调用方只想请求一次的场景。
+
+如果两个服务在同一个 Compose 网络，调用地址使用 `http://weather_bot:8080`；如果是两个独立 Compose 项目，需要把它们加入同一个 Docker external network。不要把 API 端口公开到公网；不同主机之间应使用反向代理/TLS 或专用内网通道。这个接口是天气服务 API，不是 Bot-to-Bot Telegram 对话，也不会把 Bot Token 暴露给调用方。
 
 ## 🔔 Subscriptions
 
@@ -161,10 +181,11 @@ You may use, modify, and distribute the code (including for commercial self-host
 ## 📚 API Notes
 
 - [天气 API 本地文档索引与双源策略](docs/weather-api-index.md)
+- [外部聊天 Agent 天气调用使用指南](docs/external-weather-api-guide.md)
 - [项目命令、API 调用与成本路由](docs/commands-api-mapping.md)
 - [彩云天气当前套餐 API 整理](docs/caiyun-api-reference-2026-07.md)
 - [和风天气完整 API 整理](docs/qweather-api-reference-2026-07.md)
 - [和风天气 2026-07 更新核对](docs/qweather-api-update-2026-07.md)
 - [和风图标 → Telegram 自定义 Emoji](docs/weather-custom-emoji.md)（映射：`resources/weather_custom_emoji.json`，Docker `./data` 卷可覆盖）
-- [Telegram Bot API 10.1/10.2 与 PTB 兼容性核对](docs/telegram-bot-api-update-2026-07.md)
+- [Telegram Bot API 10.0–10.3 与 PTB 兼容性核对](docs/telegram-bot-api-update-2026-07.md)
 - [OpenAI SDK 2.48 与 GPT-5.6 Sol 迁移记录](docs/openai-gpt-5p6-upgrade-2026-07.md)

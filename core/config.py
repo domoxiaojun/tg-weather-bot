@@ -119,6 +119,16 @@ class Settings(BaseSettings):
     
     # Infrastructure
     redis_url: str = Field("redis://localhost:6379/0", description="Redis Connection URL")
+
+    # Internal HTTP API for a separate chat/agent bot.  It is disabled by
+    # default and binds to loopback so enabling it does not accidentally
+    # publish the weather provider or LLM credentials to the public internet.
+    weather_api_enabled: bool = Field(False, description="Enable the token-protected internal weather API")
+    weather_api_host: str = Field("127.0.0.1", description="Internal weather API bind address")
+    weather_api_port: int = Field(8080, description="Internal weather API listen port")
+    weather_api_token: Optional[str] = Field(None, description="Bearer token for internal weather API callers")
+    weather_api_timeout_seconds: float = Field(45.0, description="Maximum wall-clock time for one internal weather API request")
+    weather_api_max_concurrency: int = Field(4, description="Maximum concurrent internal weather API requests")
     
     # Logging
     log_level: str = Field("INFO", description="Logging Level")
@@ -205,8 +215,8 @@ class Settings(BaseSettings):
     @field_validator("rain_alert_min_pop_pct")
     @classmethod
     def validate_rain_min_pop(cls, value: float) -> float:
-        if not 0 <= value <= 100:
-            raise ValueError("rain_alert_min_pop_pct must be between 0 and 100")
+        if not 0 <= value <= 101:
+            raise ValueError("rain_alert_min_pop_pct must be between 0 and 101 (101 disables probability-only alerts)")
         return value
     enable_alert_push: bool = Field(True, description="Push official weather warnings to rain-alert subscribers")
     alert_check_interval_minutes: int = Field(10, description="Minutes between official warning / derived event checks")
@@ -342,6 +352,7 @@ class Settings(BaseSettings):
         "llm_weather_report_prompt_file",
         "webhook_url",
         "webhook_secret",
+        "weather_api_token",
         mode="before",
     )
     @classmethod
@@ -418,6 +429,41 @@ class Settings(BaseSettings):
             value = value.strip()
             return value or None
         return value
+
+    @field_validator("weather_api_host")
+    @classmethod
+    def validate_weather_api_host(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("weather_api_host must not be empty")
+        return value
+
+    @field_validator("weather_api_port")
+    @classmethod
+    def validate_weather_api_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("weather_api_port must be between 1 and 65535")
+        return value
+
+    @field_validator("weather_api_timeout_seconds")
+    @classmethod
+    def validate_weather_api_timeout(cls, value: float) -> float:
+        if not 1 <= value <= 120:
+            raise ValueError("weather_api_timeout_seconds must be between 1 and 120")
+        return value
+
+    @field_validator("weather_api_max_concurrency")
+    @classmethod
+    def validate_weather_api_concurrency(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("weather_api_max_concurrency must be at least 1")
+        return value
+
+    @model_validator(mode="after")
+    def require_weather_api_token(self):
+        if self.weather_api_enabled and not self.weather_api_token:
+            raise ValueError("WEATHER_API_TOKEN is required when WEATHER_API_ENABLED=true")
+        return self
 
     @field_validator(
         "caiyun_cache_ttl_seconds",

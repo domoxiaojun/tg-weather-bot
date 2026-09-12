@@ -34,15 +34,19 @@ def make_weather() -> WeatherData:
 
 
 class WeatherService:
+    def __init__(self):
+        self.locations = []
+
     async def get_fused_weather(self, location, profile="full"):
+        self.locations.append(location)
         return make_weather()
 
 
 class InlineQueryDouble:
-    def __init__(self, query="珠海"):
+    def __init__(self, query="珠海", location=None):
         self.id = "inline-query-1"
         self.query = query
-        self.location = None
+        self.location = location
         self.fallback_calls = []
 
     async def answer(self, results, **kwargs):
@@ -95,6 +99,38 @@ class RichQueryPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(len(payload["results"]), 6)
         for result in payload["results"]:
             self.assertIn("rich_message", result["input_message_content"])
+
+    async def test_typed_city_overrides_mobile_inline_location(self):
+        query = InlineQueryDouble(
+            query="北京",
+            location=SimpleNamespace(longitude=113.57, latitude=22.27),
+        )
+        bot = ApiBotDouble()
+        weather_service = WeatherService()
+        handler = InlineHandlers(SimpleNamespace(weather_service=weather_service))
+
+        await handler.handle_inline_query(
+            SimpleNamespace(inline_query=query),
+            SimpleNamespace(bot=bot),
+        )
+
+        self.assertEqual(weather_service.locations, ["北京"])
+
+    async def test_empty_mobile_inline_query_uses_current_location(self):
+        query = InlineQueryDouble(
+            query="",
+            location=SimpleNamespace(longitude=113.57, latitude=22.27),
+        )
+        bot = ApiBotDouble()
+        weather_service = WeatherService()
+        handler = InlineHandlers(SimpleNamespace(weather_service=weather_service))
+
+        await handler.handle_inline_query(
+            SimpleNamespace(inline_query=query),
+            SimpleNamespace(bot=bot),
+        )
+
+        self.assertEqual(weather_service.locations, ["113.57,22.27"])
 
     async def test_inline_rich_rejection_retries_plain_results(self):
         query = InlineQueryDouble(query="")

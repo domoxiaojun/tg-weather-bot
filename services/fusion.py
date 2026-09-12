@@ -216,7 +216,7 @@ class WeatherFusionService:
 
         cls._merge_realtime(qweather_data, caiyun_data)
 
-        if profile in {"full", "hourly", "rain", "indices"}:
+        if profile in {"full", "card", "hourly", "rain", "indices"}:
             cls._merge_air_quality(qweather_data, caiyun_data)
 
         if not qweather_data.alerts and caiyun_data.alerts:
@@ -233,7 +233,7 @@ class WeatherFusionService:
                 if enriched:
                     logger.info(f"Fusion: added native Caiyun feels-like to {enriched} hours")
 
-        if profile in {"full", "daily"}:
+        if profile in {"full", "card", "daily"}:
             if not qweather_data.daily and caiyun_data.daily:
                 qweather_data.daily = [day.model_copy(deep=True) for day in caiyun_data.daily]
             elif qweather_data.daily and caiyun_data.daily:

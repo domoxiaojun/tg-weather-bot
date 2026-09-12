@@ -11,6 +11,7 @@ from typing import List, Optional
 
 from domain.models import WeatherData
 from services.telegram_rich import (
+    expandable_blockquote,
     bold,
     bullet_list,
     cell,
@@ -107,10 +108,11 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
         title = alert.title if not level or level in alert.title else f"{alert.title}（{level}）"
         text = (alert.text or "").strip()
         expanded: List[dict] = []
+        metadata = [part for part in (alert.source, getattr(alert, "pub_time", None)) if part]
         if text:
             body = text[:500] + ("…" if len(text) > 500 else "")
             expanded.append(
-                {"type": "blockquote", "blocks": [paragraph(body)], "credit": alert.source or "预警"}
+                expandable_blockquote(body, credit=" · ".join(str(part) for part in metadata) or "预警")
             )
         else:
             expanded.append(paragraph(italic(alert.source or "暂无详细说明")))
@@ -511,7 +513,7 @@ def _index_pair_blocks(
         left = entries[offset]
         right = entries[offset + 1] if offset + 1 < len(entries) else ""
         rows.append([left, right])
-    table_block = table(rows, aligns=["left", "left"], bordered=True)
+    table_block = table(rows, aligns=["left", "left"], bordered=True, compact=True)
     if collapsible:
         summary: list = ["💡 生活指数", f" · {len(ordered)}项", "（点击展开详情）"]
         return [details(summary, [table_block])]
@@ -520,7 +522,6 @@ def _index_pair_blocks(
         blocks.append(heading("💡 生活指数", size=4))
     blocks.append(table_block)
     return blocks
-
 
 _REPORT_TAG_RE = re.compile(r"<(/?)([bi])>")
 _REPORT_SECTION_TITLES = ("预警", "现在", "接下来", "未来几天", "建议")
@@ -839,7 +840,7 @@ def build_hourly_blocks(data: WeatherData, limit: Optional[int] = None) -> List[
     aligns = ["left", "center", "right"] + (["right"] if show_feels_like else []) + ["right", "right"]
     return [
         *build_header(data, f"未来 {len(hours)} 小时 · 当地时间"),
-        table(rows, headers=headers, aligns=aligns, bordered=True),
+        table(rows, headers=headers, aligns=aligns, bordered=True, compact=True),
         *_hourly_extras_blocks(hours),
         build_footer(data),
     ]
@@ -953,7 +954,7 @@ def build_daily_blocks(
         *build_header(data, f"未来 {len(forecasts)} 天"),
         # Period matrix first: it answers "which part of which day" at a glance.
         *build_period_matrix(data),
-        table(rows, headers=headers, aligns=["left", "center", "right", "right", "right"], bordered=True),
+        table(rows, headers=headers, aligns=["left", "center", "right", "right", "right"], bordered=True, compact=True),
     ]
 
     # Day/night wording is the detail people scan for; keep it collapsible.
