@@ -214,8 +214,8 @@ def table(
     headers: Optional[list] = None,
     aligns: Optional[list] = None,
     bordered: bool = False,
-    striped: bool = True,
-    compact: bool = False,
+    striped: bool = False,
+    compact: bool = True,
     caption: Optional[RichText] = None,
 ) -> dict:
     """Build a table from raw text rows.

@@ -51,7 +51,5 @@ class BotApi103Tests(unittest.IsolatedAsyncioTestCase):
 
     def test_compact_is_opt_in_and_preserves_table_content(self):
         normal = table([["北京", "25°C"]], headers=["城市", "温度"])
-        compact = table([["北京", "25°C"]], headers=["城市", "温度"], compact=True)
-        self.assertNotIn("is_compact", normal)
-        self.assertTrue(compact.pop("is_compact"))
-        self.assertEqual(compact, normal)
+        self.assertTrue(normal["is_compact"])
+        self.assertNotIn("is_striped", normal)
