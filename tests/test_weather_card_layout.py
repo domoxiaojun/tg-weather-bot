@@ -363,7 +363,18 @@ class WeatherCardLayoutTests(unittest.TestCase):
                 for block in blocks
                 if block.get("type") == "details" and "更多气象参数" in _flatten_block_text(block)
             )
-            self.assertEqual(extra["summary"][0].get("type"), "custom_emoji")
+            self.assertTrue(extra["summary"][0].startswith("🔆 更多气象参数"))
+            # Summary icons stay before text in the normal text flow, even
+            # when the custom-emoji pack is enabled for the card body.
+            for block in blocks:
+                if block.get("type") != "details":
+                    continue
+                summary = block["summary"]
+                self.assertIsInstance(summary[0], str)
+                self.assertFalse(any(
+                    isinstance(part, dict) and part.get("type") == "custom_emoji"
+                    for part in summary
+                ))
         finally:
             set_custom_emoji_map_for_tests(None)
 
@@ -381,6 +392,7 @@ class WeatherCardLayoutTests(unittest.TestCase):
         )
         blocks = build_report_blocks(html, collapse_tail=True)
         fold = next(block for block in blocks if block.get("type") == "details")
+        self.assertEqual(fold["summary"][0], "🔭 ")
         fold_text = _flatten_block_text(fold)
         self.assertIn("未来几天", fold_text)
         self.assertIn("建议", fold_text)
@@ -437,7 +449,7 @@ class WeatherCardLayoutTests(unittest.TestCase):
 
 
 class RichSystemEmojiTests(unittest.TestCase):
-    """Chrome across every rich surface must use the uploaded QWeather pack.
+    """Body chrome uses the uploaded QWeather pack; folds use text emoji.
 
     A handful of concepts genuinely have no weather glyph (高潮/低潮 need two
     distinguishable arrows; 位置/时间/路径/生活指数 have no counterpart at all),
@@ -482,6 +494,16 @@ class RichSystemEmojiTests(unittest.TestCase):
                 if value.get("type") == "custom_emoji":
                     return  # alternative_text is the fallback, not chrome
                 for key in ("text", "summary", "caption", "credit"):
+                    if key == "summary" and value.get("type") == "details":
+                        # Native disclosure arrows share the summary line;
+                        # enforce a text icon prefix instead of custom emoji.
+                        summary = value[key]
+                        first = summary[0] if isinstance(summary, list) else summary
+                        self.assertIsInstance(first, str)
+                        if self.EMOJI_RE.search(first):
+                            self.assertRegex(first, r"^(?:⚠️|🌫️|🔆|💡|🔭|📅) ")
+                        self.assertNotIn('"type": "custom_emoji"', json.dumps(summary))
+                        continue
                     walk(value.get(key))
                 for nested in value.get("blocks") or []:
                     walk(nested)

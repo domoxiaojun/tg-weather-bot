@@ -116,8 +116,10 @@ def build_alert_blocks(data: WeatherData) -> List[dict]:
             )
         else:
             expanded.append(paragraph(italic(alert.source or "暂无详细说明")))
+        # Keep summary icons in the text flow: custom emoji overlap the native
+        # disclosure arrow on the reported client. Body icons remain custom.
         blocks.append(
-            details([weather_icon_rich(alert_icon_code(alert)), " ", bold(title)], expanded)
+            details(["⚠️ ", bold(title)], expanded)
         )
     return blocks
 
@@ -265,10 +267,7 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
     if data.air_stations:
         inner.append(paragraph(italic(f"附近监测站: {'、'.join(data.air_stations[:3])}")))
 
-    summary = [
-        ui_icon_rich("air"),
-        " 空气质量",
-    ]
+    summary = ["🌫️ 空气质量"]
     if air.aqi is not None:
         summary.append(f" · AQI {air.aqi}")
     if air.category:
@@ -481,11 +480,9 @@ def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
 
     if not rows:
         return []
-    # 102 少云 rather than a system emoji: every label on this card comes from
-    # the uploaded QWeather custom-emoji pack.
+    # Match the text-emoji prefix used by the other collapsible summaries.
     summary = [
-        ui_icon_rich("detail"),
-        " 更多气象参数",
+        "🔆 更多气象参数",
         f" · {len(rows)}项",
         "（点击展开详情）",
     ]
@@ -718,10 +715,8 @@ def build_report_blocks(
             blocks.append(block)
 
     if tail:
-        # 104 matches the icon the 未来几天 section heading itself uses.
         summary = [
-            weather_icon_rich("104"),
-            " ",
+            "🔭 ",
             " · ".join(tail_titles) or "更多内容",
             "（点击展开）",
         ]
@@ -972,7 +967,7 @@ def build_daily_blocks(
         detail_items.append(paragraph(line))
     if detail_items:
         blocks.append(
-            details([ui_icon_rich("detail"), " 逐日文字描述"], [bullet_list(detail_items)])
+            details(["📅 逐日文字描述"], [bullet_list(detail_items)])
         )
 
     blocks.append(build_footer(data))
