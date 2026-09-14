@@ -1,0 +1,4 @@
+services:
+  bot:
+    image: ghcr.io/domoxiaojun/tg-weather-bot:${IMAGE_TAG:?set IMAGE_TAG}
+    build: null

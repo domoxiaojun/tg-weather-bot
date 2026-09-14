@@ -1,6 +1,27 @@
 # Docker Compose 部署指南
 
-本文命令在**部署服务器**的仓库目录执行。天气 Bot 镜像由服务器根据源码构建；当前 GitHub Actions 只构建临时测试镜像，不发布 GHCR/Docker Hub 镜像，也不会自动更新服务器。
+本文命令在**部署服务器**的仓库目录执行。项目提供两种镜像来源：本地根据源码构建，或从 GHCR 使用已发布的 amd64/arm64 tag 镜像。GitHub Actions 不会自动更新服务器上的容器。
+
+## 0. 使用 GHCR 发布镜像（可选）
+
+`Publish Docker image` workflow 只接受 `v*` Git tag 或手动 `workflow_dispatch`，发布到：
+
+```text
+ghcr.io/domoxiaojun/tg-weather-bot:<tag>
+```
+
+它构建 `linux/amd64` 和 `linux/arm64` manifest。发布 workflow 成功后，服务器可跳过源码构建，使用下面的 Compose override：
+
+```yaml
+services:
+  bot:
+    image: ghcr.io/domoxiaojun/tg-weather-bot:v1.0.0
+    build: null
+```
+
+私有 GHCR 包需要先在服务器执行 `docker login ghcr.io`；公开包可直接拉取。使用 `latest` 之前应确认它对应的发布运行；tag 和 digest 才是可复现部署依据。镜像发布成功不代表服务器已经更新，更新仍需执行 `docker compose pull bot`、`docker compose up -d bot` 并检查日志和 Telegram 实测。
+
+默认 Compose 文件仍使用 `build: .`，不填写 override 时会继续从源码本机构建。
 
 ## 1. 准备服务器
 
@@ -18,7 +39,7 @@ chmod 600 .env
 chmod 700 secrets
 ```
 
-`cp` 只用于首次安装；已有 `.env` 时直接编辑，不能用示例覆盖已有凭据。宿主机无需安装 Python、uv 或 Redis，Compose 会构建 Python 应用并启动 Redis 容器。使用 Docker 的账户需要访问 Docker daemon 的权限。
+`cp` 只用于首次安装；已有 `.env` 时直接编辑，不能用示例覆盖已有凭据。使用本地构建时，宿主机无需安装 Python、uv 或 Redis，Compose 会构建 Python 应用并启动 Redis 容器。使用 GHCR 镜像时仍需 Docker Compose 和 Redis 容器。使用 Docker 的账户需要访问 Docker daemon 的权限。
 
 ## 2. 填写配置
 
@@ -135,6 +156,16 @@ ports:
 ## 6. 更新源码与修改配置
 
 更新前记录当前提交，并备份下一节列出的持久化文件。确认 `git status --short` 中的本地修改已保存；拉取冲突时先解决，不能用强制重置覆盖配置或本地工作。
+
+使用 GHCR override 更新已发布 tag：
+
+```bash
+docker compose -f docker-compose.yml -f compose.ghcr.yml pull bot
+docker compose -f docker-compose.yml -f compose.ghcr.yml up -d bot
+docker compose -f docker-compose.yml -f compose.ghcr.yml ps
+```
+
+`docker compose pull` 只会拉取 `image:`，不会更新 `build: .` 服务。发布 tag、digest 和服务器实际运行容器必须分别记录。
 
 ```bash
 git rev-parse HEAD

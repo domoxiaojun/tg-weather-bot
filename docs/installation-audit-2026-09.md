@@ -2,16 +2,16 @@
 
 ## 结论
 
-当前 `.github/workflows/ci.yml` **不会自动发布 Docker 镜像**。`container` job 只在 GitHub-hosted runner 中执行：
+当前 `.github/workflows/ci.yml` 的 `container` job 只在 GitHub-hosted runner 中执行：
 
 ```text
 docker build -t tg-weather-bot:ci .
 docker run ... tg-weather-bot:ci ...
 ```
 
-它没有登录 GHCR/Docker Hub，没有 `docker/build-push-action`，没有 `push: true`，也没有 tag、digest、镜像签名或 release 触发器。只有该提交的 job 实际成功后才能说明构建与 smoke test 通过；存在 workflow 配置本身不是成功证据，也不代表已经发布或部署。
+独立的 `.github/workflows/docker-publish.yml` 才负责 GHCR 发布，使用 `docker/build-push-action`、`push: true`、`linux/amd64,linux/arm64` 和 `packages: write`。只有发布 job 实际成功并可在 GHCR 查询到 tag/digest，才能说明镜像发布完成；workflow 配置或 CI 成功本身不是发布证据，也不代表已经部署。
 
-当前自动化触发器是：推送到 `main`、Pull Request、手动 `workflow_dispatch`。CI 失败会阻止该次检查，但不会生成可下载的正式镜像。
+CI 触发器是推送到 `main`、Pull Request、手动 `workflow_dispatch`；发布 workflow 触发器是 `v*` tag 和手动 `workflow_dispatch`。普通 CI 成功不会发布正式镜像。
 
 ## 当前安装路径
 
@@ -42,4 +42,4 @@ Compose 使用本地 `Dockerfile` 构建 `tg-weather-bot`，同时启动 Redis�
 
 ## 未来镜像发布建议
 
-把镜像发布作为独立 workflow，不要让普通 PR 自动推送：版本 tag 或明确的手动触发才发布；先构建 amd64/arm64，生成不可变版本 tag 和 digest，再更新安装文档。发布成功仍不等于生产部署成功，部署主机必须另行验证容器状态、healthcheck、监听端口、持久化目录和真实 Bot 收发。
+镜像发布已作为独立 workflow，不让普通 PR 或 main 推送自动推送；版本 tag 或明确手动触发才发布 amd64/arm64。正式上线仍应记录不可变版本 tag 和 digest，并在部署主机验证容器状态、healthcheck、监听端口、持久化目录和真实 Bot 收发。

@@ -76,7 +76,7 @@ See [the local Bot API 10.0–10.3 integration record](docs/telegram-bot-api-upd
 
 ## 🐳 Docker Compose（本地构建）
 
-当前仓库的 GitHub Actions 只做 Docker 构建和容器 smoke test，**没有自动推送 GHCR 或 Docker Hub 镜像**。因此安装时会在本机根据 `Dockerfile` 构建镜像，不要执行 `docker pull tg-weather-bot`；如需远程镜像发布，必须另行配置并验证发布 workflow。
+GitHub Actions 的 CI 负责构建和容器 smoke test；独立的 `Publish Docker image` workflow 会在 `v*` tag 或手动触发时，将 `linux/amd64` 与 `linux/arm64` 镜像发布到 `ghcr.io/domoxiaojun/tg-weather-bot`。普通 `main` 推送和 Pull Request 不会发布镜像。首次部署可本地构建，也可使用已发布 tag 镜像，详见[Docker Compose 部署指南](docs/docker-compose.md)。
 
 完整步骤见 **[Docker Compose 部署指南](docs/docker-compose.md)**，包括首次安装、JWT、Polling/Webhook、更新重建、备份恢复和排障。以下命令在已准备好 Docker Engine 与 Compose v2 的部署服务器上运行。
 
