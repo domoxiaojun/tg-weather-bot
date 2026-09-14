@@ -561,6 +561,8 @@ class QWeatherAdapter(WeatherAdapter):
             "no2": None,
             "co": None,
         }
+        units = {}
+        sub_indexes = {}
         for pollutant in air_data.get("pollutants", []):
             code = re.sub(
                 r"[^a-z0-9]",
@@ -575,13 +577,30 @@ class QWeatherAdapter(WeatherAdapter):
                 continue
             concentration = pollutant.get("concentration") or {}
             pollutants[target] = self._optional_float(concentration.get("value"))
+            if concentration.get("unit"):
+                units[target] = str(concentration["unit"])
+            sub = next((i for i in pollutant.get("subIndexes", [])
+                        if i.get("code") == selected.get("code")), None)
+            if sub is not None:
+                value = sub.get("aqiDisplay")
+                if value in (None, ""):
+                    value = sub.get("aqi")
+                if value not in (None, ""):
+                    sub_indexes[target] = str(value)
 
         raw_aqi = selected.get("aqi")
         if raw_aqi in (None, ""):
             raw_aqi = selected.get("aqiDisplay")
 
         return AirQuality(
-            aqi=self._optional_int(raw_aqi),
+            aqi=self._optional_float(raw_aqi),
+            aqi_code=str(selected.get("code") or ""),
+            aqi_name=str(selected.get("name") or ""),
+            aqi_display=str(selected.get("aqiDisplay") or ""),
+            pollutant_units=units,
+            pollutant_sub_indexes=sub_indexes,
+            health_effect=self._as_text(health.get("effect")),
+            sensitive_advice=self._as_text(advice.get("sensitivePopulation")),
             category=self._as_text(selected.get("category") or selected.get("level")),
             primary=self._as_text(primary),
             **pollutants,
@@ -1206,6 +1225,8 @@ class QWeatherAdapter(WeatherAdapter):
             forecast_air = hourly_air.get(air_key)
             if forecast_air is not None:
                 hour.aqi = forecast_air.aqi
+                hour.aqi_code = forecast_air.aqi_code
+                hour.aqi_display = forecast_air.display_value
                 hour.pm2p5 = forecast_air.pm2p5
                 if forecast_air.aqi is not None:
                     hour.field_sources["aqi"] = "qweather"
@@ -1217,6 +1238,8 @@ class QWeatherAdapter(WeatherAdapter):
             forecast_air = daily_air.get(day.date.date())
             if forecast_air is not None:
                 day.aqi = forecast_air.aqi
+                day.aqi_code = forecast_air.aqi_code
+                day.aqi_display = forecast_air.display_value
                 day.pm2p5 = forecast_air.pm2p5
                 if forecast_air.aqi is not None:
                     day.field_sources["aqi"] = "qweather"

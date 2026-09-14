@@ -30,6 +30,7 @@ from utils.formatter import (
     format_attribution,
     format_life_index_entry,
     format_precip_value,
+    format_yesterday_comparison,
     format_weather_number,
     normalize_warning_level,
     ordered_indices_for_day,
@@ -195,32 +196,6 @@ def build_period_matrix(data: WeatherData) -> List[dict]:
     ]
 
 
-# What each pollutant is, plus 国标单项指数分级限值 (HJ 633: 1h values for
-# gases, 24h for particulates — the closest published ladder for realtime
-# numbers). A bare concentration means nothing to a layperson; the level and
-# the one-line "what is this" are the actual information.
-_POLLUTANT_META = {
-    "PM2.5": ("细颗粒物，可深入肺部", (35, 75, 115, 150, 250)),
-    "PM10": ("可吸入颗粒物（扬尘）", (50, 150, 250, 350, 420)),
-    "O₃": ("臭氧，晴热午后偏高", (160, 200, 300, 400, 800)),
-    "NO₂": ("二氧化氮，多来自尾气", (100, 200, 700, 1200, 2340)),
-    "SO₂": ("二氧化硫，燃煤排放", (150, 500, 650, 800, 1600)),
-    "CO": ("一氧化碳，通风不良时危险", (5, 10, 35, 60, 90)),
-}
-_POLLUTANT_LEVELS = ("优", "良", "轻度", "中度", "重度", "严重")
-
-
-def pollutant_level(name: str, value) -> Optional[str]:
-    """优/良/轻度/中度/重度/严重 for one pollutant concentration."""
-    meta = _POLLUTANT_META.get(name)
-    if meta is None or value is None:
-        return None
-    for limit, label in zip(meta[1], _POLLUTANT_LEVELS):
-        if value <= limit:
-            return label
-    return _POLLUTANT_LEVELS[-1]
-
-
 def build_air_quality_blocks(data: WeatherData) -> List[dict]:
     """Collapsible pollutant breakdown — six fields the text views cannot fit."""
     air = data.air_quality
@@ -228,23 +203,21 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         return []
 
     pollutants = (
-        ("PM2.5", air.pm2p5),
-        ("PM10", air.pm10),
-        ("O₃", air.o3),
-        ("NO₂", air.no2),
-        ("SO₂", air.so2),
-        ("CO", air.co),
+        ("pm2p5", "PM2.5", air.pm2p5),
+        ("pm10", "PM10", air.pm10),
+        ("o3", "O₃", air.o3),
+        ("no2", "NO₂", air.no2),
+        ("so2", "SO₂", air.so2),
+        ("co", "CO", air.co),
     )
     rows = []
-    for name, value in pollutants:
+    for code, name, value in pollutants:
         if value is None:
             continue
-        level = pollutant_level(name, value)
-        # Levels beyond 良 are highlighted — that is the "should I care" bit.
-        level_cell = (
-            marked(level) if level and level not in ("优", "良") else (level or "—")
-        )
-        rows.append([name, format_weather_number(value), level_cell])
+        unit = air.pollutant_units.get(code)
+        concentration = format_weather_number(value, decimals=3)
+        concentration += f" {unit}" if unit else "（单位未提供）"
+        rows.append([name, concentration, air.pollutant_sub_indexes.get(code, "—")])
     if not rows and air.aqi is None and not air.category and not air.description and not air.primary:
         return []
 
@@ -253,23 +226,29 @@ def build_air_quality_blocks(data: WeatherData) -> List[dict]:
         inner.append(
             table(
                 rows,
-                headers=["污染物", "浓度", "水平"],
+                headers=["污染物", "浓度", "分项指数"],
                 aligns=["left", "right", "center"],
-                caption="μg/m³（CO 为 mg/m³）",
+                bordered=True,
+                caption=air.aqi_name or air.aqi_code or "AQI标准未提供",
             )
         )
     else:
         inner.append(paragraph(italic("暂无污染物分项数据")))
     if air.primary:
         inner.append(paragraph(["主要污染物: ", bold(air.primary)]))
+    if air.health_effect and air.health_effect != air.description:
+        inner.append(paragraph(["健康影响：", air.health_effect]))
     if air.description:
-        inner.append(paragraph(italic(air.description)))
+        label = "各类人群：" if air.description == air.sensitive_advice else "一般人群："
+        inner.append(paragraph([label, air.description]))
+    if air.sensitive_advice and air.sensitive_advice != air.description:
+        inner.append(paragraph(["敏感人群：", air.sensitive_advice]))
     if data.air_stations:
         inner.append(paragraph(italic(f"附近监测站: {'、'.join(data.air_stations[:3])}")))
 
     summary = ["🌫️ 空气质量"]
-    if air.aqi is not None:
-        summary.append(f" · AQI {air.aqi}")
+    if air.display_value:
+        summary.append(f" · {air.aqi_name or air.aqi_code or 'AQI'} {air.display_value}")
     if air.category:
         summary.append(f" · {air.category}")
     # Collapsed by default — say so, or nobody discovers the breakdown.
@@ -304,7 +283,7 @@ def _current_stats_rows(data: WeatherData) -> List[list]:
         aqi = data.air_quality
         air_bits = []
         if aqi.aqi is not None:
-            air_bits.append(str(aqi.aqi))
+            air_bits.append(aqi.display_value)
         if aqi.category:
             air_bits.append(aqi.category)
         if aqi.pm2p5 is not None:
@@ -338,11 +317,15 @@ def _core_stats_rows(data: WeatherData) -> List[list]:
     """今日核心指标，按用户实际关心的顺序排列。
 
     顺序是刻意的：冷热（气温）→ 全天概貌（日间/夜间）→ 体感（湿度、风）→
-    要不要带伞（降水）→ 防晒（紫外线）→ 天光时间 → 与昨天的趋势。
+    要不要带伞（降水）→ 防晒（紫外线）→ 天光时间；与昨天的趋势优先常驻。
     次要参数一律进 :func:`_extra_stats_details`，主表不超过 8 行。
     """
     day = data.get_current_daily_forecast()
     rows: List[list] = []
+
+    comparison = format_yesterday_comparison(data)
+    if comparison:
+        rows.append([ui_label_rich("cloud", "比昨天"), comparison])
 
     temp_key = "sun"
     if day is not None:
@@ -383,14 +366,16 @@ def _core_stats_rows(data: WeatherData) -> List[list]:
     # 今日累计降水 + 未来 6h 降水概率合成一行——两者回答的是同一个问题。
     precip_bits: List[str] = []
     if day is not None and day.precip is not None:
-        precip_bits.append(f"今日 {format_precip_value(day.precip, day.precip_kind)}")
-    pops = [hour.pop for hour in data.hourly[:6] if hour.pop is not None]
+        label = "今日" if day.date.date() == data.local_update_date else day.date.strftime("%m-%d")
+        measure = "预计累计" if day.precip_kind == "amount" else "平均降水强度"
+        precip_bits.append(f"{label}{measure} {format_precip_value(day.precip, day.precip_kind)}")
+    pops = [hour.pop for hour in data.get_upcoming_hours() if hour.pop is not None]
     if pops:
-        precip_bits.append(f"6h 降概 {int(max(pops))}%")
+        precip_bits.append(f"未来6h最高降水概率 {format_weather_number(max(pops))}%")
     if precip_bits:
         rows.append([ui_label_rich("rain", "降水"), " · ".join(precip_bits)])
 
-    if day is not None and day.uv_index:
+    if day is not None and day.uv_index not in (None, ""):
         rows.append([ui_label_rich("sun", "紫外线"), uv_level_text(day.uv_index)])
 
     if day is not None and (day.sunrise or day.sunset):
@@ -401,18 +386,6 @@ def _core_stats_rows(data: WeatherData) -> List[list]:
             [weather_icon_rich("100"), weather_icon_rich("150"), " 日出/日落"],
             f"{day.sunrise or 'N/A'} / {day.sunset or 'N/A'}",
         ])
-
-    # Day-over-day context: the trend is what people actually want to know.
-    if data.yesterday is not None and day is not None:
-        deltas = []
-        if data.yesterday.temp_max is not None and day.temp_max is not None:
-            delta = day.temp_max - data.yesterday.temp_max
-            deltas.append(f"最高 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
-        if data.yesterday.temp_min is not None and day.temp_min is not None:
-            delta = day.temp_min - data.yesterday.temp_min
-            deltas.append(f"最低 {'+' if delta >= 0 else ''}{format_weather_number(delta)}°")
-        if deltas:
-            rows.append([ui_label_rich("cloud", "比昨天"), " · ".join(deltas)])
 
     return rows
 
@@ -450,13 +423,21 @@ def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
                 f"{day_wind or 'N/A'} / {night_wind or 'N/A'}",
             ])
         if day.temp_avg is not None:
-            rows.append([ui_label_rich("sun", "日均温"), f"{format_weather_number(day.temp_avg)}°C"])
-        if day.precip_day is not None or day.precip_night is not None:
-            rows.append([
-                ui_label_rich("rain", "昼/夜降水"),
-                f"{format_precip_value(day.precip_day, day.precip_kind)} / "
-                f"{format_precip_value(day.precip_night, day.precip_kind)}",
-            ])
+            label = {"remaining_day": "预报剩余时段均温", "full_day": "日均温"}.get(day.temp_avg_scope, "均温（时段未提供）")
+            rows.append([ui_label_rich("sun", label), f"{format_weather_number(day.temp_avg)}°C"])
+        for period, label in (("day", "白天"), ("night", "夜间")):
+            value = getattr(day, f"precip_{period}")
+            kind = getattr(day, f"precip_{period}_kind")
+            window = getattr(day, f"precip_{period}_window")
+            probability = getattr(day, f"precip_{period}_probability")
+            if value is not None:
+                measure = "平均降水强度" if kind == "intensity" else "降水量"
+                rows.append([
+                    ui_label_rich("rain", f"{label}{measure}" + (f"（{window}）" if window else "")),
+                    format_precip_value(value, kind),
+                ])
+            if probability is not None:
+                rows.append([f"{label}降水概率", f"{format_weather_number(probability)}%"])
         if day.moon_phase:
             rows.append([
                 [weather_icon_rich(moon_phase_code(day.moon_phase)), " 月相"],
@@ -472,7 +453,7 @@ def _extra_stats_details(data: WeatherData, *, include_air: bool) -> List[dict]:
         aqi = data.air_quality
         air_bits = []
         if aqi.aqi is not None:
-            air_bits.append(str(aqi.aqi))
+            air_bits.append(aqi.display_value)
         if aqi.category:
             air_bits.append(aqi.category)
         if air_bits:
@@ -853,7 +834,7 @@ def _hourly_extras_blocks(hours: List) -> List[dict]:
         ("气压", lambda hour: f"{format_weather_number(hour.pressure)}" if hour.pressure is not None else None),
         ("云量", lambda hour: f"{hour.cloud}%" if hour.cloud is not None else None),
         ("能见度", lambda hour: f"{format_weather_number(hour.visibility)}km" if hour.visibility is not None else None),
-        ("AQI", lambda hour: str(hour.aqi) if hour.aqi is not None else None),
+        ("AQI", lambda hour: (f"{hour.aqi_code or '标准未提供'} {hour.aqi_display or format_weather_number(hour.aqi)}") if hour.aqi is not None else None),
         ("辐射", lambda hour: f"{format_weather_number(hour.radiation, 0)}" if hour.radiation is not None else None),
     ]
     active = [
@@ -942,7 +923,7 @@ def build_daily_blocks(
             rich_icon_pair(day.icon_day, day.icon_night),
             f"{format_weather_number(day.temp_min)}~{format_weather_number(day.temp_max)}°",
             format_precip_value(day.precip, day.precip_kind) if day.precip is not None else "—",
-            str(day.uv_index) if day.uv_index else "—",
+            str(day.uv_index) if day.uv_index not in (None, "") else "—",
         ])
 
     blocks = [

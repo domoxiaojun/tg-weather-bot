@@ -9,6 +9,12 @@ __pycache__
 .coverage
 .env
 .env.example
+.env.*
+**/.env
+**/.env.*
+secrets/
+**/*.pem
+**/*.key
 # Persist runtime state on the host (docker-compose mounts ./data). Still ship
 # the custom-emoji id map so images work even when the volume is empty/old.
 data/**

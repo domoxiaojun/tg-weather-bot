@@ -89,6 +89,9 @@ class WeatherFusionService:
                 if getattr(hour, field) is None and getattr(caiyun_hour, field) is not None:
                     setattr(hour, field, getattr(caiyun_hour, field))
                     hour.field_sources[field] = "caiyun"
+                    if field == "aqi":
+                        hour.aqi_code = caiyun_hour.aqi_code
+                        hour.aqi_display = caiyun_hour.aqi_display
             if hour.precip is None and caiyun_hour.precip is not None:
                 hour.precip = caiyun_hour.precip
                 hour.precip_kind = caiyun_hour.precip_kind
@@ -138,6 +141,14 @@ class WeatherFusionService:
                 if getattr(day, field) is None and getattr(caiyun_day, field) is not None:
                     setattr(day, field, getattr(caiyun_day, field))
                     day.field_sources[field] = "caiyun"
+                    if field == "aqi":
+                        day.aqi_code = caiyun_day.aqi_code
+                        day.aqi_display = caiyun_day.aqi_display
+                    if field == "temp_avg":
+                        day.temp_avg_scope = caiyun_day.temp_avg_scope
+                    if field in {"precip_day", "precip_night"}:
+                        for suffix in ("kind", "window"):
+                            setattr(day, f"{field}_{suffix}", getattr(caiyun_day, f"{field}_{suffix}"))
             if day.precip is None and caiyun_day.precip is not None:
                 day.precip = caiyun_day.precip
                 day.precip_kind = caiyun_day.precip_kind
@@ -185,16 +196,21 @@ class WeatherFusionService:
             return
         qweather_air = qweather_data.air_quality
         caiyun_air = caiyun_data.air_quality
-        for field in ("aqi", "pm2p5", "pm10", "o3", "so2", "no2", "co"):
+        # AQI, category and advice form one standard-specific bundle.
+        if qweather_air.aqi is None and not qweather_air.aqi_display and caiyun_air.aqi is not None:
+            for field in ("aqi", "aqi_code", "aqi_name", "aqi_display", "category",
+                          "primary", "description", "health_effect", "sensitive_advice"):
+                setattr(qweather_air, field, getattr(caiyun_air, field))
+                qweather_air.field_sources[field] = "caiyun"
+            qweather_air.pollutant_sub_indexes.clear()
+        for field in ("pm2p5", "pm10", "o3", "so2", "no2", "co"):
             if getattr(qweather_air, field) is None and getattr(caiyun_air, field) is not None:
                 setattr(qweather_air, field, getattr(caiyun_air, field))
                 qweather_air.field_sources[field] = "caiyun"
-        if not qweather_air.category and caiyun_air.category:
-            qweather_air.category = caiyun_air.category
-            qweather_air.field_sources["category"] = "caiyun"
-        if not qweather_air.description and caiyun_air.description:
-            qweather_air.description = caiyun_air.description
-            qweather_air.field_sources["description"] = "caiyun"
+                qweather_air.pollutant_units.pop(field, None)
+                qweather_air.pollutant_sub_indexes.pop(field, None)
+                if field in caiyun_air.pollutant_units:
+                    qweather_air.pollutant_units[field] = caiyun_air.pollutant_units[field]
 
     @staticmethod
     def _geo_location_name(loc_info: dict, fallback: str) -> str:

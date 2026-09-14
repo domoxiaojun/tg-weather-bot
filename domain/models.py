@@ -81,7 +81,9 @@ class HourlyForecast(BaseModel):
     uv_index: Optional[float] = None
     visibility: Optional[float] = None
     radiation: Optional[float] = Field(None, description="Downward shortwave radiation in W/m²")
-    aqi: Optional[int] = None
+    aqi: Optional[float] = None
+    aqi_code: str = ""
+    aqi_display: str = ""
     pm2p5: Optional[float] = None
     field_sources: Dict[str, WeatherProvider] = Field(default_factory=dict)
 
@@ -104,13 +106,18 @@ class DailyForecast(BaseModel):
     text_night: str
     icon_night: str
     temp_avg: Optional[float] = None
+    temp_avg_scope: Optional[Literal["remaining_day", "full_day"]] = None
     precip: Optional[float] = None
     precip_kind: Optional[PrecipitationKind] = None
     precip_source: Optional[WeatherProvider] = None
     precip_probability: Optional[float] = None
     precip_day: Optional[float] = None
+    precip_day_kind: Optional[PrecipitationKind] = None
+    precip_day_window: Optional[str] = None
     precip_day_probability: Optional[float] = None
     precip_night: Optional[float] = None
+    precip_night_kind: Optional[PrecipitationKind] = None
+    precip_night_window: Optional[str] = None
     precip_night_probability: Optional[float] = None
     humidity: Optional[int] = None
     vis: Optional[float] = None # Visibility
@@ -131,12 +138,34 @@ class DailyForecast(BaseModel):
     wind_scale_night: Optional[str] = None
     wind_speed_night: Optional[float] = None
     wind_direction_night_degrees: Optional[float] = None
-    aqi: Optional[int] = None
+    aqi: Optional[float] = None
+    aqi_code: str = ""
+    aqi_display: str = ""
     pm2p5: Optional[float] = None
     field_sources: Dict[str, WeatherProvider] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def restore_legacy_period_units(self):
+        # Old fused cache entries recorded the period source but reused the
+        # QWeather daily amount unit. Recover only known Caiyun provenance.
+        for period in ("day", "night"):
+            field = f"precip_{period}"
+            if self.field_sources.get(field) == "caiyun" or self.precip_source == "caiyun":
+                if getattr(self, f"{field}_kind") is None:
+                    setattr(self, f"{field}_kind", "intensity")
+                if getattr(self, f"{field}_window") is None:
+                    setattr(self, f"{field}_window", "08–20时" if period == "day" else "20–次日08时")
+        return self
+
 class AirQuality(BaseModel):
-    aqi: Optional[int] = None
+    aqi: Optional[float] = None
+    aqi_code: str = ""
+    aqi_name: str = ""
+    aqi_display: str = ""
+    pollutant_units: Dict[str, str] = Field(default_factory=dict)
+    pollutant_sub_indexes: Dict[str, str] = Field(default_factory=dict)
+    health_effect: str = ""
+    sensitive_advice: str = ""
     category: str  # e.g., "Good", "Moderate"
     primary: str = ""
     pm2p5: Optional[float] = None
@@ -148,6 +177,12 @@ class AirQuality(BaseModel):
     description: str = ""
     source: WeatherProvider = "qweather"
     field_sources: Dict[str, WeatherProvider] = Field(default_factory=dict)
+
+    @property
+    def display_value(self) -> str:
+        if self.aqi_display:
+            return self.aqi_display
+        return f"{self.aqi:g}" if self.aqi is not None else ""
 
 class WarningAlert(BaseModel):
     """Weather Warning Alert"""
@@ -350,6 +385,21 @@ class WeatherData(BaseModel):
         """Select today's forecast, or the first future forecast when today is absent."""
         forecasts = self.get_daily_forecasts(limit=1)
         return forecasts[0] if forecasts else None
+
+    def get_upcoming_hours(self, hours: int = 6) -> List[HourlyForecast]:
+        """Select forecast timestamps in [update_time, update_time + hours).
+
+        Aware values compare by instant. Mixed naive/aware timestamps cannot
+        be aligned safely and are excluded instead of guessed.
+        """
+        end = self.update_time + timedelta(hours=hours)
+        aware = self.update_time.utcoffset() is not None
+        return sorted(
+            (h for h in self.hourly
+             if (h.time.utcoffset() is not None) == aware
+             and self.update_time <= h.time < end),
+            key=lambda h: h.time,
+        )
     
     def get_rain_plot_data(self):
         """Helper to get x, y lists for plotting"""

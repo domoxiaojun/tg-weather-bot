@@ -338,6 +338,10 @@ class CaiyunAdapter(WeatherAdapter):
             return None
         return AirQuality(
             aqi=aqi,
+            aqi_code="chn",
+            aqi_name="中国 AQI（彩云）",
+            pollutant_units={key: "mg/m³" if key == "co" else "μg/m³"
+                             for key, value in pollutant_values.items() if value is not None},
             category=description,
             primary="",
             description=description,
@@ -434,13 +438,14 @@ class CaiyunAdapter(WeatherAdapter):
                     visibility=self._optional_float(visibility_item.get("value")),
                     radiation=self._optional_float(radiation_item.get("value")),
                     aqi=aqi,
+                    aqi_code="chn",
                     pm2p5=pm2p5,
                     field_sources=field_sources,
                 )
             )
         return forecasts
 
-    def _parse_daily(self, daily_data: Any) -> List[DailyForecast]:
+    def _parse_daily(self, daily_data: Any, reference_date=None) -> List[DailyForecast]:
         if not isinstance(daily_data, dict):
             return []
 
@@ -506,6 +511,9 @@ class CaiyunAdapter(WeatherAdapter):
                     temp_min=temp_min,
                     temp_max=temp_max,
                     temp_avg=self._optional_float(temperature.get("avg")),
+                    temp_avg_scope=(
+                        "remaining_day" if forecast_date.date() == reference_date else "full_day"
+                    ) if reference_date is not None and forecast_date.date() >= reference_date else None,
                     text_day=text_day,
                     icon_day=icon_day,
                     text_night=text_night,
@@ -515,8 +523,12 @@ class CaiyunAdapter(WeatherAdapter):
                     precip_source="caiyun" if precip_value is not None else None,
                     precip_probability=self._probability_pct(precip.get("probability")),
                     precip_day=self._optional_float(precip_day.get("avg")),
+                    precip_day_kind="intensity",
+                    precip_day_window="08–20时",
                     precip_day_probability=self._probability_pct(precip_day.get("probability")),
                     precip_night=self._optional_float(precip_night.get("avg")),
+                    precip_night_kind="intensity",
+                    precip_night_window="20–次日08时",
                     precip_night_probability=self._probability_pct(precip_night.get("probability")),
                     sunrise=(astro.get("sunrise") or {}).get("time"),
                     sunset=(astro.get("sunset") or {}).get("time"),
@@ -530,6 +542,7 @@ class CaiyunAdapter(WeatherAdapter):
                     wind_speed_night=self._optional_float(wind_night.get("avg", {}).get("speed") if isinstance(wind_night.get("avg"), dict) else wind_night.get("speed")),
                     wind_direction_night_degrees=self._optional_float(wind_night.get("avg", {}).get("direction") if isinstance(wind_night.get("avg"), dict) else wind_night.get("direction")),
                     aqi=self._optional_int(aqi_raw),
+                    aqi_code="chn",
                     pm2p5=self._optional_float((pm25_map.get(key, {}) or {}).get("avg")),
                     field_sources={
                         "temperature": "caiyun",
@@ -588,7 +601,6 @@ class CaiyunAdapter(WeatherAdapter):
         realtime_precip = self._optional_float(local_precip.get("intensity"))
         wind = realtime.get("wind") or {}
         hourly = self._parse_hourly(result.get("hourly"))
-        daily = self._parse_daily(result.get("daily"))
         summary = str(result.get("forecast_keypoint") or "")
         target_tz = self._target_timezone(data)
         server_time = self._optional_float(data.get("server_time"))
@@ -597,6 +609,7 @@ class CaiyunAdapter(WeatherAdapter):
             if server_time is not None
             else datetime.now(tz=target_tz)
         )
+        daily = self._parse_daily(result.get("daily"), update_time.date())
         is_raining = (
             (realtime_precip or 0) > 0
             or any((item.precip or 0) > 0 for item in hourly[:3])

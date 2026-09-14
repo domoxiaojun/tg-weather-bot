@@ -237,8 +237,8 @@ class WeatherCardLayoutTests(unittest.TestCase):
         rows = {row[0].split(" ", 1)[-1]: row[1] for row in table_text(core_table)}
         self.assertEqual(rows["紫外线"], "11 极强")
         self.assertEqual(rows["日出/日落"], "05:52 / 19:50")
-        # Trend closes the table; UV/sunlight sit between rain and the trend.
-        self.assertEqual(labels[-1], "比昨天")
+        # Trend is the first always-visible comparison row.
+        self.assertEqual(labels[0], "比昨天")
         self.assertLess(labels.index("降水"), labels.index("紫外线"))
         self.assertLess(labels.index("紫外线"), labels.index("日出/日落"))
         self.assertEqual(uv_level_text(3), "3 中等")
@@ -432,7 +432,7 @@ class WeatherCardLayoutTests(unittest.TestCase):
             nested for nested in air.get("blocks") or [] if nested.get("type") == "table"
         )
         rows = table_text(aq_table)
-        self.assertEqual(rows[0], ["污染物", "浓度", "水平"])
+        self.assertEqual(rows[0], ["污染物", "浓度", "分项指数"])
         self.assertEqual(len(rows[1]), 3)
         joined = "\n".join(" ".join(row) for row in rows)
         self.assertNotIn("细颗粒物", joined)

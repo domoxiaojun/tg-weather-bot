@@ -26,9 +26,9 @@ A powerful, dual-engine Telegram Weather Bot built with Python 3.12+ and optimal
 ## 🚀 Quick Start
 
 1.  **Configure**:
-    - Rename `.env.example` to `.env`.
+    - Copy `.env.example` to `.env` (keep the example file; do not overwrite an existing configuration).
     - Fill in `BOT_TOKEN`, `QWEATHER_API_KEY`, and the QWeather root `QWEATHER_API_HOST`.
-    - The recommended free-source ranges are `QWEATHER_HOURLY_HOURS=72h` and `QWEATHER_DAILY_DAYS=15d`.
+    - Default ranges are `QWEATHER_HOURLY_HOURS=72h` and `QWEATHER_DAILY_DAYS=15d`; confirm permissions and pricing in your own QWeather console.
     - Optional: set `ENABLE_CAIYUN_API=true` and `CAIYUN_API_TOKEN` to enable global Caiyun fusion. All weather-producing commands and jobs share the same one-hour coordinate cache; the refresh button only forces QWeather. Review [the command/API cost map](docs/commands-api-mapping.md) for the exact routing and cost ceiling.
     - The current Caiyun package does not include minute-level precipitation. QWeather `/v7/minutely/5m` remains the only minute source; hourly Caiyun precipitation is kept as intensity (`mm/h`), not relabeled as an hourly accumulation (`mm`).
 2.  **Run**:
@@ -74,17 +74,25 @@ Rich output is **enabled by default** (`ENABLE_RICH_MESSAGES=true`) through a th
 
 See [the local Bot API 10.0–10.3 integration record](docs/telegram-bot-api-update-2026-07.md) for the verified wire format, PTB 22.8 transport audit, Inline/Guest implementation and deliberate ephemeral boundary.
 
-## 🐳 Docker Deploy (Recommended)
+## 🐳 Docker Compose（本地构建）
 
-1.  **Configure `.env`** as above.
+当前仓库的 GitHub Actions 只做 Docker 构建和容器 smoke test，**没有自动推送 GHCR 或 Docker Hub 镜像**。因此安装时会在本机根据 `Dockerfile` 构建镜像，不要执行 `docker pull tg-weather-bot`；如需远程镜像发布，必须另行配置并验证发布 workflow。
+
+完整步骤见 **[Docker Compose 部署指南](docs/docker-compose.md)**，包括首次安装、JWT、Polling/Webhook、更新重建、备份恢复和排障。以下命令在已准备好 Docker Engine 与 Compose v2 的部署服务器上运行。
+
+1.  **Configure `.env`** as above，首次部署创建 `data`、`logs`、`secrets` 目录。
 2.  **Run**:
     ```bash
-    docker-compose up -d --build
+    docker compose config --quiet
+    docker compose up -d --build
+    docker compose ps
     ```
 3.  **Logs**:
     ```bash
-    docker-compose logs -f
+    docker compose logs -f
     ```
+
+Polling 模式无需公开端口，但仓库 Compose 默认仍发布 `WEBHOOK_PORT`（默认 8443）；使用 polling 时可删除 `ports` 段。天气内部 API 的 8080 端口不映射到宿主机，只供同一私有 Docker 网络的服务调用。容器 healthcheck 只验证 Telegram `getMe`、Token 和出网，不代表天气 API、Redis 或 LLM 业务一定正常，也不会单凭 unhealthy 自动重启容器。详见[安装与 Action 工作流审查](docs/installation-audit-2026-09.md)。
 
 ## 📝 Commands
 

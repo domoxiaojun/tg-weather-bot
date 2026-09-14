@@ -62,8 +62,25 @@ def format_precip_value(value: Optional[Number], kind: Optional[str], decimals: 
     """Format precipitation without mixing accumulation and intensity units."""
     if value is None:
         return "N/A"
-    unit = "mm/h" if kind == "intensity" else "mm"
+    unit = "mm/h" if kind == "intensity" else "mm" if kind == "amount" else "（单位未提供）"
     return f"{format_weather_number(value, decimals=decimals)}{unit}"
+
+
+def format_yesterday_comparison(data: WeatherData) -> str:
+    """Today's forecast extremes versus yesterday's observed extremes."""
+    day, yesterday = data.get_current_daily_forecast(), data.yesterday
+    if (day is None or yesterday is None
+            or day.date.date() != data.local_update_date
+            or yesterday.date.date() != data.local_update_date - datetime.timedelta(days=1)):
+        return ""
+    parts = []
+    for label, field in (("最高", "temp_max"), ("最低", "temp_min")):
+        observed = getattr(yesterday, field)
+        if observed is None:
+            continue
+        delta = round(getattr(day, field) - observed, 1)
+        parts.append(f"{label}持平" if delta == 0 else f"{label} {delta:+g}°C")
+    return " · ".join(parts)
 
 
 def format_attribution(data, limit: int = 2) -> str:
@@ -185,8 +202,8 @@ def _format_air_quality_line(data: WeatherData) -> str:
         return ""
     aqi = data.air_quality
     air_parts = []
-    if aqi.aqi is not None:
-        air_parts.append(f"*{escape_v2(aqi.aqi)}*")
+    if aqi.display_value:
+        air_parts.append(f"{escape_v2(aqi.aqi_name or aqi.aqi_code or 'AQI')} *{escape_v2(aqi.display_value)}*")
     if aqi.category:
         air_parts.append(f"\\({escape_v2(aqi.category)}\\)")
     if aqi.pm2p5 is not None:
@@ -290,6 +307,7 @@ def format_today_detail(
     hourly_data: List[HourlyForecast],
     title: Optional[str] = "今日详情",
     cloud: Optional[int] = None,
+    reference_time: Optional[datetime.datetime] = None,
 ) -> str:
     """专门为今日详情设计的格式，块状布局而非树状"""
     fields = _day_display_fields(day)
@@ -310,10 +328,13 @@ def format_today_detail(
     vis = fields["vis"]
     uv = fields["uv"]
 
-    # 计算未来6小时降水概率（始终显示）
+    # Only claim a six-hour window when the caller supplies its reference.
     max_pop = None
-    if hourly_data:
-        future_6h = hourly_data[:6]
+    if hourly_data and reference_time is not None:
+        end = reference_time + datetime.timedelta(hours=6)
+        future_6h = [h for h in hourly_data if
+                     (h.time.utcoffset() is not None) == (reference_time.utcoffset() is not None)
+                     and reference_time <= h.time < end]
         available_pops = [h.pop for h in future_6h if h.pop is not None]
         max_pop = max(available_pops) if available_pops else None
 
@@ -345,7 +366,7 @@ def format_today_detail(
     if fields["uv"] != "N/A":
         forecast_parts.append(f"{ui_icon_md('sun')} UV {uv}")
     if max_pop is not None:
-        forecast_parts.append(f"{ui_icon_md('rain')} 未来6h降概 {escape_v2(int(max_pop))}%")
+        forecast_parts.append(f"{ui_icon_md('rain')} 未来6h最高降水概率 {escape_v2(format_weather_number(max_pop))}%")
     if day.precip_day_probability is not None:
         forecast_parts.append(f"白天降概 {escape_v2(int(day.precip_day_probability))}%")
     if day.precip_night_probability is not None:
@@ -660,7 +681,11 @@ def format_weather_response(data: WeatherData, view_type: str="default", days: O
                 data.hourly,
                 title=detail_title,
                 cloud=data.now_cloud,
+                reference_time=data.update_time,
             )
+            comparison = format_yesterday_comparison(data)
+            if comparison:
+                body = f"比昨天：{escape_v2(comparison)}\n" + body
             index_section = format_index_pairs(data.indices, current_day.date.date())
         else:
             body = format_unavailable_current_daily_weather(data)
